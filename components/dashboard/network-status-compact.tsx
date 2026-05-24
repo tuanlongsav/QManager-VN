@@ -1,0 +1,173 @@
+"use client";
+
+import { GlobeIcon } from "lucide-react";
+import {
+  MdOutline5G,
+  Md4gMobiledata,
+  Md4gPlusMobiledata,
+  Md3gMobiledata,
+  MdEnergySavingsLeaf,
+} from "react-icons/md";
+
+import { Card } from "@/components/ui/card";
+import { Skeleton } from "@/components/ui/skeleton";
+import {
+  formatUptime,
+  type NetworkStatus,
+  type ConnectivityStatus,
+} from "@/types/modem-status";
+import type { AboutDeviceData } from "@/types/about-device";
+import { cn } from "@/lib/utils";
+
+interface NetworkStatusCompactProps {
+  network: NetworkStatus | null;
+  device: { uptime_seconds: number } | null;
+  aboutDevice: AboutDeviceData | null;
+  connectivity: ConnectivityStatus | null;
+  modemReachable: boolean;
+  isLoading?: boolean;
+  className?: string;
+}
+
+// =============================================================================
+// NetworkStatusCompact — Square dashboard widget (QManager-VN)
+// =============================================================================
+// Top-row companion to Temperature / SMS / InternetQuality widgets. Adopts the
+// Simple Admin "Connected VINAPHONE" visual but adds more at-a-glance info:
+//   - Big RAT icon (5G / LTE+ / LTE / 3G) as the focal element
+//   - Carrier name + RAT label
+//   - Public IPv4 (truncated if too long)
+//   - Uptime (modem boot-up duration)
+//
+// The pulse/ring animations from the original NetworkStatusComponent are
+// dropped here for visual symmetry with the other 3 widgets. The user still
+// gets full per-band detail in the LTE/NR/SCC cards below.
+// =============================================================================
+
+function pickRatIcon(type: string, caActive: boolean, isAirplane: boolean) {
+  if (isAirplane) {
+    return <MdEnergySavingsLeaf className="size-full text-success" />;
+  }
+  switch (type) {
+    case "5G-SA":
+    case "5G-NSA":
+      return <MdOutline5G className="size-full text-white" />;
+    case "LTE":
+      return caActive ? (
+        <Md4gPlusMobiledata className="size-full text-white" />
+      ) : (
+        <Md4gMobiledata className="size-full text-white" />
+      );
+    default:
+      return <Md3gMobiledata className="size-full text-white/60" />;
+  }
+}
+
+function ratLabel(type: string, caActive: boolean, isAirplane: boolean): string {
+  if (isAirplane) return "Low Power";
+  switch (type) {
+    case "5G-SA":
+      return "5G Standalone";
+    case "5G-NSA":
+      return "5G + LTE";
+    case "LTE":
+      return caActive ? "LTE+" : "LTE";
+    default:
+      return "No 4G/5G";
+  }
+}
+
+export function NetworkStatusCompact({
+  network,
+  device,
+  aboutDevice,
+  connectivity,
+  modemReachable,
+  isLoading,
+  className,
+}: NetworkStatusCompactProps) {
+  const isAirplane = network?.cfun === 0 || network?.cfun === 4;
+  const radioOn = modemReachable && !isAirplane;
+  const hasNetwork =
+    network?.type === "LTE" ||
+    network?.type === "5G-SA" ||
+    network?.type === "5G-NSA";
+
+  if (isLoading && !network) {
+    return (
+      <Card className={cn("p-6 flex flex-col items-center justify-center min-h-[180px]", className)}>
+        <Skeleton className="size-16 rounded-full mb-3" />
+        <Skeleton className="h-5 w-24 mb-2" />
+        <Skeleton className="h-3 w-32 mb-1" />
+        <Skeleton className="h-3 w-20" />
+      </Card>
+    );
+  }
+
+  const carrier = network?.carrier?.trim() || "—";
+  const rat = network?.type ?? "";
+  const caActive = network?.ca_active ?? false;
+  const publicIp = aboutDevice?.network?.public_ipv4 ?? "—";
+  const uptime = device?.uptime_seconds ? formatUptime(device.uptime_seconds) : "—";
+  // Connectivity dot — small status indicator in the corner since we removed
+  // the big pulse ring. Avoids confusion when a user is offline despite a
+  // healthy RAT icon.
+  const dotClass = !radioOn
+    ? "bg-destructive"
+    : connectivity?.internet_available === false
+    ? "bg-destructive"
+    : connectivity?.state === "limited"
+    ? "bg-warning"
+    : hasNetwork
+    ? "bg-success"
+    : "bg-muted-foreground";
+
+  return (
+    <Card
+      className={cn(
+        "p-6 flex flex-col items-center text-center min-h-[180px] relative",
+        className,
+      )}
+    >
+      {/* Connectivity dot — top-right corner */}
+      <span
+        aria-hidden
+        className={cn(
+          "absolute top-3 right-3 inline-flex size-2.5 rounded-full",
+          dotClass,
+        )}
+      />
+
+      {/* Big RAT icon */}
+      <div
+        className={cn(
+          "rounded-full size-16 flex items-center justify-center p-1.5 mb-2",
+          isAirplane
+            ? "bg-success/15"
+            : hasNetwork
+            ? "bg-primary"
+            : "bg-muted",
+        )}
+      >
+        {pickRatIcon(rat, caActive, isAirplane)}
+      </div>
+
+      {/* Carrier */}
+      <div className="text-lg font-semibold leading-tight truncate max-w-full">
+        {carrier}
+      </div>
+      <div className="text-xs text-muted-foreground mb-2">
+        {ratLabel(rat, caActive, isAirplane)}
+      </div>
+
+      {/* Public IP + Uptime — small monospace block */}
+      <div className="text-xs text-muted-foreground space-y-0.5 mt-auto">
+        <div className="flex items-center justify-center gap-1.5">
+          <GlobeIcon className="size-3" />
+          <span className="font-mono">{publicIp}</span>
+        </div>
+        <div>up {uptime}</div>
+      </div>
+    </Card>
+  );
+}

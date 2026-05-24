@@ -1,50 +1,45 @@
-# QManager-VN v0.2.3-vn — Fix OTA version stamping
+# QManager-VN v0.3.0-vn — Dashboard UX overhaul + APN auto-fill
 
-**Sửa bug nghiêm trọng**: mọi bản v0.1.0-vn → v0.2.2-vn đều stamp `/etc/qmanager/VERSION` = `"0.1.0"` thay vì tag thực tế. User cài + cập nhật báo thành công nhưng UI vẫn hiển thị `0.1.0`. **Bản này khắc phục** — OTA upgrade từ bất kỳ bản cũ nào về v0.2.3-vn sẽ stamp đúng version.
+Bản này tập trung vào trải nghiệm hàng ngày — lấy cảm hứng từ layout 4-widget top-row của Simple Admin (rgmii-toolkit) mà vẫn giữ chiều sâu Pro mode của QManager.
 
-## 🐛 Bug chính được sửa
+## ✨ Tính năng mới
 
-**Triệu chứng:** User cài QManager-VN, UI luôn hiển thị `0.1.0` cho dù tag thực tế là v0.2.0-vn / v0.2.1-vn / v0.2.2-vn. OTA update báo "install + reboot" nhưng sau reboot version vẫn `0.1.0`.
+### APN Management tự điền theo nhà mạng (Phase F.1.A)
+- Mở form APN profile lần đầu, nếu APN trống và SIM có IMSI VN → tự fill `m3-world` (Vinaphone) / `v-internet` (Viettel) / `m-i-internet` (Mobifone) / `internet` (Vietnamobile) / `v-internet` (Wintel) theo MCC/MNC.
+- Hint nhỏ dưới input: "Đã tự điền theo nhà mạng {Viettel}. Sửa nếu cần." User edit thì hint biến mất.
+- Carrier-managed profile vẫn read-only — không bị override.
+- KHÔNG động vào profile đã có APN trước đó.
 
-**Nguyên nhân:** [`build.sh:69`](https://github.com/tuanlongsav/QManager-VN/blob/v0.2.3-vn/build.sh#L69) đọc version từ [`package.json`](https://github.com/tuanlongsav/QManager-VN/blob/v0.2.3-vn/package.json) và stamp vào `scripts/install_rm520n.sh:46` (`VERSION="..."`). Nhưng `package.json` của fork chốt ở `"0.1.0"` từ Phase A rebrand và không bump theo tag. Mọi release tarball đều stamp `VERSION="0.1.0"` vào installer. Sau khi modem install, `/etc/qmanager/VERSION` luôn = `"0.1.0"`.
+### Dashboard Home — top row 4 widget (Phase F.1.B + F.1.C)
+4 card vuông cùng size (responsive 1/2/4 cột), thay thế Network Status full + UiMode toggle:
 
-**Fix:**
-- `.github/workflows/release.yml` — bước mới "Stamp package.json version from tag" trước Setup Bun. Đọc tag (vd `v0.2.3-vn`), sed thay top-level `"version"` field trong `package.json`. Bun install không bị ảnh hưởng (frozen-lockfile chỉ validate dep versions, không phải version của chính package).
-- `package.json` — bump version sang `v0.2.3-vn` cho consistency với dev local.
+1. **Network Status (compact)** — big RAT icon (5G / LTE+ / LTE / 3G) + carrier name + public IPv4 + uptime. Dot chỉ trạng thái internet ở góc.
+2. **Temperature** — số °C to giống Simple Admin, color tier (cool/warm/hot).
+3. **SMS Received** — count messages, click → SMS center.
+4. **Internet Quality** — tier (Excellent / Good / Fair / Poor / Offline) + avg latency 30 phút. Tooltip detail: loss %, sample count, jitter.
 
-Sau fix, mỗi release từ v0.2.3-vn trở đi sẽ stamp đúng `VERSION="v0.2.x-vn"` vào installer → `/etc/qmanager/VERSION` đúng → `post_install_check` pass → UI hiển thị đúng version.
+### Xoá Simple Mode (Phase F.1.B)
+- Toggle Simple/Pro đã được gỡ — dashboard luôn show full content.
+- LTE/NR/SCC detail, Device Status, Device Metrics, Live Latency chart, Recent Activities, Signal History luôn hiển thị.
+- `hooks/use-ui-mode.ts` + `components/dashboard/ui-mode-toggle.tsx` đã xoá.
 
-## 🔄 Cách phục hồi từ bản 0.1.0 bị kẹt
+### Temperature widget ở trang About Device (Phase F.1.D)
+- Cùng component `TemperatureWidget` mount ở About Device page (grid 3-col: Temperature + Device Information + About QManager).
+- User xem nhiệt độ modem nhanh ở 2 nơi: Home dashboard + About Device.
 
-**Trong WebUI:**
-1. System Settings → Software Update → Check for updates
-2. Sẽ thấy "Update available: v0.2.3-vn" (semver compare đúng "v0.2.3-vn" > "0.1.0")
-3. Click Download → Install
-4. Sau reboot, UI hiển thị `v0.2.3-vn` ✓
+## 🛠️ Internal changes
 
-**Hoặc qua SSH (force re-install):**
-```sh
-rm -f /etc/qmanager/VERSION    # Force fresh-install path nếu cần
-curl -fsSL -o /tmp/qmanager-installer.sh \
-  https://github.com/tuanlongsav/QManager-VN/raw/refs/heads/main/qmanager-installer.sh && \
-  bash /tmp/qmanager-installer.sh
-```
+- New: `components/dashboard/temperature-widget.tsx`, `sms-received-widget.tsx`, `internet-quality-widget.tsx`, `network-status-compact.tsx`
+- Modified: `components/dashboard/home-component.tsx` — restructure 4-widget top row + Pro layout always-on
+- Modified: `components/cellular/settings/apn-management/wan-profile-edit.tsx` — auto-fill effect
+- Modified: `components/about-device/about-device.tsx` — mount TemperatureWidget
+- Deleted: `hooks/use-ui-mode.ts`, `components/dashboard/ui-mode-toggle.tsx`, `components/dashboard/network-status.tsx` (replaced by compact variant)
 
-## ✅ Bao gồm các fix trước
+## 📥 Cài đặt / Cập nhật
 
-Bản này tích lũy mọi fix từ v0.1.0-vn → v0.2.2-vn:
+OTA từ WebUI: **System Settings → Software Update → Download → Install**. Sau reboot UI hiển thị `v0.3.0-vn`.
 
-- **Phase B**: Cắt Tailscale / Email Alerts / Web Console / AT Terminal / Discord Bot
-- **Phase C**: SDXLEMUR broad compat + hardware auto-detect + feature gating + UnsupportedModelBanner
-- **Phase D**: VN APN presets (Viettel/Vinaphone/Mobifone/Vietnamobile/Wintel) + auto-suggest by IMSI + SMS brand decode + phone normalize
-- **Phase E.1**: Auto cell-lock state machine daemon
-- **Phase E.2**: Dashboard Simple Mode vs Pro Mode toggle
-- **Phase E.3**: Antennas tabbed consolidation (statistics + alignment)
-- **v0.2.1**: Entware bootstrap `/opt` mount point fix
-- **v0.2.2**: React `setState` in render → `useEffect`; atomic config write trong autolock CGI; defensive AT response parser
-
-## 📥 Cài đặt
-
+Fresh install:
 ```sh
 curl -fsSL -o /tmp/qmanager-installer.sh \
   https://github.com/tuanlongsav/QManager-VN/raw/refs/heads/main/qmanager-installer.sh && \
@@ -53,6 +48,6 @@ curl -fsSL -o /tmp/qmanager-installer.sh \
 
 ## 🙏 Credit
 
-Upstream [dr-dolomite/QManager-RM520N](https://github.com/dr-dolomite/QManager-RM520N). Support [DrDolomite trên GitHub Sponsors](https://github.com/sponsors/dr-dolomite).
+Upstream [dr-dolomite/QManager-RM520N](https://github.com/dr-dolomite/QManager-RM520N). VN reference [iamromulan/quectel-rgmii-toolkit](https://github.com/iamromulan/quectel-rgmii-toolkit) + fork [tuanlongsav/quectel-rgmii-toolkit](https://github.com/tuanlongsav/quectel-rgmii-toolkit).
 
 **License:** MIT + Commons Clause.

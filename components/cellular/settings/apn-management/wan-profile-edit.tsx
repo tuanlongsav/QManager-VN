@@ -1,6 +1,8 @@
 "use client";
 
 import { useState, useEffect, type FormEvent } from "react";
+import { MNO_PRESETS, suggestPresetFromImsi, type MnoPreset } from "@/constants/mno-presets";
+import { useModemStatus } from "@/hooks/use-modem-status";
 import { toast } from "sonner";
 import {
   Card,
@@ -149,11 +151,38 @@ export default function WanProfileEditCard({
   const [showPassword, setShowPassword] = useState(false);
   const [apnError, setApnError] = useState("");
   const [mtuError, setMtuError] = useState("");
+  // Track auto-fill source so the UI can hint "Đã tự điền từ {Viettel}" below the input.
+  // Cleared when the user edits the APN field (signals an intentional override).
+  const [autoFilledPreset, setAutoFilledPreset] = useState<MnoPreset | null>(null);
 
-  // Sync form when profile changes (e.g. after toggle or external refresh)
+  // IMSI from the live modem status — used to auto-suggest an MNO preset when
+  // the profile lands here with a blank APN. Carrier-managed profiles bypass
+  // this — their APN is dictated by the network and shouldn't be overwritten.
+  const { data: modemData } = useModemStatus();
+  const imsi = modemData?.device?.imsi;
+
+  // Sync form when profile changes (e.g. after toggle or external refresh).
+  // When the loaded profile has no APN set, fall back to the MNO preset that
+  // matches the inserted SIM's MCC/MNC. Keeps the user one field shorter to
+  // fill on first setup — they can still type over it.
   useEffect(() => {
     setName(profile.name);
-    setApn(profile.apn);
+
+    let initialApn = profile.apn;
+    let matchedPreset: MnoPreset | null = null;
+    if (!carrier && !initialApn.trim() && imsi) {
+      const presetId = suggestPresetFromImsi(imsi);
+      if (presetId) {
+        const preset = MNO_PRESETS.find((p) => p.id === presetId);
+        if (preset) {
+          initialApn = preset.apn_name;
+          matchedPreset = preset;
+        }
+      }
+    }
+    setApn(initialApn);
+    setAutoFilledPreset(matchedPreset);
+
     setPdpType(profile.pdp_type);
     setAuthType(profile.auth_type);
     setUsername(profile.username);
@@ -166,7 +195,7 @@ export default function WanProfileEditCard({
     setShowPassword(false);
     setApnError("");
     setMtuError("");
-  }, [profile]);
+  }, [profile, imsi, carrier]);
 
   // --- Validation ---
   const validateForm = (): boolean => {
@@ -278,6 +307,10 @@ export default function WanProfileEditCard({
                       value={apn}
                       onChange={(e) => {
                         setApn(e.target.value);
+                        // User-edit signals an intentional override — drop the
+                        // "auto-filled from preset" hint so we don't claim a
+                        // value we no longer set.
+                        if (autoFilledPreset) setAutoFilledPreset(null);
                         if (apnError) setApnError("");
                       }}
                       disabled={isSaving}
@@ -285,7 +318,13 @@ export default function WanProfileEditCard({
                       aria-required="true"
                       aria-invalid={!!apnError}
                     />
-                    {apnError && <FieldError>{apnError}</FieldError>}
+                    {apnError ? (
+                      <FieldError>{apnError}</FieldError>
+                    ) : autoFilledPreset ? (
+                      <p className="text-xs text-muted-foreground">
+                        Đã tự điền theo nhà mạng <strong>{autoFilledPreset.label}</strong>. Sửa nếu cần.
+                      </p>
+                    ) : null}
                   </Field>
                 </div>
 
