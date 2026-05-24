@@ -1,0 +1,237 @@
+#!/bin/sh
+# =============================================================================
+# qmanager_autolock — Auto Cell Lock State Machine (QManager-VN)
+# =============================================================================
+# Watches signal quality and auto-applies tower lock when signal is stable on
+# a single cell. Auto-releases the lock when signal degrades below threshold.
+#
+# Port of the auto-cell-lock concept from tuanlongsav/quectel-rgmii-toolkit:
+# - "Stable signal" = RSRP > -85 dBm && SINR > 5 dB for N consecutive samples
+# - "Signal lost"   = RSRP < -110 dBm for N consecutive samples
+#
+# State machine:
+#   idle        → no monitoring active (daemon stopped)
+#   watching    → enabled, evaluating signal stability
+#   locked      → applied tower lock on a specific PCI/EARFCN
+#   signal-lost → degraded below threshold, unlock pending
+#
+# Config: /etc/qmanager/autolock.json
+# Status: /tmp/qmanager_autolock_status.json (updated each cycle)
+# Logs:   /tmp/qmanager.log via qlog
+#
+# Install location: /usr/bin/qmanager_autolock
+# Started by: systemd unit qmanager-autolock.service (gated on config.enabled)
+# =============================================================================
+
+# --- Library imports ---------------------------------------------------------
+. /usr/lib/qmanager/qlog.sh
+. /usr/lib/qmanager/tower_lock_mgr.sh
+
+qlog_init "autolock"
+
+# --- Configuration -----------------------------------------------------------
+AUTOLOCK_CONFIG="/etc/qmanager/autolock.json"
+STATUS_FILE="/tmp/qmanager_autolock_status.json"
+POLL_INTERVAL=5     # seconds between samples
+STATUS_CACHE="/tmp/qmanager_status.json"  # poller output (has signal data)
+
+# Default thresholds (override via /etc/qmanager/autolock.json)
+DEFAULT_RSRP_STABLE=-85
+DEFAULT_SINR_STABLE=5
+DEFAULT_RSRP_LOST=-110
+DEFAULT_SAMPLES=3
+
+# --- Helper: read config field with default ---------------------------------
+config_get() {
+    _key="$1"
+    _default="$2"
+    if [ -f "$AUTOLOCK_CONFIG" ]; then
+        _v=$(jq -r ".$_key // empty" "$AUTOLOCK_CONFIG" 2>/dev/null)
+        if [ -n "$_v" ] && [ "$_v" != "null" ]; then
+            printf '%s' "$_v"
+            return
+        fi
+    fi
+    printf '%s' "$_default"
+}
+
+# --- Helper: read signal metrics from poller cache --------------------------
+read_signal() {
+    if [ ! -f "$STATUS_CACHE" ]; then
+        rsrp=""
+        sinr=""
+        pci=""
+        earfcn=""
+        rat=""
+        return 1
+    fi
+    rsrp=$(jq -r '.signal.rsrp // empty' "$STATUS_CACHE" 2>/dev/null)
+    sinr=$(jq -r '.signal.sinr // empty' "$STATUS_CACHE" 2>/dev/null)
+    pci=$(jq -r '.serving_cell.pci // empty' "$STATUS_CACHE" 2>/dev/null)
+    earfcn=$(jq -r '.serving_cell.earfcn // empty' "$STATUS_CACHE" 2>/dev/null)
+    rat=$(jq -r '.network.access_tech // empty' "$STATUS_CACHE" 2>/dev/null)
+    [ -n "$rsrp" ] && [ -n "$pci" ]
+}
+
+# --- Helper: write status JSON for UI --------------------------------------
+write_status() {
+    _state="$1"
+    _stable_count="$2"
+    _lost_count="$3"
+    _locked_pci="$4"
+    _locked_earfcn="$5"
+    _msg="$6"
+    _ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null)
+    jq -n \
+        --arg state "$_state" \
+        --argjson stable "${_stable_count:-0}" \
+        --argjson lost "${_lost_count:-0}" \
+        --arg locked_pci "${_locked_pci:-}" \
+        --arg locked_earfcn "${_locked_earfcn:-}" \
+        --arg msg "$_msg" \
+        --arg ts "$_ts" \
+        '{
+            state: $state,
+            stable_count: $stable,
+            lost_count: $lost,
+            locked_pci: (if $locked_pci == "" then null else $locked_pci end),
+            locked_earfcn: (if $locked_earfcn == "" then null else $locked_earfcn end),
+            message: $msg,
+            updated_at: $ts
+        }' > "$STATUS_FILE.tmp" 2>/dev/null \
+        && mv "$STATUS_FILE.tmp" "$STATUS_FILE"
+    chmod 644 "$STATUS_FILE" 2>/dev/null
+}
+
+# --- Helper: compare floats (busybox awk available on Quectel) -------------
+# Returns 0 (true) if a > b, 1 (false) otherwise. Handles negatives.
+gt() { awk -v a="$1" -v b="$2" 'BEGIN { exit (a > b) ? 0 : 1 }'; }
+lt() { awk -v a="$1" -v b="$2" 'BEGIN { exit (a < b) ? 0 : 1 }'; }
+
+# =============================================================================
+# Main state machine
+# =============================================================================
+main() {
+    qlog_info "=========================================="
+    qlog_info "QManager-VN auto-cell-lock starting"
+    qlog_info "=========================================="
+
+    # Read thresholds from config
+    rsrp_stable=$(config_get "thresholds.rsrp_stable" "$DEFAULT_RSRP_STABLE")
+    sinr_stable=$(config_get "thresholds.sinr_stable" "$DEFAULT_SINR_STABLE")
+    rsrp_lost=$(config_get "thresholds.rsrp_lost" "$DEFAULT_RSRP_LOST")
+    samples=$(config_get "thresholds.samples" "$DEFAULT_SAMPLES")
+
+    qlog_info "Thresholds: stable RSRP>${rsrp_stable} SINR>${sinr_stable}, lost RSRP<${rsrp_lost}, samples=${samples}"
+
+    state="watching"
+    stable_count=0
+    lost_count=0
+    locked_pci=""
+    locked_earfcn=""
+
+    write_status "$state" "0" "0" "" "" "Watching for stable signal"
+
+    while true; do
+        # Refresh enabled flag (user may disable mid-run via UI)
+        enabled=$(config_get "enabled" "false")
+        if [ "$enabled" != "true" ]; then
+            qlog_info "Disabled via config — exiting"
+            write_status "idle" "0" "0" "" "" "Auto-lock disabled"
+            exit 0
+        fi
+
+        if ! read_signal; then
+            qlog_debug "No signal data yet, waiting"
+            sleep "$POLL_INTERVAL"
+            continue
+        fi
+
+        case "$state" in
+            watching)
+                if gt "$rsrp" "$rsrp_stable" && gt "$sinr" "$sinr_stable"; then
+                    stable_count=$((stable_count + 1))
+                    qlog_debug "Stable sample $stable_count/$samples (RSRP=$rsrp SINR=$sinr PCI=$pci)"
+                    write_status "watching" "$stable_count" "0" "" "" \
+                        "Stable for ${stable_count}/${samples} samples on PCI=${pci}"
+                    if [ "$stable_count" -ge "$samples" ]; then
+                        # Apply lock based on RAT
+                        case "$rat" in
+                            *NR*SA*|*5G*SA*)
+                                # NR-SA lock needs arfcn + scs + band — not all in cache. Skip if missing.
+                                arfcn=$(jq -r '.serving_cell.arfcn // empty' "$STATUS_CACHE" 2>/dev/null)
+                                scs=$(jq -r '.serving_cell.scs // empty' "$STATUS_CACHE" 2>/dev/null)
+                                band=$(jq -r '.serving_cell.band // empty' "$STATUS_CACHE" 2>/dev/null)
+                                if [ -n "$arfcn" ] && [ -n "$scs" ] && [ -n "$band" ]; then
+                                    if tower_lock_nr "$pci" "$arfcn" "$scs" "$band"; then
+                                        qlog_info "Auto-locked NR-SA: PCI=$pci ARFCN=$arfcn"
+                                        locked_pci="$pci"
+                                        locked_earfcn="$arfcn"
+                                        state="locked"
+                                    else
+                                        qlog_warn "tower_lock_nr failed, retrying watching"
+                                        stable_count=0
+                                    fi
+                                else
+                                    qlog_debug "NR-SA params incomplete, can't lock yet"
+                                    stable_count=0
+                                fi
+                                ;;
+                            *)
+                                # LTE lock (also handles NSA — anchor is LTE)
+                                if tower_lock_lte 1 "$earfcn:$pci"; then
+                                    qlog_info "Auto-locked LTE: EARFCN=$earfcn PCI=$pci"
+                                    locked_pci="$pci"
+                                    locked_earfcn="$earfcn"
+                                    state="locked"
+                                else
+                                    qlog_warn "tower_lock_lte failed, retrying watching"
+                                    stable_count=0
+                                fi
+                                ;;
+                        esac
+                        write_status "$state" "$stable_count" "0" "$locked_pci" "$locked_earfcn" \
+                            "Locked to PCI=${locked_pci} EARFCN=${locked_earfcn}"
+                    fi
+                else
+                    if [ "$stable_count" -gt 0 ]; then
+                        qlog_debug "Stability broken (RSRP=$rsrp SINR=$sinr), resetting count"
+                    fi
+                    stable_count=0
+                    write_status "watching" "0" "0" "" "" \
+                        "Waiting for stable signal (RSRP=${rsrp} SINR=${sinr})"
+                fi
+                ;;
+
+            locked)
+                if lt "$rsrp" "$rsrp_lost"; then
+                    lost_count=$((lost_count + 1))
+                    qlog_debug "Lost sample $lost_count/$samples (RSRP=$rsrp)"
+                    write_status "signal-lost" "0" "$lost_count" "$locked_pci" "$locked_earfcn" \
+                        "Signal degrading: ${lost_count}/${samples}"
+                    if [ "$lost_count" -ge "$samples" ]; then
+                        # Unlock both — cheap, idempotent
+                        tower_unlock_lte 2>/dev/null
+                        tower_unlock_nr 2>/dev/null
+                        qlog_info "Auto-unlocked due to signal loss (RSRP=$rsrp)"
+                        state="watching"
+                        stable_count=0
+                        lost_count=0
+                        locked_pci=""
+                        locked_earfcn=""
+                        write_status "$state" "0" "0" "" "" "Released lock, watching"
+                    fi
+                else
+                    if [ "$lost_count" -gt 0 ]; then
+                        qlog_debug "Signal recovered (RSRP=$rsrp), resetting lost count"
+                    fi
+                    lost_count=0
+                fi
+                ;;
+        esac
+
+        sleep "$POLL_INTERVAL"
+    done
+}
+
+main

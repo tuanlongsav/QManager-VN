@@ -6,6 +6,7 @@ import TowerLockingSettingsComponent from "@/components/cellular/tower-locking/t
 import ScheduleTowerLockingComponent from "./schedule-locking";
 import LTELockingComponent from "./lte-locking";
 import NRSALockingComponent from "./nr-sa-locking";
+import { AutolockCard } from "./autolock-card";
 import { useTowerLocking } from "@/hooks/use-tower-locking";
 import { useModemStatus } from "@/hooks/use-modem-status";
 
@@ -86,6 +87,9 @@ const TowerLockingComponent = () => {
             onUnlock={() => tower.unlockNrSa()}
           />
         </div>
+
+        {/* QManager-VN: auto cell-lock daemon (Phase E.1) */}
+        <AutolockCard />
       </div>
     </div>
   );

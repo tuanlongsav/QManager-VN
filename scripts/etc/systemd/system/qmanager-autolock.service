@@ -1,0 +1,26 @@
+# /lib/systemd/system/qmanager-autolock.service
+#
+# Auto cell-lock state machine (QManager-VN). Gated on
+# /etc/qmanager/autolock.json's `enabled` field — installer does NOT
+# auto-enable; user toggles via UI.
+#
+# Reads signal metrics from the poller's status cache
+# (/tmp/qmanager_status.json) so it doesn't compete with qcmd for the AT
+# device lock during read.
+[Unit]
+Description=QManager-VN Auto Cell-Lock State Machine
+After=qmanager-poller.service
+Wants=qmanager-poller.service
+ConditionPathExists=/etc/qmanager/autolock.json
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/qmanager_autolock
+Restart=on-failure
+RestartSec=30
+# Low-overhead daemon (sleep 5 between samples, simple JSON I/O).
+# Memory cap as a guard — typical usage is < 2 MB.
+MemoryMax=8M
+
+[Install]
+WantedBy=multi-user.target

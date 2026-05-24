@@ -105,7 +105,7 @@ SSH_BOOTSTRAP_STATUS="not_run"
 LOG_FILE="/tmp/qmanager_install.log"
 
 # Services gated on config: only re-enable if they were already enabled
-UCI_GATED_SERVICES="qmanager-watchcat qmanager-tower-failover"
+UCI_GATED_SERVICES="qmanager-watchcat qmanager-tower-failover qmanager-autolock"
 
 # Conflict packages that must be removed before installing
 CONFLICT_PACKAGES="socat socat-at-bridge"
