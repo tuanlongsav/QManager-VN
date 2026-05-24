@@ -6,6 +6,7 @@ import { MailIcon } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useSms } from "@/hooks/use-sms";
+import { useT } from "@/hooks/use-i18n";
 import { cn } from "@/lib/utils";
 
 interface SmsReceivedWidgetProps {
@@ -23,6 +24,7 @@ interface SmsReceivedWidgetProps {
 
 export function SmsReceivedWidget({ className }: SmsReceivedWidgetProps) {
   const { data, isLoading } = useSms();
+  const { t } = useT();
   const count = data?.messages?.length ?? 0;
 
   const body = (
@@ -40,7 +42,7 @@ export function SmsReceivedWidget({ className }: SmsReceivedWidgetProps) {
         <div className="text-4xl font-bold tabular-nums">{count}</div>
       )}
       <div className="text-sm font-semibold uppercase tracking-wide text-muted-foreground mt-2">
-        SMS Received
+        {t("dashboard.smsReceived")}
       </div>
     </Card>
   );

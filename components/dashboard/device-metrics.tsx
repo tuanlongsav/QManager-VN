@@ -57,6 +57,7 @@ import {
 import { useUnitPreferences } from "@/hooks/use-system-settings";
 import { useDataUsed } from "@/hooks/use-data-used";
 import { useModemSubsys } from "@/hooks/use-modem-subsys";
+import { useT } from "@/hooks/use-i18n";
 
 interface DeviceMetricsComponentProps {
   deviceData: DeviceStatus | null;
@@ -77,6 +78,7 @@ const DeviceMetricsComponent = ({
   nrData,
   isLoading,
 }: DeviceMetricsComponentProps) => {
+  const { t } = useT();
   const unitPrefs = useUnitPreferences();
   const temp = deviceData?.temperature ?? null;
   const cpu = deviceData?.cpu_usage ?? null;
@@ -122,7 +124,7 @@ const DeviceMetricsComponent = ({
       <Card className="@container/card">
         <CardHeader className="-mb-4">
           <CardTitle className="text-lg font-semibold">
-            System Health
+            {t("dashboard.systemHealth")}
           </CardTitle>
         </CardHeader>
         <CardContent>
@@ -155,12 +157,12 @@ const DeviceMetricsComponent = ({
           <DialogTrigger asChild>
             <Button variant="outline" size="sm" className="h-8">
               <StethoscopeIcon className="size-4" />
-              Run Diagnostics
+              {t("dashboard.runDiagnostics")}
             </Button>
           </DialogTrigger>
           <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
             <DialogHeader>
-              <DialogTitle>System Diagnostics</DialogTitle>
+              <DialogTitle>{t("dashboard.systemDiagnostics")}</DialogTitle>
             </DialogHeader>
             <SystemHealthCheck />
           </DialogContent>

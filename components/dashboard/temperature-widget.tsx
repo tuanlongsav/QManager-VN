@@ -4,6 +4,7 @@ import { ThermometerIcon } from "lucide-react";
 
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { useT } from "@/hooks/use-i18n";
 import { cn } from "@/lib/utils";
 
 interface TemperatureWidgetProps {
@@ -44,6 +45,7 @@ export function TemperatureWidget({
   isLoading,
   className,
 }: TemperatureWidgetProps) {
+  const { t } = useT();
   if (isLoading && temperature === null) {
     return (
       <Card className={cn("p-6 flex flex-col items-center justify-center min-h-[200px] h-full", className)}>
@@ -69,7 +71,7 @@ export function TemperatureWidget({
         {temperature !== null ? `${Math.round(temperature)} °C` : "—"}
       </div>
       <div className="text-sm font-semibold uppercase tracking-wide text-muted-foreground mt-2">
-        Temperature
+        {t("dashboard.temperature")}
       </div>
     </Card>
   );

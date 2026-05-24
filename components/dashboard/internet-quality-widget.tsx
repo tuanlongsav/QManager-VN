@@ -10,6 +10,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { getLatencyQuality, type ConnectivityStatus } from "@/types/modem-status";
+import { useT } from "@/hooks/use-i18n";
 import { cn } from "@/lib/utils";
 
 interface InternetQualityWidgetProps {
@@ -36,13 +37,13 @@ interface InternetQualityWidgetProps {
 
 type Tier = "excellent" | "good" | "fair" | "poor" | "none" | "offline";
 
-const TIER_LABEL: Record<Tier, string> = {
-  excellent: "Excellent",
-  good: "Good",
-  fair: "Fair",
-  poor: "Poor",
-  none: "No data",
-  offline: "Offline",
+const TIER_I18N_KEY: Record<Tier, string> = {
+  excellent: "dashboard.qualityExcellent",
+  good: "dashboard.qualityGood",
+  fair: "dashboard.qualityFair",
+  poor: "dashboard.qualityPoor",
+  none: "dashboard.qualityNoData",
+  offline: "dashboard.qualityOffline",
 };
 
 const TIER_CLASSES: Record<Tier, string> = {
@@ -66,6 +67,7 @@ export function InternetQualityWidget({
   isLoading,
   className,
 }: InternetQualityWidgetProps) {
+  const { t } = useT();
   if (isLoading && !connectivity) {
     return (
       <Card className={cn("p-6 flex flex-col items-center justify-center min-h-[200px] h-full", className)}>
@@ -87,10 +89,10 @@ export function InternetQualityWidget({
 
   const subText =
     tier === "offline"
-      ? "No internet"
+      ? t("dashboard.noInternet")
       : tier === "none"
-      ? "Awaiting samples"
-      : `avg ${Math.round(avgLatency!)} ms`;
+      ? t("dashboard.awaitingSamples")
+      : t("dashboard.avgLatency", { value: Math.round(avgLatency!) });
 
   // Tooltip detail uses the full connectivity object so the user can see
   // jitter / packet loss / sample size without leaving the dashboard.
@@ -115,7 +117,7 @@ export function InternetQualityWidget({
         >
           <Icon className={cn("size-12 mb-3", tierClass)} />
           <div className={cn("text-4xl font-bold", tierClass)}>
-            {TIER_LABEL[tier]}
+            {t(TIER_I18N_KEY[tier])}
           </div>
           <div className="text-sm font-semibold uppercase tracking-wide text-muted-foreground mt-2">
             {subText}

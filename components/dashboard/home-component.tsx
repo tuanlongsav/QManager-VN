@@ -4,6 +4,7 @@ import React from "react";
 import { motion, type Variants } from "motion/react";
 import { useModemStatus } from "@/hooks/use-modem-status";
 import { useAboutDevice } from "@/hooks/use-about-device";
+import { useT } from "@/hooks/use-i18n";
 import { NetworkStatusCompact } from "./network-status-compact";
 import { TemperatureWidget } from "./temperature-widget";
 import { SmsReceivedWidget } from "./sms-received-widget";
@@ -36,6 +37,7 @@ const HomeComponent = () => {
   const [pollInterval, setPollInterval] = React.useState<number>(DEFAULT_POLL_MS);
   const { data, isLoading, isStale, error } = useModemStatus({ pollInterval });
   const { data: aboutDevice } = useAboutDevice();
+  const { t } = useT();
 
   const daemonIntervalSec = data?.connectivity?.history_interval_sec;
   React.useEffect(() => {
@@ -50,7 +52,7 @@ const HomeComponent = () => {
     <div className="grid grid-cols-1 gap-6 px-4 lg:px-6" aria-live="polite" aria-atomic="false">
       {error && !isLoading && (
         <div role="alert" className="rounded-lg bg-destructive/10 px-4 py-3 text-sm text-destructive">
-          Unable to reach the modem. Data shown may be outdated.
+          {t("dashboard.modemUnreachable")}
         </div>
       )}
 
@@ -104,8 +106,8 @@ const HomeComponent = () => {
       >
         <motion.div variants={itemVariants} className="h-full *:data-[slot=card]:h-full">
           <RatPrimaryCard
-            title="4G Primary Status"
-            description="Carrier components đang phục vụ trên LTE."
+            title={t("dashboard.fourGPrimary")}
+            description={t("dashboard.fourGDescription")}
             carrierComponents={data?.network?.carrier_components ?? null}
             technology="LTE"
             isLoading={isLoading}
@@ -113,8 +115,8 @@ const HomeComponent = () => {
         </motion.div>
         <motion.div variants={itemVariants} className="h-full *:data-[slot=card]:h-full">
           <RatPrimaryCard
-            title="5G Primary Status"
-            description="Carrier components đang phục vụ trên NR."
+            title={t("dashboard.fiveGPrimary")}
+            description={t("dashboard.fiveGDescription")}
             carrierComponents={data?.network?.carrier_components ?? null}
             technology="NR"
             isLoading={isLoading}

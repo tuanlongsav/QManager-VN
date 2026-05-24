@@ -17,6 +17,7 @@ import {
   type ConnectivityStatus,
 } from "@/types/modem-status";
 import type { AboutDeviceData } from "@/types/about-device";
+import { useT } from "@/hooks/use-i18n";
 import { cn } from "@/lib/utils";
 
 interface NetworkStatusCompactProps {
@@ -63,17 +64,17 @@ function pickRatIcon(type: string, caActive: boolean, isAirplane: boolean) {
   }
 }
 
-function ratLabel(type: string, caActive: boolean, isAirplane: boolean): string {
-  if (isAirplane) return "Low Power";
+function ratLabelKey(type: string, caActive: boolean, isAirplane: boolean): string {
+  if (isAirplane) return "dashboard.ratLowPower";
   switch (type) {
     case "5G-SA":
-      return "5G Standalone";
+      return "dashboard.ratStandalone";
     case "5G-NSA":
-      return "5G + LTE";
+      return "dashboard.ratNsa";
     case "LTE":
-      return caActive ? "LTE+" : "LTE";
+      return caActive ? "dashboard.ratLtePlus" : "dashboard.ratLte";
     default:
-      return "No 4G/5G";
+      return "dashboard.ratNoSignal";
   }
 }
 
@@ -86,6 +87,7 @@ export function NetworkStatusCompact({
   isLoading,
   className,
 }: NetworkStatusCompactProps) {
+  const { t } = useT();
   const isAirplane = network?.cfun === 0 || network?.cfun === 4;
   const radioOn = modemReachable && !isAirplane;
   const hasNetwork =
@@ -157,7 +159,7 @@ export function NetworkStatusCompact({
         {carrier}
       </div>
       <div className="text-sm font-semibold uppercase tracking-wide text-muted-foreground mt-2">
-        {ratLabel(rat, caActive, isAirplane)}
+        {t(ratLabelKey(rat, caActive, isAirplane))}
       </div>
 
       {/* Public IP + Uptime — same size as other widgets' "Temperature" /
@@ -167,7 +169,7 @@ export function NetworkStatusCompact({
           <GlobeIcon className="size-4" />
           <span className="font-mono">{publicIp}</span>
         </div>
-        <div>up {uptime}</div>
+        <div>{t("dashboard.uptimePrefix")} {uptime}</div>
       </div>
     </Card>
   );
