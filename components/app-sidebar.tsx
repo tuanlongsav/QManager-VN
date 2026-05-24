@@ -11,7 +11,6 @@ import {
   DogIcon,
   RouterIcon,
   User2Icon,
-  HeartIcon,
   ScanIcon,
   SettingsIcon,
   DownloadIcon,
@@ -27,7 +26,6 @@ import { NavUser } from "@/components/nav-user";
 import { NavMonitoring } from "@/components/nav-monitoring";
 import { NavCellular } from "@/components/nav-cellular";
 import { NavSystem } from "@/components/nav-system";
-import DonateDialog from "@/components/donate-dialog";
 import {
   Sidebar,
   SidebarContent,
@@ -41,6 +39,7 @@ import Image from "next/image";
 import Link from "next/link";
 
 import { LanguageToggle } from "@/components/language-toggle";
+import { ThemeToggle } from "@/components/theme-toggle";
 import { useT } from "@/hooks/use-i18n";
 
 // Static, untranslated user metadata. Title strings are translated below
@@ -88,9 +87,6 @@ function buildData(t: (k: string) => string) {
     navSecondary: [
       { title: t("sidebar.aboutDevice"), url: "/about-device", icon: RouterIcon },
       { title: t("sidebar.support"), url: "/support", icon: LifeBuoy },
-      // Donate slot retains the English key as the matcher in the onClick
-      // wiring below (see line further down). The visible label is translated.
-      { title: t("sidebar.donate"), url: "#", icon: HeartIcon },
     ],
     cellular: [
       {
@@ -198,17 +194,8 @@ function buildData(t: (k: string) => string) {
 }
 
 export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
-  const [donateOpen, setDonateOpen] = React.useState(false);
   const { t } = useT();
   const data = React.useMemo(() => buildData(t), [t]);
-
-  // The donate slot is matched by its translated label OR the fixed url "#".
-  // Using url is more robust across languages than label equality.
-  const navSecondaryItems = data.navSecondary.map((item) =>
-    item.url === "#"
-      ? { ...item, onClick: () => setDonateOpen(true) }
-      : item,
-  );
 
   return (
     <Sidebar variant="inset" {...props}>
@@ -232,10 +219,10 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
                   </div>
                 </Link>
               </SidebarMenuButton>
-              {/* Language toggle (QManager-VN F.3.B) — flag dropdown switching
-                  English / Vietnamese. Placed next to the QManager Admin
-                  header per user request. */}
+              {/* Language + Theme toggles sit next to the QManager Admin
+                  header — two quick chrome controls grouped together. */}
               <LanguageToggle compact />
+              <ThemeToggle compact />
             </div>
           </SidebarMenuItem>
         </SidebarMenu>
@@ -246,12 +233,11 @@ export function AppSidebar({ ...props }: React.ComponentProps<typeof Sidebar>) {
         <NavLocalNetwork localNetwork={data.localNetwork} />
         <NavMonitoring monitoring={data.monitoring} />
         <NavSystem system={data.system} />
-        <NavSecondary items={navSecondaryItems} className="mt-auto" />
+        <NavSecondary items={data.navSecondary} className="mt-auto" />
       </SidebarContent>
       <SidebarFooter>
         <NavUser user={data.user} />
       </SidebarFooter>
-      <DonateDialog open={donateOpen} onOpenChange={setDonateOpen} />
     </Sidebar>
   );
 }

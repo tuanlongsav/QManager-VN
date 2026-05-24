@@ -11,6 +11,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import QManagerLogo from "@/public/qmanager-logo.svg";
 import packageJson from "@/package.json";
+import { useT } from "@/hooks/use-i18n";
 
 import type { AboutDeviceData } from "@/types/about-device";
 
@@ -24,22 +25,21 @@ interface AboutQManagerCardProps {
 }
 
 const AboutQManagerCard = ({ data, isLoading }: AboutQManagerCardProps) => {
+  const { t } = useT();
   const networkRows = [
-    { label: "Device IP", value: data?.network.device_ip },
-    { label: "LAN Gateway", value: data?.network.lan_gateway },
-    { label: "WWAN IPv4", value: data?.network.wan_ipv4 },
-    { label: "WWAN IPv6", value: data?.network.wan_ipv6 },
-    { label: "Public IPv4", value: data?.network.public_ipv4 },
-    { label: "Public IPv6", value: data?.network.public_ipv6 },
+    { label: t("aboutDevice.deviceIp"), value: data?.network.device_ip },
+    { label: t("aboutDevice.lanGateway"), value: data?.network.lan_gateway },
+    { label: t("aboutDevice.wwanIpv4"), value: data?.network.wan_ipv4 },
+    { label: t("aboutDevice.wwanIpv6"), value: data?.network.wan_ipv6 },
+    { label: t("aboutDevice.publicIpv4"), value: data?.network.public_ipv4 },
+    { label: t("aboutDevice.publicIpv6"), value: data?.network.public_ipv6 },
   ];
 
   return (
     <Card className="@container/card">
       <CardHeader>
-        <CardTitle className="text-2xl font-semibold">About QManager</CardTitle>
-        <CardDescription>
-          Modem management interface for Quectel modems.
-        </CardDescription>
+        <CardTitle className="text-2xl font-semibold">{t("aboutDevice.aboutQManagerTitle")}</CardTitle>
+        <CardDescription>{t("aboutDevice.aboutQManagerDescription")}</CardDescription>
       </CardHeader>
       <CardContent>
         <div className="grid gap-6">
@@ -56,32 +56,24 @@ const AboutQManagerCard = ({ data, isLoading }: AboutQManagerCardProps) => {
           {/* Description */}
           <div className="grid gap-y-4">
             <p className="text-sm text-muted-foreground text-pretty leading-relaxed font-medium">
-              Hey there! Rus here. QManager is the latest iteration of
-              QuecManager, built with a newer and more reliable approach
-              compared to its predecessor &mdash; while still combining
-              technical settings for advanced users with a simplified UI for
-              those just getting started. QManager promises to deliver the same
-              features QuecManager had, only better, more reliable, and more
-              user-friendly. Special thanks to iamromulan, clndwhr, and Wutang
-              Clan! If you like this project, any kind of support is much
-              appreciated. Thanks!
+              {t("aboutDevice.aboutQManagerBody")}
             </p>
 
             {/* All rights reserved */}
             <p className="text-sm text-muted-foreground text-center">
-              © {new Date().getFullYear()} QManager. All rights reserved.
+              {t("aboutDevice.copyright", { year: new Date().getFullYear() })}
             </p>
           </div>
 
           {/* QManager version */}
           <div>
             <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2">
-              QManager
+              {t("aboutDevice.qmanagerSection")}
             </h3>
             <dl className="grid divide-y divide-border border-y border-border">
               <div className="flex items-center justify-between py-2">
                 <dt className="text-sm font-semibold text-muted-foreground">
-                  Version
+                  {t("aboutDevice.version")}
                 </dt>
                 <dd className="text-sm font-semibold tabular-nums">
                   {packageJson.version}
@@ -93,7 +85,7 @@ const AboutQManagerCard = ({ data, isLoading }: AboutQManagerCardProps) => {
           {/* Network info */}
           <div>
             <h3 className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-2">
-              Network
+              {t("aboutDevice.networkSection")}
             </h3>
             <dl className="grid divide-y divide-border border-y border-border">
               {isLoading

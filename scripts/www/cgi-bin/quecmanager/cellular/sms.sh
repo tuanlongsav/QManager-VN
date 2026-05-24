@@ -28,6 +28,14 @@ cgi_handle_options
 SMS_TOOL="/usr/bin/sms_tool"
 AT_DEVICE="/dev/smd11"
 LOCK_FILE="/tmp/qmanager_at.lock"
+OUTBOX_FILE="/usrdata/qmanager/sent_sms.json"
+OUTBOX_MAX=100
+
+# Ensure UTF-8 locale so jq / printf / iconv pipelines preserve multi-byte
+# bytes correctly. Without this BusyBox can default to POSIX/C and silently
+# mangle 2-byte UTF-8 sequences (Vietnamese à/ò/À show up as � in browser).
+export LC_ALL=C.UTF-8 2>/dev/null
+export LANG=C.UTF-8 2>/dev/null
 
 # --- flock with timeout (BusyBox compatible) ---------------------------------
 # BusyBox flock lacks -w (timeout). Polls with -n (non-blocking) in a loop.
@@ -294,9 +302,29 @@ normalize_phone() {
 }
 
 # =============================================================================
-# GET — Fetch inbox messages + storage status
+# GET — Fetch inbox or outbox messages + storage status
+# =============================================================================
+# Routing: ?folder=outbox returns the locally-stored sent SMS log instead of
+# the modem inbox. Default (no query / folder=inbox) preserves legacy behavior.
 # =============================================================================
 if [ "$REQUEST_METHOD" = "GET" ]; then
+    FOLDER=$(printf '%s' "$QUERY_STRING" | sed -n 's/.*folder=\([^&]*\).*/\1/p')
+    [ -z "$FOLDER" ] && FOLDER="inbox"
+
+    # ---- Outbox branch — read /usrdata/qmanager/sent_sms.json ----------------
+    if [ "$FOLDER" = "outbox" ]; then
+        qlog_info "Fetching SMS outbox"
+        if [ -f "$OUTBOX_FILE" ]; then
+            messages=$(jq -c '.messages // []' "$OUTBOX_FILE" 2>/dev/null)
+            [ -z "$messages" ] && messages='[]'
+        else
+            messages='[]'
+        fi
+        jq -n --argjson messages "$messages" \
+            '{success:true, messages:$messages, storage:{used:0,total:0}, folder:"outbox"}'
+        exit 0
+    fi
+
     qlog_info "Fetching SMS inbox and status"
 
     # 1. Fetch raw messages via sms_tool (handles PDU decoding + multi-part info)
@@ -307,6 +335,15 @@ if [ "$REQUEST_METHOD" = "GET" ]; then
         qlog_error "SMS recv: could not acquire lock"
         jq -n '{"success":false,"error":"modem_busy","detail":"Could not acquire AT lock"}'
         exit 0
+    fi
+
+    # 1b. Sanitize encoding — sms_tool sometimes outputs Latin-1/Windows-1252
+    # single bytes for 2-byte UTF-8 chars (Vietnamese à/ò/À), producing � in
+    # the browser. If raw_json is valid UTF-8 already, this is a no-op;
+    # otherwise we decode it from Windows-1252 (Latin-1 superset) to UTF-8.
+    if [ -n "$raw_json" ] && ! printf '%s' "$raw_json" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1; then
+        fixed=$(printf '%s' "$raw_json" | iconv -f WINDOWS-1252 -t UTF-8 2>/dev/null)
+        [ -n "$fixed" ] && raw_json="$fixed"
     fi
 
     # 2. Merge multi-part messages by reference, collect indexes for deletion
@@ -349,7 +386,8 @@ if [ "$REQUEST_METHOD" = "GET" ]; then
             storage: {
                 used: $used,
                 total: $total
-            }
+            },
+            folder: "inbox"
         }'
     exit 0
 fi
@@ -397,6 +435,33 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
 
         if [ "$sms_rc" -eq 0 ]; then
             qlog_info "SMS sent successfully to $PHONE"
+
+            # Append to outbox file (atomic write via tmp + mv).
+            # Cap to OUTBOX_MAX most recent entries to keep file size bounded.
+            mkdir -p "$(dirname "$OUTBOX_FILE")" 2>/dev/null
+            if [ ! -f "$OUTBOX_FILE" ]; then
+                printf '%s\n' '{"messages":[],"next_id":1}' > "$OUTBOX_FILE"
+            fi
+            TIMESTAMP=$(date '+%y/%m/%d,%H:%M:%S')
+            jq --arg recipient "$RAW_PHONE" \
+               --arg content "$MESSAGE" \
+               --arg ts "$TIMESTAMP" \
+               --argjson maxn "$OUTBOX_MAX" \
+               '
+                  (.next_id // ((.messages // [] | length) + 1)) as $idx
+                  | .messages = ((.messages // []) + [{
+                        index: $idx,
+                        indexes: [$idx],
+                        sender: $recipient,
+                        content: $content,
+                        timestamp: $ts
+                  }] | .[-$maxn:])
+                  | .next_id = ($idx + 1)
+               ' \
+               "$OUTBOX_FILE" > "$OUTBOX_FILE.tmp" 2>/dev/null && \
+               mv "$OUTBOX_FILE.tmp" "$OUTBOX_FILE"
+            rm -f "$OUTBOX_FILE.tmp" 2>/dev/null
+
             cgi_success
         else
             qlog_error "SMS send failed to $PHONE (rc=$sms_rc): $result"
@@ -408,12 +473,27 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
 
     # --- action: delete ------------------------------------------------------
     # Accepts "indexes": [n, ...] — deletes all storage slots for a (possibly
-    # merged multi-part) message.
+    # merged multi-part) message. Set "folder":"outbox" to remove entries from
+    # the local sent-SMS log instead of touching the modem.
     if [ "$ACTION" = "delete" ]; then
+        FOLDER=$(printf '%s' "$POST_DATA" | jq -r '.folder // "inbox"')
         INDEXES_JSON=$(printf '%s' "$POST_DATA" | jq -c '.indexes // empty' 2>/dev/null)
 
         if [ -z "$INDEXES_JSON" ] || [ "$INDEXES_JSON" = "null" ]; then
             cgi_error "missing_indexes" "indexes array is required"
+            exit 0
+        fi
+
+        if [ "$FOLDER" = "outbox" ]; then
+            qlog_info "Deleting outbox indexes: $INDEXES_JSON"
+            if [ -f "$OUTBOX_FILE" ]; then
+                jq --argjson drop "$INDEXES_JSON" \
+                   '.messages = ((.messages // []) | map(select(.index as $i | ($drop | index($i)) | not)))' \
+                   "$OUTBOX_FILE" > "$OUTBOX_FILE.tmp" 2>/dev/null && \
+                   mv "$OUTBOX_FILE.tmp" "$OUTBOX_FILE"
+                rm -f "$OUTBOX_FILE.tmp" 2>/dev/null
+            fi
+            cgi_success
             exit 0
         fi
 
@@ -443,6 +523,17 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
 
     # --- action: delete_all --------------------------------------------------
     if [ "$ACTION" = "delete_all" ]; then
+        FOLDER=$(printf '%s' "$POST_DATA" | jq -r '.folder // "inbox"')
+
+        if [ "$FOLDER" = "outbox" ]; then
+            qlog_info "Clearing all outbox messages"
+            if [ -f "$OUTBOX_FILE" ]; then
+                printf '%s\n' '{"messages":[],"next_id":1}' > "$OUTBOX_FILE"
+            fi
+            cgi_success
+            exit 0
+        fi
+
         qlog_info "Deleting all SMS messages"
         result=$(qcmd "AT+CMGD=1,4" 2>&1)
 

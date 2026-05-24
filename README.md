@@ -5,7 +5,7 @@
   <h3>Quectel modem manager — tối giản, VN-localized</h3>
   <p>Fork cá nhân của <a href="https://github.com/dr-dolomite/QManager-RM520N">dr-dolomite/QManager-RM520N</a>, tối ưu cho Việt Nam và mở rộng hỗ trợ họ modem SDXLEMUR (Qualcomm SDX62)</p>
 
-  ![Version](https://img.shields.io/badge/version-v0.1.0--vn-blue?style=flat-square)
+  ![Version](https://img.shields.io/badge/version-v0.5.0--vn-blue?style=flat-square)
   ![License](https://img.shields.io/badge/license-MIT%20%2B%20Commons%20Clause-green?style=flat-square)
   ![Platform](https://img.shields.io/badge/platform-SDXLEMUR-orange?style=flat-square)
   ![Next.js](https://img.shields.io/badge/Next.js-16-black?style=flat-square)

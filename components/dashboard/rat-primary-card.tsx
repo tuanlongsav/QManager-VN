@@ -38,6 +38,7 @@ import {
   getValueColorClass,
   getQualityLabel,
 } from "./signal-card-utils";
+import { useT } from "@/hooks/use-i18n";
 import { cn } from "@/lib/utils";
 
 // =============================================================================
@@ -151,6 +152,8 @@ export function RatPrimaryCard({
   technology,
   isLoading,
 }: RatPrimaryCardProps) {
+  const { t } = useT();
+
   if (isLoading) {
     return (
       <Card className="@container/card h-full">
@@ -178,15 +181,15 @@ export function RatPrimaryCard({
           <CardDescription>
             {description ??
               (technology === "NR"
-                ? "No active 5G carrier."
-                : "No active LTE carrier.")}
+                ? t("dashboard.noNrCarrier")
+                : t("dashboard.noLteCarrier"))}
           </CardDescription>
         </CardHeader>
         <CardContent>
           <p className="text-sm text-muted-foreground text-center py-6">
             {technology === "NR"
-              ? "Modem chưa kết nối NR. Carrier aggregation cập nhật mỗi ~30 giây."
-              : "Modem chưa kết nối LTE. Carrier aggregation cập nhật mỗi ~30 giây."}
+              ? t("dashboard.nrPending")
+              : t("dashboard.ltePending")}
           </p>
         </CardContent>
       </Card>
@@ -199,8 +202,10 @@ export function RatPrimaryCard({
         <CardTitle>{title}</CardTitle>
         <CardDescription>
           {description ??
-            `${components.length} active carrier${components.length !== 1 ? "s" : ""}. ` +
-              "Expand to see detailed signal metrics."}
+            t("dashboard.carriersActive", {
+              count: components.length,
+              plural: components.length !== 1 ? "s" : "",
+            })}
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -289,11 +294,11 @@ export function RatPrimaryCard({
                           />
                         )}
                         <InfoRow
-                          label="Band Name"
+                          label={t("accordion.bandName")}
                           value={getBandName(cc.band, cc.technology)}
                         />
                         <InfoRow
-                          label="UL Frequency"
+                          label={t("accordion.ulFrequency")}
                           value={
                             cc.earfcn !== null
                               ? formatFrequency(
@@ -303,7 +308,7 @@ export function RatPrimaryCard({
                           }
                         />
                         <InfoRow
-                          label="DL Frequency"
+                          label={t("accordion.dlFrequency")}
                           value={
                             cc.earfcn !== null
                               ? formatFrequency(
@@ -313,13 +318,13 @@ export function RatPrimaryCard({
                           }
                         />
                         <InfoRow
-                          label="Bandwidth"
+                          label={t("accordion.bandwidth")}
                           value={
                             cc.bandwidth_mhz > 0 ? `${cc.bandwidth_mhz} MHz` : "-"
                           }
                         />
                         <InfoRow
-                          label="PCI"
+                          label={t("accordion.pci")}
                           value={cc.pci !== null ? String(cc.pci) : "-"}
                         />
                       </motion.dl>

@@ -16,6 +16,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
+import { useT } from "@/hooks/use-i18n";
 
 // =============================================================================
 // SmsComposeDialog — Dialog for composing and sending SMS messages
@@ -34,6 +35,7 @@ export default function SmsComposeDialog({
   onSend,
   isSaving,
 }: SmsComposeDialogProps) {
+  const { t } = useT();
   const [phone, setPhone] = React.useState("");
   const [message, setMessage] = React.useState("");
 
@@ -52,12 +54,12 @@ export default function SmsComposeDialog({
 
     const success = await onSend(phone.trim(), message);
     if (success) {
-      toast.success("SMS sent successfully");
+      toast.success(t("smsCenter.composeToastSent"));
       setPhone("");
       setMessage("");
       onOpenChange(false);
     } else {
-      toast.error("Failed to send SMS");
+      toast.error(t("smsCenter.composeToastFailed"));
     }
   };
 
@@ -73,18 +75,16 @@ export default function SmsComposeDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>New Message</DialogTitle>
-          <DialogDescription>
-            Compose and send an SMS message.
-          </DialogDescription>
+          <DialogTitle>{t("smsCenter.composeTitle")}</DialogTitle>
+          <DialogDescription>{t("smsCenter.composeDescription")}</DialogDescription>
         </DialogHeader>
         <form onSubmit={handleSend} className="space-y-4">
           <div className="space-y-2">
-            <Label htmlFor="sms-phone">Phone Number</Label>
+            <Label htmlFor="sms-phone">{t("smsCenter.composeRecipient")}</Label>
             <Input
               id="sms-phone"
               type="tel"
-              placeholder="+1234567890"
+              placeholder={t("smsCenter.composeRecipientPlaceholder")}
               value={phone}
               onChange={(e) => setPhone(e.target.value)}
               disabled={isSaving}
@@ -92,7 +92,7 @@ export default function SmsComposeDialog({
           </div>
           <div className="space-y-2">
             <div className="flex items-center justify-between">
-              <Label htmlFor="sms-message">Message</Label>
+              <Label htmlFor="sms-message">{t("smsCenter.composeMessage")}</Label>
               <span
                 className={`text-xs ${
                   isOverLimit
@@ -108,19 +108,13 @@ export default function SmsComposeDialog({
             </div>
             <Textarea
               id="sms-message"
-              placeholder="Type your message..."
+              placeholder={t("smsCenter.composeMessagePlaceholder")}
               value={message}
               onChange={(e) => setMessage(e.target.value)}
               disabled={isSaving}
               rows={4}
               className="resize-none"
             />
-            {isOverLimit && (
-              <p className="text-xs text-destructive">
-                Message exceeds single SMS limit. It will be sent as multiple
-                parts.
-              </p>
-            )}
           </div>
           <DialogFooter>
             <Button
@@ -129,16 +123,16 @@ export default function SmsComposeDialog({
               onClick={() => onOpenChange(false)}
               disabled={isSaving}
             >
-              Cancel
+              {t("smsCenter.composeCancel")}
             </Button>
             <Button type="submit" disabled={isSaving || !isValid}>
               {isSaving ? (
                 <>
                   <Loader2 className="size-4 animate-spin" />
-                  Sending&hellip;
+                  {t("smsCenter.composeSending")}
                 </>
               ) : (
-                "Send"
+                t("smsCenter.composeSend")
               )}
             </Button>
           </DialogFooter>

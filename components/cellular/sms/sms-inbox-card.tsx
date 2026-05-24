@@ -44,6 +44,11 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import {
+  Tabs,
+  TabsList,
+  TabsTrigger,
+} from "@/components/ui/tabs";
 
 const MotionTableRow = motion.create(TableRow);
 import {
@@ -67,7 +72,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 
-import type { SmsData } from "@/hooks/use-sms";
+import type { SmsData, SmsFolder } from "@/hooks/use-sms";
 import type { SmsMessage } from "@/types/sms";
 import {
   classifySender,
@@ -75,25 +80,28 @@ import {
   isKnownVnBrand,
 } from "@/lib/sms-format";
 import SmsComposeDialog from "./sms-compose-dialog";
+import { useT } from "@/hooks/use-i18n";
 
 // =============================================================================
-// SmsInboxCard — Displays SMS messages in a table with view/delete actions
+// SmsInboxCard — Displays SMS messages in a tabbed Inbox/Outbox card
 // =============================================================================
 
 interface SmsInboxCardProps {
   data: SmsData | null;
+  outbox: SmsData | null;
   isLoading: boolean;
   isSaving: boolean;
   /** Error from the hook (fetch or mutation failure) */
   error: string | null;
   onSend: (phone: string, message: string) => Promise<boolean>;
-  onDelete: (indexes: number[]) => Promise<boolean>;
-  onDeleteAll: () => Promise<boolean>;
+  onDelete: (indexes: number[], folder?: SmsFolder) => Promise<boolean>;
+  onDeleteAll: (folder?: SmsFolder) => Promise<boolean>;
   onRefresh: () => void;
 }
 
 export default function SmsInboxCard({
   data,
+  outbox,
   isLoading,
   isSaving,
   error,
@@ -102,6 +110,8 @@ export default function SmsInboxCard({
   onDeleteAll,
   onRefresh,
 }: SmsInboxCardProps) {
+  const { t } = useT();
+  const [folder, setFolder] = React.useState<SmsFolder>("inbox");
   const [viewMessage, setViewMessage] = React.useState<SmsMessage | null>(null);
   const [deleteTarget, setDeleteTarget] = React.useState<SmsMessage | null>(
     null,
@@ -112,29 +122,38 @@ export default function SmsInboxCard({
   const [showCompose, setShowCompose] = React.useState(false);
   const [rowSelection, setRowSelection] = React.useState<RowSelectionState>({});
 
+  // Reset selection when switching folder so the action buttons reflect the
+  // current view.
+  React.useEffect(() => {
+    setRowSelection({});
+  }, [folder]);
+
+  const isOutbox = folder === "outbox";
+  const activeData = isOutbox ? outbox : data;
+
   const handleDelete = async () => {
     if (!deleteTarget) return;
     setIsDeleting(true);
-    const success = await onDelete(deleteTarget.indexes);
+    const success = await onDelete(deleteTarget.indexes, folder);
     setIsDeleting(false);
     setDeleteTarget(null);
     if (success) {
-      toast.success("Message deleted");
+      toast.success(t("smsCenter.toastDeleted"));
     } else {
-      toast.error("Failed to delete message");
+      toast.error(t("smsCenter.toastDeleteFailed"));
     }
   };
 
   const handleDeleteAll = async () => {
     setIsDeleting(true);
-    const success = await onDeleteAll();
+    const success = await onDeleteAll(folder);
     setIsDeleting(false);
     setShowDeleteAll(false);
     setRowSelection({});
     if (success) {
-      toast.success("All messages deleted");
+      toast.success(t("smsCenter.toastDeletedAll"));
     } else {
-      toast.error("Failed to delete messages");
+      toast.error(t("smsCenter.toastDeleteAllFailed"));
     }
   };
 
@@ -145,16 +164,16 @@ export default function SmsInboxCard({
     setIsDeleting(true);
     // Collect all indexes from all selected messages
     const allIndexes = selectedRows.flatMap((row) => row.original.indexes);
-    const success = await onDelete(allIndexes);
+    const success = await onDelete(allIndexes, folder);
     setIsDeleting(false);
     setShowDeleteSelected(false);
     setRowSelection({});
     if (success) {
       toast.success(
-        `${selectedRows.length} message${selectedRows.length !== 1 ? "s" : ""} deleted`,
+        t("smsCenter.toastDeletedSelected", { count: selectedRows.length }),
       );
     } else {
-      toast.error("Failed to delete selected messages");
+      toast.error(t("smsCenter.toastDeleteSelectedFailed"));
     }
   };
 
@@ -164,17 +183,17 @@ export default function SmsInboxCard({
     () => [
       {
         id: "select",
-        header: ({ table: t }) => (
+        header: ({ table: tbl }) => (
           <div onClick={(e) => e.stopPropagation()}>
             <Checkbox
               checked={
-                t.getIsAllPageRowsSelected() ||
-                (t.getIsSomePageRowsSelected() && "indeterminate")
+                tbl.getIsAllPageRowsSelected() ||
+                (tbl.getIsSomePageRowsSelected() && "indeterminate")
               }
               onCheckedChange={(value) =>
-                t.toggleAllPageRowsSelected(!!value)
+                tbl.toggleAllPageRowsSelected(!!value)
               }
-              aria-label="Select all"
+              aria-label={t("smsCenter.selectAll")}
             />
           </div>
         ),
@@ -183,7 +202,7 @@ export default function SmsInboxCard({
             <Checkbox
               checked={row.getIsSelected()}
               onCheckedChange={(value) => row.toggleSelected(!!value)}
-              aria-label="Select row"
+              aria-label={t("smsCenter.selectRow")}
             />
           </div>
         ),
@@ -192,7 +211,7 @@ export default function SmsInboxCard({
       },
       {
         accessorKey: "sender",
-        header: "From",
+        header: isOutbox ? t("smsCenter.columnTo") : t("smsCenter.columnFrom"),
         cell: ({ row }) => {
           const raw = row.original.sender;
           const display = formatSenderDisplay(raw);
@@ -201,17 +220,17 @@ export default function SmsInboxCard({
             <div className="min-w-0">
               <div className="flex items-center gap-1.5 min-w-0">
                 <span className="font-medium truncate">{display}</span>
-                {kind === "brand" && (
+                {!isOutbox && kind === "brand" && (
                   <Badge
                     variant="outline"
                     className="bg-info/15 text-info border-info/30 text-[10px] px-1.5 py-0 h-4 shrink-0"
                     title={
                       isKnownVnBrand(raw)
-                        ? "Brand sender (VN service)"
-                        : "Brand sender"
+                        ? t("smsCenter.vnBrandTooltip")
+                        : t("smsCenter.brandTooltip")
                     }
                   >
-                    {isKnownVnBrand(raw) ? "VN Brand" : "Brand"}
+                    {isKnownVnBrand(raw) ? t("smsCenter.vnBrand") : t("smsCenter.brand")}
                   </Badge>
                 )}
               </div>
@@ -225,7 +244,7 @@ export default function SmsInboxCard({
       {
         accessorKey: "content",
         header: () => (
-          <span className="hidden @md/card:inline">Message</span>
+          <span className="hidden @md/card:inline">{t("smsCenter.columnMessage")}</span>
         ),
         cell: ({ row }) => (
           <div className="hidden @md/card:block max-w-xs truncate text-muted-foreground">
@@ -236,7 +255,7 @@ export default function SmsInboxCard({
       {
         id: "date",
         header: () => (
-          <span className="hidden @sm/card:inline">Date</span>
+          <span className="hidden @sm/card:inline">{t("smsCenter.columnDate")}</span>
         ),
         cell: ({ row }) => (
           <span className="hidden @sm/card:inline text-muted-foreground text-sm whitespace-nowrap">
@@ -257,13 +276,13 @@ export default function SmsInboxCard({
                   size="icon"
                 >
                   <TbDotsVertical />
-                  <span className="sr-only">Open menu</span>
+                  <span className="sr-only">{t("smsCenter.openMenu")}</span>
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-40">
                 <DropdownMenuItem onClick={() => setViewMessage(row.original)}>
                   <TbEye className="size-4" />
-                  View
+                  {t("smsCenter.view")}
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem
@@ -271,7 +290,7 @@ export default function SmsInboxCard({
                   onClick={() => setDeleteTarget(row.original)}
                 >
                   <TbTrash className="size-4" />
-                  Delete
+                  {t("smsCenter.delete")}
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
@@ -279,11 +298,11 @@ export default function SmsInboxCard({
         ),
       },
     ],
-    [],
+    [isOutbox, t],
   );
 
   const table = useReactTable({
-    data: data?.messages ?? [],
+    data: activeData?.messages ?? [],
     columns,
     getCoreRowModel: getCoreRowModel(),
     getPaginationRowModel: getPaginationRowModel(),
@@ -320,14 +339,12 @@ export default function SmsInboxCard({
   }
 
   // --- Error state (fetch failed, no data) ----------------------------------
-  if (error && !data) {
+  if (error && !data && !outbox) {
     return (
       <Card>
         <CardHeader>
-          <CardTitle>Inbox</CardTitle>
-          <CardDescription>
-            View and manage your SMS messages
-          </CardDescription>
+          <CardTitle>{t("smsCenter.inboxTitle")}</CardTitle>
+          <CardDescription>{t("smsCenter.inboxDescription")}</CardDescription>
         </CardHeader>
         <CardContent>
           <div
@@ -336,12 +353,12 @@ export default function SmsInboxCard({
           >
             <AlertCircleIcon className="size-8 text-destructive" />
             <div className="space-y-1">
-              <p className="text-sm font-medium">Failed to load messages</p>
+              <p className="text-sm font-medium">{t("smsCenter.failedToLoad")}</p>
               <p className="text-xs text-muted-foreground">{error}</p>
             </div>
             <Button variant="outline" size="sm" onClick={onRefresh}>
               <TbRefresh className="size-4" />
-              Retry
+              {t("smsCenter.retry")}
             </Button>
           </div>
         </CardContent>
@@ -349,20 +366,25 @@ export default function SmsInboxCard({
     );
   }
 
-  const messages = data?.messages ?? [];
+  const messages = activeData?.messages ?? [];
   const storage = data?.storage;
+
+  const cardTitle = isOutbox ? t("smsCenter.outboxTitle") : t("smsCenter.inboxTitle");
+  const cardDescription = isOutbox
+    ? t("smsCenter.outboxDescription")
+    : storage
+    ? t("smsCenter.inboxDescriptionWithCount", {
+        used: storage.used,
+        total: storage.total,
+      })
+    : t("smsCenter.inboxDescription");
 
   return (
     <>
       <Card className="@container/card">
         <CardHeader>
-          <CardTitle>Inbox</CardTitle>
-          <CardDescription>
-            View and manage your SMS messages
-            {storage
-              ? ` \u2014 ${storage.used}/${storage.total} messages stored`
-              : ""}
-          </CardDescription>
+          <CardTitle>{cardTitle}</CardTitle>
+          <CardDescription>{cardDescription}</CardDescription>
           <CardAction>
             <div className="flex items-center gap-2">
               <Button
@@ -370,7 +392,7 @@ export default function SmsInboxCard({
                 size="sm"
                 onClick={onRefresh}
                 disabled={isSaving}
-                aria-label="Refresh inbox"
+                aria-label={t("smsCenter.refreshAria")}
               >
                 <TbRefresh className="size-4" />
               </Button>
@@ -380,11 +402,11 @@ export default function SmsInboxCard({
                   size="sm"
                   onClick={() => setShowDeleteSelected(true)}
                   disabled={isSaving}
-                  aria-label={`Delete ${selectedCount} selected`}
+                  aria-label={t("smsCenter.deleteSelectedAria", { count: selectedCount })}
                 >
                   <Trash2 className="size-4" />
                   <span className="hidden @sm/card:inline">
-                    Delete ({selectedCount})
+                    {t("smsCenter.deleteSelected", { count: selectedCount })}
                   </span>
                 </Button>
               )}
@@ -394,10 +416,10 @@ export default function SmsInboxCard({
                   size="sm"
                   onClick={() => setShowDeleteAll(true)}
                   disabled={isSaving}
-                  aria-label="Delete all messages"
+                  aria-label={t("smsCenter.deleteAllAria")}
                 >
                   <Trash2 className="size-4" />
-                  <span className="hidden @sm/card:inline">Delete All</span>
+                  <span className="hidden @sm/card:inline">{t("smsCenter.deleteAll")}</span>
                 </Button>
               )}
               <Button
@@ -406,12 +428,18 @@ export default function SmsInboxCard({
                 disabled={isSaving}
               >
                 <TbPlus className="size-4" />
-                <span className="hidden @xs/card:inline">New Message</span>
+                <span className="hidden @xs/card:inline">{t("smsCenter.newMessage")}</span>
               </Button>
             </div>
           </CardAction>
         </CardHeader>
         <CardContent>
+          <Tabs value={folder} onValueChange={(v) => setFolder(v as SmsFolder)} className="mb-3">
+            <TabsList>
+              <TabsTrigger value="inbox">{t("smsCenter.inboxTab")}</TabsTrigger>
+              <TabsTrigger value="outbox">{t("smsCenter.outboxTab")}</TabsTrigger>
+            </TabsList>
+          </Tabs>
           <div className="overflow-hidden rounded-lg border">
             <Table>
               <TableHeader className="bg-muted sticky top-0 z-10">
@@ -437,7 +465,15 @@ export default function SmsInboxCard({
                       key={row.id}
                       className="cursor-pointer"
                       tabIndex={0}
-                      aria-label={`Message from ${formatSenderDisplay(row.original.sender)}`}
+                      aria-label={
+                        isOutbox
+                          ? t("smsCenter.messageTo", {
+                              recipient: formatSenderDisplay(row.original.sender),
+                            })
+                          : t("smsCenter.messageFrom", {
+                              sender: formatSenderDisplay(row.original.sender),
+                            })
+                      }
                       onClick={() => setViewMessage(row.original)}
                       onKeyDown={(e) => {
                         if (e.key === "Enter" || e.key === " ") {
@@ -465,7 +501,7 @@ export default function SmsInboxCard({
                       colSpan={columns.length}
                       className="h-24 text-center"
                     >
-                      No messages found.
+                      {t("smsCenter.noMessages")}
                     </TableCell>
                   </TableRow>
                 )}
@@ -476,7 +512,7 @@ export default function SmsInboxCard({
           {messages.length > 0 && (
             <div className="flex items-center justify-between px-2 pt-2">
               <span className="text-muted-foreground text-sm">
-                {messages.length} message{messages.length !== 1 ? "s" : ""}
+                {t("smsCenter.messageCount", { count: messages.length })}
               </span>
               {table.getPageCount() > 1 && (
                 <div className="flex items-center gap-2">
@@ -486,7 +522,7 @@ export default function SmsInboxCard({
                     onClick={() => table.previousPage()}
                     disabled={!table.getCanPreviousPage()}
                   >
-                    Prev
+                    {t("smsCenter.prev")}
                   </Button>
                   <span className="text-sm text-muted-foreground whitespace-nowrap">
                     {table.getState().pagination.pageIndex + 1} / {table.getPageCount()}
@@ -497,7 +533,7 @@ export default function SmsInboxCard({
                     onClick={() => table.nextPage()}
                     disabled={!table.getCanNextPage()}
                   >
-                    Next
+                    {t("smsCenter.next")}
                   </Button>
                 </div>
               )}
@@ -514,7 +550,13 @@ export default function SmsInboxCard({
         <DialogContent className="sm:max-w-lg">
           <DialogHeader>
             <DialogTitle>
-              Message from {formatSenderDisplay(viewMessage?.sender)}
+              {isOutbox
+                ? t("smsCenter.messageTo", {
+                    recipient: formatSenderDisplay(viewMessage?.sender),
+                  })
+                : t("smsCenter.messageFrom", {
+                    sender: formatSenderDisplay(viewMessage?.sender),
+                  })}
             </DialogTitle>
             <DialogDescription>{viewMessage?.timestamp}</DialogDescription>
           </DialogHeader>
@@ -531,14 +573,19 @@ export default function SmsInboxCard({
       >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete Message</AlertDialogTitle>
+            <AlertDialogTitle>{t("smsCenter.deleteMessageTitle")}</AlertDialogTitle>
             <AlertDialogDescription>
-              Are you sure you want to delete this message from{" "}
-              {formatSenderDisplay(deleteTarget?.sender)}? This action cannot be undone.
+              {isOutbox
+                ? t("smsCenter.deleteOutboxConfirm", {
+                    recipient: formatSenderDisplay(deleteTarget?.sender),
+                  })
+                : t("smsCenter.deleteMessageConfirm", {
+                    sender: formatSenderDisplay(deleteTarget?.sender),
+                  })}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel disabled={isDeleting}>Cancel</AlertDialogCancel>
+            <AlertDialogCancel disabled={isDeleting}>{t("common.cancel")}</AlertDialogCancel>
             <AlertDialogAction
               onClick={handleDelete}
               disabled={isDeleting}
@@ -547,10 +594,10 @@ export default function SmsInboxCard({
               {isDeleting ? (
                 <>
                   <Loader2 className="size-4 animate-spin" />
-                  Deleting&hellip;
+                  {t("smsCenter.deleting")}
                 </>
               ) : (
-                "Delete"
+                t("smsCenter.delete")
               )}
             </AlertDialogAction>
           </AlertDialogFooter>
@@ -564,14 +611,13 @@ export default function SmsInboxCard({
       >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete All Messages</AlertDialogTitle>
+            <AlertDialogTitle>{t("smsCenter.deleteAllTitle")}</AlertDialogTitle>
             <AlertDialogDescription>
-              Are you sure you want to delete all {messages.length} messages?
-              This action cannot be undone.
+              {t("smsCenter.deleteAllConfirm", { count: messages.length })}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel disabled={isDeleting}>Cancel</AlertDialogCancel>
+            <AlertDialogCancel disabled={isDeleting}>{t("common.cancel")}</AlertDialogCancel>
             <AlertDialogAction
               onClick={handleDeleteAll}
               disabled={isDeleting}
@@ -580,10 +626,10 @@ export default function SmsInboxCard({
               {isDeleting ? (
                 <>
                   <Loader2 className="size-4 animate-spin" />
-                  Deleting&hellip;
+                  {t("smsCenter.deleting")}
                 </>
               ) : (
-                "Delete All"
+                t("smsCenter.deleteAll")
               )}
             </AlertDialogAction>
           </AlertDialogFooter>
@@ -597,14 +643,13 @@ export default function SmsInboxCard({
       >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete Selected Messages</AlertDialogTitle>
+            <AlertDialogTitle>{t("smsCenter.deleteSelectedTitle")}</AlertDialogTitle>
             <AlertDialogDescription>
-              Are you sure you want to delete {selectedCount} selected message
-              {selectedCount !== 1 ? "s" : ""}? This action cannot be undone.
+              {t("smsCenter.deleteSelectedConfirm", { count: selectedCount })}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel disabled={isDeleting}>Cancel</AlertDialogCancel>
+            <AlertDialogCancel disabled={isDeleting}>{t("common.cancel")}</AlertDialogCancel>
             <AlertDialogAction
               onClick={handleDeleteSelected}
               disabled={isDeleting}
@@ -613,10 +658,10 @@ export default function SmsInboxCard({
               {isDeleting ? (
                 <>
                   <Loader2 className="size-4 animate-spin" />
-                  Deleting&hellip;
+                  {t("smsCenter.deleting")}
                 </>
               ) : (
-                `Delete (${selectedCount})`
+                t("smsCenter.deleteSelected", { count: selectedCount })
               )}
             </AlertDialogAction>
           </AlertDialogFooter>

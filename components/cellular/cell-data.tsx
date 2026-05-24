@@ -28,6 +28,7 @@ import type {
   DeviceStatus,
 } from "@/types/modem-status";
 import { formatNumericField } from "@/types/modem-status";
+import { useT } from "@/hooks/use-i18n";
 
 // =============================================================================
 // Props
@@ -185,9 +186,11 @@ function compressIPv6(ip: string): string {
 function IpAddressRow({
   label,
   value,
+  tooltipLabel,
 }: {
   label: string;
   value: string | null | undefined;
+  tooltipLabel?: string;
 }) {
   const compressed = value ? compressIPv6(value) : "-";
   const showTooltip = !!value && compressed !== value;
@@ -208,7 +211,7 @@ function IpAddressRow({
               <button
                 type="button"
                 className="inline-flex shrink-0"
-                aria-label="Show full address"
+                aria-label={tooltipLabel ?? "Show full address"}
               >
                 <TbInfoCircleFilled className="size-5 text-info" />
               </button>
@@ -230,14 +233,12 @@ function IpAddressRow({
 // Loading Skeleton
 // =============================================================================
 
-function CellDataSkeleton() {
+function CellDataSkeleton({ t }: { t: (k: string) => string }) {
   return (
     <Card className="@container/card">
       <CardHeader>
-        <CardTitle>Cellular Information</CardTitle>
-        <CardDescription>
-          Detailed information about the connected cellular network.
-        </CardDescription>
+        <CardTitle>{t("cellInfo.title")}</CardTitle>
+        <CardDescription>{t("cellInfo.description")}</CardDescription>
       </CardHeader>
       <CardContent>
         <div className="grid gap-2">
@@ -268,7 +269,9 @@ const CellDataComponent = ({
   device,
   isLoading,
 }: CellDataComponentProps) => {
-  if (isLoading) return <CellDataSkeleton />;
+  const { t } = useT();
+
+  if (isLoading) return <CellDataSkeleton t={t} />;
 
   // Determine which RAT provides Cell ID and TAC
   // SA mode: use NR values. NSA/LTE: use LTE values.
@@ -282,10 +285,8 @@ const CellDataComponent = ({
   return (
     <Card className="@container/card">
       <CardHeader>
-        <CardTitle>Cellular Information</CardTitle>
-        <CardDescription>
-          Detailed information about the connected cellular network.
-        </CardDescription>
+        <CardTitle>{t("cellInfo.title")}</CardTitle>
+        <CardDescription>{t("cellInfo.description")}</CardDescription>
       </CardHeader>
       <CardContent>
         <motion.div
@@ -301,7 +302,7 @@ const CellDataComponent = ({
             variants={{ hidden: { opacity: 0, x: -8 }, visible: { opacity: 1, x: 0 } }}
             transition={{ duration: 0.2, ease: "easeOut" }}
           >
-            <p className="text-sm font-semibold text-muted-foreground">ISP</p>
+            <p className="text-sm font-semibold text-muted-foreground">{t("cellInfo.isp")}</p>
             <p className="text-sm font-semibold">{network?.carrier || "-"}</p>
           </motion.div>
 
@@ -313,7 +314,7 @@ const CellDataComponent = ({
             transition={{ duration: 0.2, ease: "easeOut" }}
           >
             <p className="text-sm font-semibold text-muted-foreground">
-              Access Point Name (APN)
+              {t("cellInfo.apn")}
             </p>
             <div className="flex items-center gap-1.5">
               <p className="text-sm font-semibold">{network?.apn || "-"}</p>
@@ -323,7 +324,7 @@ const CellDataComponent = ({
                 className="p-0.5 cursor-pointer"
                 asChild
               >
-                <Link href="/cellular/settings/apn-management">Edit</Link>
+                <Link href="/cellular/settings/apn-management">{t("cellInfo.edit")}</Link>
               </Button>
             </div>
           </motion.div>
@@ -336,7 +337,7 @@ const CellDataComponent = ({
             transition={{ duration: 0.2, ease: "easeOut" }}
           >
             <p className="text-sm font-semibold text-muted-foreground">
-              Network Type
+              {t("cellInfo.networkType")}
             </p>
             <p className="text-sm font-semibold">
               {network ? formatNetworkType(network.type) : "-"}
@@ -351,27 +352,27 @@ const CellDataComponent = ({
             transition={{ duration: 0.2, ease: "easeOut" }}
           >
             <p className="text-sm font-semibold text-muted-foreground">
-              Cell ID
+              {t("cellInfo.cellId")}
             </p>
             <div className="flex items-center gap-1.5">
               {cellId != null && enodebId != null ? (
                 <Tooltip>
                   <TooltipTrigger asChild>
-                    <button type="button" className="inline-flex" aria-label="More info">
+                    <button type="button" className="inline-flex" aria-label={t("cellInfo.moreInfo")}>
                       <TbInfoCircleFilled className="size-5 text-info" />
                     </button>
                   </TooltipTrigger>
                   <TooltipContent>
                     <div className="grid">
                       <p>
-                        {cellIdLabel} ID:{" "}
+                        {t("cellInfo.enbIdTooltip", { label: cellIdLabel })}{" "}
                         <span className="font-semibold">
                           {formatNumericField(enodebId)}
                         </span>
                       </p>
 
                       <p>
-                        Sector:{" "}
+                        {t("cellInfo.sector")}:{" "}
                         <span className="font-semibold">
                           {formatNumericField(sectorId)}
                         </span>
@@ -394,19 +395,19 @@ const CellDataComponent = ({
             transition={{ duration: 0.2, ease: "easeOut" }}
           >
             <p className="text-sm font-semibold text-muted-foreground">
-              Tracking Area Code
+              {t("cellInfo.tracking")}
             </p>
             <div className="flex items-center gap-1.5">
               {tac != null ? (
                 <Tooltip>
                   <TooltipTrigger asChild>
-                    <button type="button" className="inline-flex" aria-label="More info">
+                    <button type="button" className="inline-flex" aria-label={t("cellInfo.moreInfo")}>
                       <TbInfoCircleFilled className="size-5 text-info" />
                     </button>
                   </TooltipTrigger>
                   <TooltipContent>
                     <p>
-                      Hex:{" "}
+                      {t("cellInfo.tacHex")}{" "}
                       <span className="font-semibold">0x{decToHex(tac)}</span>
                     </p>
                   </TooltipContent>
@@ -424,13 +425,13 @@ const CellDataComponent = ({
             transition={{ duration: 0.2, ease: "easeOut" }}
           >
             <p className="text-sm font-semibold text-muted-foreground">
-              Total Bandwidth in Use
+              {t("cellInfo.totalBandwidth")}
             </p>
             <div className="flex items-center gap-1.5">
               {network?.bandwidth_details ? (
                 <Tooltip>
                   <TooltipTrigger asChild>
-                    <button type="button" className="inline-flex" aria-label="More info">
+                    <button type="button" className="inline-flex" aria-label={t("cellInfo.moreInfo")}>
                       <TbInfoCircleFilled className="size-5 text-info" />
                     </button>
                   </TooltipTrigger>
@@ -455,7 +456,7 @@ const CellDataComponent = ({
             transition={{ duration: 0.2, ease: "easeOut" }}
           >
             <p className="text-sm font-semibold text-muted-foreground">
-              Carrier Aggregation
+              {t("cellInfo.carrierAggregation")}
             </p>
             <p className="text-sm font-semibold">
               {network ? formatCarrierAggregation(network) : "-"}
@@ -470,7 +471,7 @@ const CellDataComponent = ({
             transition={{ duration: 0.2, ease: "easeOut" }}
           >
             <p className="text-sm font-semibold text-muted-foreground">
-              Active MIMO
+              {t("cellInfo.activeMimo")}
             </p>
             <div className="flex items-center gap-1.5">
               <p className="text-sm font-semibold">{device?.mimo || "-"}</p>
@@ -480,7 +481,7 @@ const CellDataComponent = ({
                 className="p-0.5 cursor-pointer"
                 asChild
               >
-                <Link href="/cellular/antenna-statistics">Per-Antenna</Link>
+                <Link href="/cellular/antenna-statistics">{t("cellInfo.perAntenna")}</Link>
               </Button>
             </div>
           </motion.div>
@@ -493,7 +494,7 @@ const CellDataComponent = ({
             transition={{ duration: 0.2, ease: "easeOut" }}
           >
             <p className="text-sm font-semibold text-muted-foreground">
-              WAN IPv4
+              {t("cellInfo.wanIpv4")}
             </p>
             <p className="text-sm font-semibold font-mono">
               {network?.wan_ipv4 || "-"}
@@ -502,15 +503,27 @@ const CellDataComponent = ({
 
           {/* WAN IPv6 */}
           <Separator />
-          <IpAddressRow label="WAN IPv6" value={network?.wan_ipv6} />
+          <IpAddressRow
+            label={t("cellInfo.wanIpv6")}
+            value={network?.wan_ipv6}
+            tooltipLabel={t("cellInfo.showFullAddress")}
+          />
 
           {/* Primary DNS */}
           <Separator />
-          <IpAddressRow label="Primary DNS" value={network?.primary_dns} />
+          <IpAddressRow
+            label={t("cellInfo.primaryDns")}
+            value={network?.primary_dns}
+            tooltipLabel={t("cellInfo.showFullAddress")}
+          />
 
           {/* Secondary DNS */}
           <Separator />
-          <IpAddressRow label="Secondary DNS" value={network?.secondary_dns} />
+          <IpAddressRow
+            label={t("cellInfo.secondaryDns")}
+            value={network?.secondary_dns}
+            tooltipLabel={t("cellInfo.showFullAddress")}
+          />
           <Separator />
         </motion.div>
       </CardContent>

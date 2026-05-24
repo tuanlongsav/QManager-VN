@@ -6,17 +6,15 @@ import {
   KeyRound,
   Loader2,
   LogOut,
-  Moon,
   Power,
   RefreshCw,
-  Sun,
   Camera,
   Pencil,
 } from "lucide-react";
 import { toast } from "sonner";
-import { useTheme } from "next-themes";
 import { logout } from "@/hooks/use-auth";
 import { authFetch } from "@/lib/auth-fetch";
+import { useT } from "@/hooks/use-i18n";
 
 import {
   Avatar,
@@ -68,7 +66,7 @@ export function NavUser({
   };
 }) {
   const { isMobile } = useSidebar();
-  const { theme, setTheme } = useTheme();
+  const { t } = useT();
 
   // --- Display name from device hostname ---
   const [displayName, setDisplayName] = useState<string>(user.name);
@@ -111,7 +109,7 @@ export function NavUser({
     const file = e.target.files?.[0];
     if (!file) return;
     if (!file.type.startsWith("image/")) {
-      toast.error("Please select an image file.");
+      toast.error(t("navUser.toastImageOnly"));
       return;
     }
     const reader = new FileReader();
@@ -119,7 +117,7 @@ export function NavUser({
       const base64 = reader.result as string;
       localStorage.setItem("qm_display_avatar", base64);
       setAvatarSrc(base64);
-      toast.success("Profile photo updated.");
+      toast.success(t("navUser.toastPhotoUpdated"));
     };
     reader.readAsDataURL(file);
     // Reset so same file can be re-selected
@@ -141,14 +139,14 @@ export function NavUser({
       });
       const json = await resp.json();
       if (!json.success) {
-        toast.error("Failed to update display name.");
+        toast.error(t("navUser.toastNameFailed"));
         return;
       }
       setDisplayName(name);
       setNameDialogOpen(false);
-      toast.success("Display name updated.");
+      toast.success(t("navUser.toastNameUpdated"));
     } catch {
-      toast.error("Failed to update display name.");
+      toast.error(t("navUser.toastNameFailed"));
     } finally {
       setSavingName(false);
     }
@@ -189,12 +187,12 @@ export function NavUser({
       });
       const data = await resp.json();
       if (data.success) {
-        toast.success("Network reconnect initiated. Connection may drop briefly.");
+        toast.success(t("navUser.toastReconnectStarted"));
       } else {
-        toast.error("Reconnect failed.");
+        toast.error(t("navUser.toastReconnectFailed"));
       }
     } catch {
-      toast.error("Failed to send reconnect command.");
+      toast.error(t("navUser.toastReconnectError"));
     } finally {
       setReconnecting(false);
       setReconnectDialogOpen(false);
@@ -252,7 +250,7 @@ export function NavUser({
                     type="button"
                     onClick={handleAvatarClick}
                     className="relative group shrink-0 rounded-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                    aria-label="Change profile photo"
+                    aria-label={t("navUser.changeProfilePhoto")}
                   >
                     <Avatar className="h-8 w-8 rounded-lg">
                       <AvatarImage src={avatarSrc} alt={displayName} />
@@ -278,22 +276,13 @@ export function NavUser({
                   }}
                 >
                   <Pencil />
-                  Change Display Name
+                  {t("navUser.changeDisplayName")}
                 </DropdownMenuItem>
                 <DropdownMenuItem
                   onClick={() => setPasswordDialogOpen(true)}
                 >
                   <KeyRound />
-                  Change Password
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  onClick={() =>
-                    setTheme(theme === "dark" ? "light" : "dark")
-                  }
-                >
-                  <Sun className="dark:hidden" />
-                  <Moon className="hidden dark:block" />
-                  Toggle Theme
+                  {t("navUser.changePassword")}
                 </DropdownMenuItem>
               </DropdownMenuGroup>
               <DropdownMenuSeparator />
@@ -301,18 +290,18 @@ export function NavUser({
                 onClick={() => setReconnectDialogOpen(true)}
               >
                 <RefreshCw />
-                Reconnect Network
+                {t("navUser.reconnectNetwork")}
               </DropdownMenuItem>
               <DropdownMenuItem
                 variant="destructive"
                 onClick={() => setRebootDialogOpen(true)}
               >
                 <Power />
-                Reboot Device
+                {t("navUser.rebootDevice")}
               </DropdownMenuItem>
               <DropdownMenuItem onClick={() => logout()}>
                 <LogOut />
-                Log out
+                {t("navUser.logOut")}
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
@@ -329,13 +318,13 @@ export function NavUser({
       >
         <DialogContent className="sm:max-w-sm">
           <DialogHeader>
-            <DialogTitle>Change Display Name</DialogTitle>
+            <DialogTitle>{t("navUser.changeDisplayName")}</DialogTitle>
           </DialogHeader>
           <div className="py-2">
             <Input
               value={nameInput}
               onChange={(e) => setNameInput(e.target.value)}
-              placeholder="Your name"
+              placeholder={t("navUser.namePlaceholder")}
               autoFocus
               onKeyDown={(e) => {
                 if (e.key === "Enter") handleNameSave();
@@ -347,7 +336,7 @@ export function NavUser({
               variant="outline"
               onClick={() => setNameDialogOpen(false)}
             >
-              Cancel
+              {t("common.cancel")}
             </Button>
             <Button
               onClick={handleNameSave}
@@ -356,10 +345,10 @@ export function NavUser({
               {savingName ? (
                 <>
                   <Loader2 className="size-4 animate-spin" />
-                  Saving...
+                  {t("navUser.saving")}
                 </>
               ) : (
-                "Save"
+                t("common.save")
               )}
             </Button>
           </DialogFooter>
@@ -376,14 +365,14 @@ export function NavUser({
       }}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Reconnect Network</AlertDialogTitle>
+            <AlertDialogTitle>{t("navUser.reconnectNetwork")}</AlertDialogTitle>
             <AlertDialogDescription>
-              This will deregister from the network and reregister, forcing a fresh connection. Internet will drop briefly.
+              {t("navUser.reconnectDescription")}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel disabled={reconnecting}>
-              Cancel
+              {t("common.cancel")}
             </AlertDialogCancel>
             <AlertDialogAction
               disabled={reconnecting}
@@ -392,10 +381,10 @@ export function NavUser({
               {reconnecting ? (
                 <>
                   <Loader2 className="size-4 animate-spin" />
-                  Reconnecting...
+                  {t("navUser.reconnecting")}
                 </>
               ) : (
-                "Reconnect"
+                t("navUser.reconnect")
               )}
             </AlertDialogAction>
           </AlertDialogFooter>
@@ -407,16 +396,16 @@ export function NavUser({
       }}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Reboot Device</AlertDialogTitle>
+            <AlertDialogTitle>{t("navUser.rebootDevice")}</AlertDialogTitle>
             <AlertDialogDescription aria-live="polite">
               {rebooting
-                ? "Reboot command sent. You will be logged out shortly..."
-                : "The device will restart and all network connections will drop until it comes back online."}
+                ? t("navUser.rebootSent")
+                : t("navUser.rebootDescription")}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel disabled={rebooting}>
-              Not Now
+              {t("navUser.notNow")}
             </AlertDialogCancel>
             <AlertDialogAction
               variant="destructive"
@@ -426,10 +415,10 @@ export function NavUser({
               {rebooting ? (
                 <>
                   <Loader2 className="size-4 animate-spin" />
-                  Rebooting...
+                  {t("navUser.rebooting")}
                 </>
               ) : (
-                "Reboot Now"
+                t("navUser.rebootNow")
               )}
             </AlertDialogAction>
           </AlertDialogFooter>

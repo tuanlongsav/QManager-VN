@@ -10,16 +10,20 @@ import type {
 } from "@/types/sms";
 
 // =============================================================================
-// useSms — SMS Inbox Fetch & Mutation Hook
+// useSms — SMS Inbox + Outbox Fetch & Mutation Hook
 // =============================================================================
-// Fetches inbox messages + storage status on mount.
-// Provides sendSms, deleteSms, deleteAllSms for mutations.
+// Fetches inbox (modem-backed) and outbox (local JSON file) in parallel.
+// Provides sendSms, deleteSms, deleteAllSms for mutations against either
+// folder. Send appends to outbox automatically (backend handles it).
 //
 // Backend endpoint:
-//   GET/POST /cgi-bin/quecmanager/cellular/sms.sh
+//   GET  /cgi-bin/quecmanager/cellular/sms.sh?folder=inbox|outbox
+//   POST /cgi-bin/quecmanager/cellular/sms.sh   { action, folder?, ... }
 // =============================================================================
 
 const CGI_ENDPOINT = "/cgi-bin/quecmanager/cellular/sms.sh";
+
+export type SmsFolder = "inbox" | "outbox";
 
 export interface SmsData {
   messages: SmsMessage[];
@@ -27,9 +31,11 @@ export interface SmsData {
 }
 
 export interface UseSmsReturn {
-  /** Current SMS data (null before first fetch) */
+  /** Current inbox data (null before first fetch) */
   data: SmsData | null;
-  /** True while initial fetch is in progress */
+  /** Current outbox data (null before first fetch) */
+  outbox: SmsData | null;
+  /** True while initial fetch is in progress (either folder) */
   isLoading: boolean;
   /** True while a send/delete operation is in progress */
   isSaving: boolean;
@@ -37,16 +43,17 @@ export interface UseSmsReturn {
   error: string | null;
   /** Send an SMS message. Returns true on success. */
   sendSms: (phone: string, message: string) => Promise<boolean>;
-  /** Delete a message by its storage indexes. Returns true on success. */
-  deleteSms: (indexes: number[]) => Promise<boolean>;
-  /** Delete all messages. Returns true on success. */
-  deleteAllSms: () => Promise<boolean>;
-  /** Re-fetch inbox data. Pass true for silent (no loading skeleton). */
+  /** Delete messages by storage indexes from the given folder. Returns true on success. */
+  deleteSms: (indexes: number[], folder?: SmsFolder) => Promise<boolean>;
+  /** Delete all messages in the given folder. Returns true on success. */
+  deleteAllSms: (folder?: SmsFolder) => Promise<boolean>;
+  /** Re-fetch both inbox + outbox. Pass true for silent (no loading skeleton). */
   refresh: (silent?: boolean) => void;
 }
 
 export function useSms(): UseSmsReturn {
   const [data, setData] = useState<SmsData | null>(null);
+  const [outbox, setOutbox] = useState<SmsData | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -61,49 +68,61 @@ export function useSms(): UseSmsReturn {
   }, []);
 
   // ---------------------------------------------------------------------------
-  // Fetch inbox messages + storage status
+  // Fetch one folder
   // ---------------------------------------------------------------------------
-  const fetchInbox = useCallback(async (silent = false) => {
-    if (!silent) setIsLoading(true);
-    setError(null);
-
-    try {
-      const resp = await authFetch(CGI_ENDPOINT);
+  const fetchFolder = useCallback(
+    async (folder: SmsFolder): Promise<void> => {
+      const url = folder === "outbox" ? `${CGI_ENDPOINT}?folder=outbox` : CGI_ENDPOINT;
+      const resp = await authFetch(url);
       if (!resp.ok) {
         throw new Error(`HTTP ${resp.status}: ${resp.statusText}`);
       }
-
       const json: SmsInboxResponse = await resp.json();
       if (!mountedRef.current) return;
-
       if (!json.success) {
-        setError(json.detail || json.error || "Failed to fetch SMS inbox");
-        return;
+        throw new Error(json.detail || json.error || "Failed to fetch SMS");
       }
-
-      setData({
+      const next: SmsData = {
         messages: json.messages || [],
         storage: json.storage || { used: 0, total: 0 },
-      });
-    } catch (err) {
-      if (!mountedRef.current) return;
-      setError(
-        err instanceof Error ? err.message : "Failed to fetch SMS inbox"
-      );
-    } finally {
-      if (mountedRef.current && !silent) {
-        setIsLoading(false);
+      };
+      if (folder === "outbox") {
+        setOutbox(next);
+      } else {
+        setData(next);
       }
-    }
-  }, []);
+    },
+    [],
+  );
+
+  // ---------------------------------------------------------------------------
+  // Fetch both folders in parallel
+  // ---------------------------------------------------------------------------
+  const refresh = useCallback(
+    async (silent = false) => {
+      if (!silent) setIsLoading(true);
+      setError(null);
+      try {
+        await Promise.all([fetchFolder("inbox"), fetchFolder("outbox")]);
+      } catch (err) {
+        if (!mountedRef.current) return;
+        setError(err instanceof Error ? err.message : "Failed to fetch SMS");
+      } finally {
+        if (mountedRef.current && !silent) {
+          setIsLoading(false);
+        }
+      }
+    },
+    [fetchFolder],
+  );
 
   // Fetch on mount
   useEffect(() => {
-    fetchInbox();
-  }, [fetchInbox]);
+    refresh();
+  }, [refresh]);
 
   // ---------------------------------------------------------------------------
-  // Send SMS
+  // Send SMS — backend appends to outbox automatically
   // ---------------------------------------------------------------------------
   const sendSms = useCallback(
     async (phone: string, message: string): Promise<boolean> => {
@@ -129,9 +148,11 @@ export function useSms(): UseSmsReturn {
           return false;
         }
 
-        // Delayed silent re-fetch — modem needs a moment to process the sent message
+        // Refresh outbox immediately (sent message just appended), inbox after
+        // a short delay so the modem has time to mark storage state.
+        await fetchFolder("outbox").catch(() => {});
         setTimeout(() => {
-          if (mountedRef.current) fetchInbox(true);
+          if (mountedRef.current) fetchFolder("inbox").catch(() => {});
         }, 1000);
         return true;
       } catch (err) {
@@ -144,14 +165,14 @@ export function useSms(): UseSmsReturn {
         }
       }
     },
-    [fetchInbox]
+    [fetchFolder],
   );
 
   // ---------------------------------------------------------------------------
-  // Delete single message
+  // Delete messages from a folder
   // ---------------------------------------------------------------------------
   const deleteSms = useCallback(
-    async (indexes: number[]): Promise<boolean> => {
+    async (indexes: number[], folder: SmsFolder = "inbox"): Promise<boolean> => {
       setError(null);
       setIsSaving(true);
 
@@ -159,7 +180,7 @@ export function useSms(): UseSmsReturn {
         const resp = await authFetch(CGI_ENDPOINT, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "delete", indexes }),
+          body: JSON.stringify({ action: "delete", indexes, folder }),
         });
 
         if (!resp.ok) {
@@ -174,13 +195,12 @@ export function useSms(): UseSmsReturn {
           return false;
         }
 
-        // Silent re-fetch to update inbox
-        await fetchInbox(true);
+        await fetchFolder(folder).catch(() => {});
         return true;
       } catch (err) {
         if (!mountedRef.current) return false;
         setError(
-          err instanceof Error ? err.message : "Failed to delete message"
+          err instanceof Error ? err.message : "Failed to delete message",
         );
         return false;
       } finally {
@@ -189,61 +209,62 @@ export function useSms(): UseSmsReturn {
         }
       }
     },
-    [fetchInbox]
+    [fetchFolder],
   );
 
   // ---------------------------------------------------------------------------
-  // Delete all messages
+  // Delete all messages in a folder
   // ---------------------------------------------------------------------------
-  const deleteAllSms = useCallback(async (): Promise<boolean> => {
-    setError(null);
-    setIsSaving(true);
+  const deleteAllSms = useCallback(
+    async (folder: SmsFolder = "inbox"): Promise<boolean> => {
+      setError(null);
+      setIsSaving(true);
 
-    try {
-      const resp = await authFetch(CGI_ENDPOINT, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "delete_all" }),
-      });
+      try {
+        const resp = await authFetch(CGI_ENDPOINT, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "delete_all", folder }),
+        });
 
-      if (!resp.ok) {
-        throw new Error(`HTTP ${resp.status}: ${resp.statusText}`);
-      }
+        if (!resp.ok) {
+          throw new Error(`HTTP ${resp.status}: ${resp.statusText}`);
+        }
 
-      const json: SmsActionResponse = await resp.json();
-      if (!mountedRef.current) return false;
+        const json: SmsActionResponse = await resp.json();
+        if (!mountedRef.current) return false;
 
-      if (!json.success) {
+        if (!json.success) {
+          setError(json.detail || json.error || "Failed to delete all messages");
+          return false;
+        }
+
+        await fetchFolder(folder).catch(() => {});
+        return true;
+      } catch (err) {
+        if (!mountedRef.current) return false;
         setError(
-          json.detail || json.error || "Failed to delete all messages"
+          err instanceof Error ? err.message : "Failed to delete all messages",
         );
         return false;
+      } finally {
+        if (mountedRef.current) {
+          setIsSaving(false);
+        }
       }
-
-      // Silent re-fetch to update inbox
-      await fetchInbox(true);
-      return true;
-    } catch (err) {
-      if (!mountedRef.current) return false;
-      setError(
-        err instanceof Error ? err.message : "Failed to delete all messages"
-      );
-      return false;
-    } finally {
-      if (mountedRef.current) {
-        setIsSaving(false);
-      }
-    }
-  }, [fetchInbox]);
+    },
+    [fetchFolder],
+  );
 
   return {
     data,
+    outbox,
     isLoading,
     isSaving,
     error,
     sendSms,
     deleteSms,
     deleteAllSms,
-    refresh: fetchInbox,
+    refresh,
   };
 }

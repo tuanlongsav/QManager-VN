@@ -112,19 +112,19 @@ const DeviceMetricsComponent = ({
   const handleResetConfirm = useCallback(async () => {
     const ok = await resetCounter();
     if (ok) {
-      toast.success("Reset queued — counter will update in a few seconds.");
+      toast.success(t("systemHealth.resetCounterToastOk"));
     } else {
-      toast.error("Failed to queue reset. Please try again.");
+      toast.error(t("systemHealth.resetCounterToastFail"));
     }
     setResetDialogOpen(false);
-  }, [resetCounter]);
+  }, [resetCounter, t]);
 
   if (isLoading) {
     return (
       <Card className="@container/card">
         <CardHeader className="-mb-4">
           <CardTitle className="text-lg font-semibold">
-            {t("dashboard.systemHealth")}
+            {t("systemHealth.title")}
           </CardTitle>
         </CardHeader>
         <CardContent>
@@ -148,7 +148,7 @@ const DeviceMetricsComponent = ({
     <Card className="@container/card">
       <CardHeader className="-mb-4 flex flex-row items-center justify-between gap-2">
         <CardTitle className="text-lg font-semibold tabular-nums">
-          System Health
+          {t("systemHealth.title")}
         </CardTitle>
         {/* Inline diagnostics — opens the full system-health-check UI in a
             dialog so the user can run the same probes that used to live on a
@@ -175,13 +175,13 @@ const DeviceMetricsComponent = ({
           <div className="flex flex-col gap-1.5">
             <div className="flex items-center justify-between">
               <p className="font-semibold text-muted-foreground text-sm">
-                Modem Temperature
+                {t("systemHealth.modemTemperature")}
               </p>
               <div className="flex items-center gap-1.5">
                 {isTempHigh && (
                   <Badge className="bg-warning/15 text-warning hover:bg-warning/20 border-warning/30">
                     <TbAlertTriangleFilled className="text-warning" />
-                    High Temp
+                    {t("systemHealth.highTemp")}
                   </Badge>
                 )}
                 <p className="font-semibold text-sm tabular-nums">
@@ -199,13 +199,13 @@ const DeviceMetricsComponent = ({
           <div className="flex flex-col gap-1.5">
             <div className="flex items-center justify-between">
               <p className="font-semibold text-muted-foreground text-sm">
-                CPU Usage
+                {t("systemHealth.cpuUsage")}
               </p>
               <div className="flex items-center gap-1.5">
                 {isCpuHigh && (
                   <Badge className="bg-warning/15 text-warning hover:bg-warning/20 border-warning/30">
                     <TbAlertTriangleFilled className="text-warning" />
-                    High CPU
+                    {t("systemHealth.highCpu")}
                   </Badge>
                 )}
                 <p className="font-semibold text-sm tabular-nums">
@@ -223,7 +223,7 @@ const DeviceMetricsComponent = ({
           <div className="flex flex-col gap-1.5">
             <div className="flex items-center justify-between">
               <p className="font-semibold text-muted-foreground text-sm">
-                Memory Usage
+                {t("systemHealth.memoryUsage")}
               </p>
               <p className="font-semibold text-sm tabular-nums">
                 {memTotal > 0 ? `${memUsed} MB / ${memTotal} MB` : "-"}
@@ -239,7 +239,7 @@ const DeviceMetricsComponent = ({
           <div className="flex flex-col gap-1.5">
             <div className="flex items-center justify-between">
               <p className="font-semibold text-muted-foreground text-sm">
-                Storage
+                {t("systemHealth.storage")}
               </p>
               <p className="font-semibold text-sm tabular-nums">
                 {storageTotalKb > 0
@@ -257,7 +257,7 @@ const DeviceMetricsComponent = ({
           <div className="flex items-start justify-between gap-2">
             <div className="flex items-center gap-1.5 min-w-0">
               <p className="font-semibold text-muted-foreground text-sm shrink-0">
-                Data Used
+                {t("systemHealth.dataUsed")}
               </p>
               {/* Reset button */}
               <AlertDialog open={resetDialogOpen} onOpenChange={setResetDialogOpen}>
@@ -266,7 +266,7 @@ const DeviceMetricsComponent = ({
                     variant="ghost"
                     size="icon"
                     className="h-5 w-5 text-muted-foreground hover:text-foreground"
-                    aria-label="Reset data usage counter"
+                    aria-label={t("systemHealth.resetCounterAria")}
                     disabled={isResetting}
                   >
                     <RotateCcwIcon className="size-3.5" />
@@ -274,16 +274,15 @@ const DeviceMetricsComponent = ({
                 </AlertDialogTrigger>
                 <AlertDialogContent>
                   <AlertDialogHeader>
-                    <AlertDialogTitle>Reset Data Used counter?</AlertDialogTitle>
+                    <AlertDialogTitle>{t("systemHealth.resetCounterTitle")}</AlertDialogTitle>
                     <AlertDialogDescription>
-                      This will zero the cumulative download and upload total.
-                      The counter will resume tracking immediately.
+                      {t("systemHealth.resetCounterDescription")}
                     </AlertDialogDescription>
                   </AlertDialogHeader>
                   <AlertDialogFooter>
-                    <AlertDialogCancel>Cancel</AlertDialogCancel>
+                    <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
                     <AlertDialogAction onClick={handleResetConfirm}>
-                      Reset Counter
+                      {t("systemHealth.resetCounter")}
                     </AlertDialogAction>
                   </AlertDialogFooter>
                 </AlertDialogContent>
@@ -309,25 +308,21 @@ const DeviceMetricsComponent = ({
           <Separator />
           <div className="flex items-center justify-between">
             <p className="font-semibold text-muted-foreground text-sm">
-              LTE Cell Distance
+              {t("systemHealth.lteCellDistance")}
             </p>
 
             <div className="flex items-center gap-1.5">
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <button type="button" className="inline-flex" aria-label="More info">
+                  <button type="button" className="inline-flex" aria-label={t("systemHealth.moreInfo")}>
                     <TbInfoCircleFilled className="size-5 text-info" />
                   </button>
                 </TooltipTrigger>
                 <TooltipContent>
                   {lteData?.ta ? (
-                    <p>
-                      This is only an approximation based <br /> on the LTE
-                      Timing Advance value of{" "}
-                      <span className="font-semibold">{lteData.ta}</span>.
-                    </p>
+                    <p>{t("systemHealth.taTooltipLte", { ta: lteData.ta })}</p>
                   ) : (
-                    <p>Timing Advance value is not available.</p>
+                    <p>{t("systemHealth.taUnavailable")}</p>
                   )}
                 </TooltipContent>
               </Tooltip>
@@ -341,24 +336,20 @@ const DeviceMetricsComponent = ({
           <Separator />
           <div className="flex items-center justify-between">
             <p className="font-semibold text-muted-foreground text-sm">
-              NR Cell Distance
+              {t("systemHealth.nrCellDistance")}
             </p>
             <div className="flex items-center gap-1.5">
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <button type="button" className="inline-flex" aria-label="More info">
+                  <button type="button" className="inline-flex" aria-label={t("systemHealth.moreInfo")}>
                     <TbInfoCircleFilled className="size-5 text-info" />
                   </button>
                 </TooltipTrigger>
                 <TooltipContent>
                   {nrData?.ta ? (
-                    <p>
-                      This is only an approximation based <br /> on the NR
-                      Timing Advance value of{" "}
-                      <span className="font-semibold">{nrData.ta}</span>.
-                    </p>
+                    <p>{t("systemHealth.taTooltipNr", { ta: nrData.ta })}</p>
                   ) : (
-                    <p>Timing Advance value is not available.</p>
+                    <p>{t("systemHealth.taUnavailable")}</p>
                   )}
                 </TooltipContent>
               </Tooltip>
@@ -372,7 +363,7 @@ const DeviceMetricsComponent = ({
           <Separator />
           <div className="flex items-center justify-between">
             <p className="font-semibold text-muted-foreground text-sm">
-              Connection Uptime
+              {t("systemHealth.connectionUptime")}
             </p>
             <p className="font-semibold text-sm tabular-nums">
               {displayConnUptime > 0 ? formatUptime(displayConnUptime) : "-"}
@@ -383,7 +374,7 @@ const DeviceMetricsComponent = ({
           <Separator />
           <div className="flex items-center justify-between">
             <p className="font-semibold text-muted-foreground text-sm">
-              Device Uptime
+              {t("systemHealth.deviceUptime")}
             </p>
             <p className="font-semibold text-sm tabular-nums">
               {displayDevUptime > 0 ? formatUptime(displayDevUptime) : "-"}

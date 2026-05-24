@@ -27,6 +27,7 @@ import {
 import { toast } from "sonner";
 import type { FailoverState } from "@/types/band-locking";
 import type { CarrierComponent } from "@/types/modem-status";
+import { useT } from "@/hooks/use-i18n";
 
 // =============================================================================
 // BandSettingsComponent — Failover Toggle + Active Bands Display
@@ -103,6 +104,7 @@ const BandSettingsComponent = ({
   isLoading,
   isScenarioControlled = false,
 }: BandSettingsProps) => {
+  const { t } = useT();
   // --- Derive active bands from carrier_components --------------------------
   const activeLte = getActiveBandDisplay(carrierComponents, "LTE");
   const activeLteArfcn = getActiveArfcnDisplay(carrierComponents, "LTE");
@@ -113,9 +115,9 @@ const BandSettingsComponent = ({
   const handleFailoverToggle = async (checked: boolean) => {
     const success = await onToggleFailover(checked);
     if (success) {
-      toast.success(`Band failover ${checked ? "enabled" : "disabled"}`);
+      toast.success(checked ? t("bandSettings.toastEnabled") : t("bandSettings.toastDisabled"));
     } else {
-      toast.error("Failed to update band failover");
+      toast.error(t("bandSettings.toastFailed"));
     }
   };
 
@@ -130,7 +132,7 @@ const BandSettingsComponent = ({
           className="bg-muted/50 text-muted-foreground border-muted-foreground/30"
         >
           <MinusCircleIcon className="h-3 w-3" />
-          Disabled
+          {t("bandSettings.disabled")}
         </Badge>
       );
     }
@@ -142,7 +144,7 @@ const BandSettingsComponent = ({
           className="bg-warning/15 text-warning hover:bg-warning/20 border-warning/30"
         >
           <TriangleAlertIcon className="h-3 w-3" />
-          Fallback Active
+          {t("bandSettings.fallbackActive")}
         </Badge>
       );
     }
@@ -154,7 +156,7 @@ const BandSettingsComponent = ({
           className="bg-info/15 text-info hover:bg-info/20 border-info/30"
         >
           <Loader2Icon className="h-3 w-3 animate-spin" />
-          Monitoring
+          {t("bandSettings.monitoring")}
         </Badge>
       );
     }
@@ -165,7 +167,7 @@ const BandSettingsComponent = ({
         className="bg-success/15 text-success hover:bg-success/20 border-success/30"
       >
         <CheckCircle2Icon className="h-3 w-3" />
-        Ready
+        {t("bandSettings.ready")}
       </Badge>
     );
   };
@@ -173,10 +175,8 @@ const BandSettingsComponent = ({
   return (
     <Card className="@container/card">
       <CardHeader>
-        <CardTitle>Band Locking Settings</CardTitle>
-        <CardDescription>
-          Restrict the modem to specific LTE and 5G bands. Enable failover to fall back to all bands if locked bands lose signal.
-        </CardDescription>
+        <CardTitle>{t("bandSettings.title")}</CardTitle>
+        <CardDescription>{t("bandSettings.description")}</CardDescription>
       </CardHeader>
       <CardContent>
         <div className="grid gap-2">
@@ -187,21 +187,16 @@ const BandSettingsComponent = ({
             <div className="flex items-center gap-1.5">
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <button type="button" className="inline-flex" aria-label="More info">
+                  <button type="button" className="inline-flex" aria-label={t("systemHealth.moreInfo")}>
                     <TbInfoCircleFilled className="size-5 text-info" />
                   </button>
                 </TooltipTrigger>
                 <TooltipContent>
-                  <p>
-                    When enabled, the device will automatically switch to the
-                    default
-                    <br />
-                    bands if the locked bands are unavailable after 15 seconds.
-                  </p>
+                  <p>{t("bandSettings.failoverTooltip")}</p>
                 </TooltipContent>
               </Tooltip>
               <p className="font-semibold text-muted-foreground text-sm">
-                Band Failover
+                {t("bandSettings.failover")}
               </p>
             </div>
             <div className="flex items-center space-x-2">
@@ -216,7 +211,7 @@ const BandSettingsComponent = ({
                     disabled={isScenarioControlled}
                   />
                   <Label htmlFor="band-failover">
-                    {failover.enabled ? "Enabled" : "Disabled"}
+                    {failover.enabled ? t("bandSettings.enabled") : t("bandSettings.disabled")}
                   </Label>
                 </>
               )}
@@ -227,7 +222,7 @@ const BandSettingsComponent = ({
           {/* Failover Status */}
           <div className="flex items-center justify-between">
             <p className="text-sm font-semibold text-muted-foreground">
-              Band Failover Status
+              {t("bandSettings.failoverStatus")}
             </p>
             <div className="flex items-center gap-1.5">
               {renderFailoverStatus()}
@@ -238,7 +233,7 @@ const BandSettingsComponent = ({
           {/* Active LTE Bands */}
           <div className="flex items-center justify-between">
             <p className="text-sm font-semibold text-muted-foreground">
-              Active LTE Bands
+              {t("bandSettings.activeLteBands")}
             </p>
             <div className="flex items-center gap-1.5">
               {isLoading ? (
@@ -253,7 +248,7 @@ const BandSettingsComponent = ({
           {/* Active LTE EARFCNs */}
           <div className="flex items-center justify-between">
             <p className="text-sm font-semibold text-muted-foreground">
-              Active LTE Channels
+              {t("bandSettings.activeLteChannels")}
             </p>
             <div className="flex items-center gap-1.5">
               {isLoading ? (
@@ -268,7 +263,7 @@ const BandSettingsComponent = ({
           {/* Active NR Bands */}
           <div className="flex items-center justify-between">
             <p className="text-sm font-semibold text-muted-foreground">
-              Active 5G Bands
+              {t("bandSettings.activeNrBands")}
             </p>
             <div className="flex items-center gap-1.5">
               {isLoading ? (
@@ -283,7 +278,7 @@ const BandSettingsComponent = ({
           {/* Active NR ARFCNs */}
           <div className="flex items-center justify-between">
             <p className="text-sm font-semibold text-muted-foreground">
-              Active 5G Channels
+              {t("bandSettings.activeNrChannels")}
             </p>
             <div className="flex items-center gap-1.5">
               {isLoading ? (

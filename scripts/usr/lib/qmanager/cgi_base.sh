@@ -42,7 +42,7 @@ export PATH="/opt/bin:/opt/sbin:/usr/bin:/usr/sbin:/bin:/sbin:$PATH"
 # MUST be defined before auth enforcement (require_auth calls cgi_headers).
 # ---------------------------------------------------------------------------
 cgi_headers() {
-    echo "Content-Type: application/json"
+    echo "Content-Type: application/json; charset=utf-8"
     echo "Cache-Control: no-cache, no-store, must-revalidate"
     echo "Access-Control-Allow-Origin: *"
     echo "Access-Control-Allow-Methods: GET, POST, OPTIONS"
