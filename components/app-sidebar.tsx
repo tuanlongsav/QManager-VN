@@ -104,13 +104,9 @@ const data = {
       icon: RadioTowerIcon,
       items: [
         {
-          title: "Antenna Statistics",
-          url: "/cellular/antenna-statistics",
+          title: "Antennas",
+          url: "/cellular/antennas",
         },
-        {
-          title: "Antenna Alignment",
-          url: "/cellular/antenna-alignment",
-        }
       ],
     },
     {
