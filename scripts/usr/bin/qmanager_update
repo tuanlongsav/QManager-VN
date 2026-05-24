@@ -91,10 +91,10 @@ http_download() {
 validate_url() {
     local url="$1" strict="${2:-}"
     case "$url" in
-        https://github.com/dr-dolomite/QManager-RM520N/releases/download/*/qmanager.tar.gz)
+        https://github.com/tuanlongsav/QManager-VN/releases/download/*/qmanager.tar.gz)
             return 0
             ;;
-        https://github.com/dr-dolomite/QManager-RM520N/raw/*/qmanager-build/qmanager.tar.gz)
+        https://github.com/tuanlongsav/QManager-VN/raw/*/qmanager-build/qmanager.tar.gz)
             # raw/qmanager-build path is only permitted for the one-step install mode
             if [ "$strict" = "strict" ]; then
                 return 1

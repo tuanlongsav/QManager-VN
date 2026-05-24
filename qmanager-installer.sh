@@ -1,12 +1,12 @@
 #!/bin/bash
 # ==============================================================================
-# QManager — Installer Bootstrap for RM520N-GL
-# Quectel Modem Manager
-# https://github.com/dr-dolomite/QManager-RM520N
+# QManager-VN — Installer Bootstrap for SDXLEMUR Quectel modems
+# Quectel Modem Manager — VN-localized fork of dr-dolomite/QManager-RM520N
+# https://github.com/tuanlongsav/QManager-VN
 #
 # Usage (use whichever downloader your modem has — curl or wget both work):
 #   curl -fsSL -o /tmp/qmanager-installer.sh \
-#     https://github.com/dr-dolomite/QManager-RM520N/raw/refs/heads/main/qmanager-installer.sh && \
+#     https://github.com/tuanlongsav/QManager-VN/raw/refs/heads/main/qmanager-installer.sh && \
 #     bash /tmp/qmanager-installer.sh
 #
 # Environment variables:
@@ -16,7 +16,7 @@
 
 # --- Configuration -----------------------------------------------------------
 
-GITHUB_REPO="dr-dolomite/QManager-RM520N"
+GITHUB_REPO="tuanlongsav/QManager-VN"
 GITHUB_API="https://api.github.com/repos/${GITHUB_REPO}/releases"
 ARCHIVE_PATH="/tmp/qmanager.tar.gz"
 CHECKSUM_PATH="/tmp/qmanager_sha256sum.txt"

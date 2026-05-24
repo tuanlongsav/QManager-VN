@@ -36,8 +36,8 @@ QManager is a modern web-based GUI for managing Quectel cellular modems. It supp
 ### Development
 
 ```bash
-git clone https://github.com/dr-dolomite/qmanager.git
-cd qmanager
+git clone https://github.com/tuanlongsav/QManager-VN.git
+cd QManager-VN
 bun install
 bun run dev        # Start dev server at http://localhost:3000
 ```

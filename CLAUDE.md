@@ -1,3 +1,18 @@
+## QManager-VN Fork
+
+Đây là **QManager-VN** — fork cá nhân của [dr-dolomite/QManager-RM520N](https://github.com/dr-dolomite/QManager-RM520N) do [tuanlongsav](https://github.com/tuanlongsav) maintain. Khi làm việc trên repo này:
+
+1. **OTA source of truth = `tuanlongsav/QManager-VN`** trên GitHub. Mọi URL liên quan đến install/update phải trỏ về đây, KHÔNG về upstream. Đã rebrand: `qmanager-installer.sh:19`, `scripts/www/cgi-bin/quecmanager/system/update.sh:30`, `scripts/usr/bin/qmanager_update` (URL whitelist), `scripts/usr/bin/qmanager_auto_update:46`, docs URLs.
+2. **Hardware target = SDXLEMUR family** (SDX62): RM520N-GLAA (primary tested, longht's hardware), RM520N-GL, RM520N-EU, RM502Q-AE, RM500Q-GL. Không phải single-target RM520N-GL như upstream.
+3. **Fork roadmap** (xem `UPSTREAM_DIFF.md` để chi tiết phase):
+   - **Phase B** — Cắt: Tailscale, Email Alerts, Web Console + AT Terminal, Discord Bot
+   - **Phase C** — Auto-detect AT device (smd7/smd11) + auto-detect model/firmware + dynamic band whitelist + feature gating
+   - **Phase D** — VN: SMS brand decode VINAPHONE/VIETTEL/MOBIFONE, phone normalize, VN APN presets
+   - **Phase E** — Auto-cell-lock state machine, Simple Mode dashboard, gộp routes tương tự
+4. **Reference source cho VN tweaks**: [tuanlongsav/quectel-rgmii-toolkit](https://github.com/tuanlongsav/quectel-rgmii-toolkit) branch `SDXLEMUR`.
+5. **Upstream sync**: remote `upstream` trỏ về dr-dolomite. Pull bằng `git fetch upstream main`. Khi merge sẽ conflict ở các file đã rebrand — luôn ưu tiên giá trị fork (xem `UPSTREAM_DIFF.md` cho conflict resolution).
+6. **Credit upstream**: README.md đã credit dr-dolomite. Đừng xoá credit. Donate links vẫn point về dr-dolomite — fork không có donate riêng.
+
 ## How to Use This File
 
 This file is loaded into **every** session — keep it lean. Everything here is a **golden rule to follow**: the Communication Style, Design Context, and platform/backend truths below are non-negotiable and always apply.

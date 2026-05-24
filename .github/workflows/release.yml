@@ -1,0 +1,77 @@
+name: Release Build
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to build (e.g. v0.1.0-vn)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build Next.js static export
+        run: bun --bun next build
+
+      - name: Package tarball (frontend + backend + deps)
+        run: bash build.sh
+
+      - name: Verify build artifacts
+        run: |
+          ls -lh qmanager-build/
+          test -f qmanager-build/qmanager.tar.gz
+          test -f qmanager-build/sha256sum.txt
+          cat qmanager-build/sha256sum.txt
+
+      - name: Determine prerelease flag
+        id: prerelease
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          # tags containing -beta / -rc / -alpha / -dev are prerelease
+          if printf '%s' "$TAG" | grep -qE -- '-(beta|rc|alpha|dev|preview|test)([0-9]*)?$'; then
+            echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: QManager-VN ${{ steps.tag.outputs.tag }}
+          body_path: RELEASE_NOTES.md
+          prerelease: ${{ steps.prerelease.outputs.is_prerelease }}
+          files: |
+            qmanager-build/qmanager.tar.gz
+            qmanager-build/sha256sum.txt
+          fail_on_unmatched_files: true

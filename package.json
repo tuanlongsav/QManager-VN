@@ -1,6 +1,11 @@
 {
-  "name": "qmanager",
-  "version": "v0.1.12",
+  "name": "qmanager-vn",
+  "version": "0.1.0",
+  "description": "Fork tối giản & VN-localized của dr-dolomite/QManager-RM520N — Quectel modem manager cho SDXLEMUR family",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/tuanlongsav/QManager-VN.git"
+  },
   "private": true,
   "scripts": {
     "dev": "bun --bun next dev",

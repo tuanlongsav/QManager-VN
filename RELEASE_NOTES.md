@@ -1,53 +1,40 @@
-# 🚀 QManager RM520N BETA v0.1.12
+# QManager-VN v0.1.0-vn — Initial fork release
 
-Another attempt to fix rx/tx orientation: if Data Used still shows upload/download swapped after v0.1.11, QManager now runs a per-device rx/tx probe at boot and applies the correct mapping so bytes are accounted in the right bucket despite firmware quirks. If you still see reversed totals, please open an issue with your device model and firmware — feedback welcome.
+Bản đầu tiên của QManager-VN — fork tối giản và VN-localized của [dr-dolomite/QManager-RM520N](https://github.com/dr-dolomite/QManager-RM520N).
 
-> One-click OTA from **System Settings → Software Update** if you're on v0.1.5 or newer.
+> Phiên bản này tương đương codebase upstream v0.1.12, đã rebrand OTA về tuanlongsav/QManager-VN, chưa áp dụng feature cuts (Phase B) — sẽ ra mắt ở các bản tiếp theo.
 
-## 🛠️ Improvements
+## 🎯 Mục tiêu fork
 
-- **Storage row added to Device Metrics.** The Dashboard now shows `/usrdata` usage alongside CPU and Memory — the partition where configs, profiles, logs, and Entware (`/opt`) live. Bar turns amber at 80%, red at 95%.
+- **Tối giản, nhẹ, nhanh** — giảm bundle, giảm daemon, giảm route
+- **Giữ UI đẹp** — nguyên design language shadcn/Tailwind/OKLCH của upstream
+- **VN-localized** — port từ tuanlongsav/quectel-rgmii-toolkit
+- **Broad hardware compat** — hỗ trợ họ modem SDXLEMUR (RM520N-GL/GLAA/EU, RM502Q-AE, RM500Q-GL)
 
-- **Data Used counter auto-detects rx/tx orientation.** A quick 5 MB probe at boot figures out which field your firmware uses for upload vs. download (some Quectel builds swap them on the IPA fast-path), then maps correctly from there on. If the probe can't run, it retries on the next reattach. Any existing reversed totals are migrated automatically — no manual reset needed.
+## 🔧 Trong bản này
 
-## 🐛 Fixes
+- Rebrand: package name, OTA URLs, GitHub Actions workflow
+- README + RELEASE_NOTES tiếng Việt
+- Backup `UPSTREAM_README.md` để giữ tài liệu gốc đầy đủ
+- OTA URL whitelist trong `qmanager_update` đổi sang `tuanlongsav/QManager-VN`
+- Cài đặt qua URL longht's GitHub:
+  ```sh
+  curl -fsSL -o /tmp/qmanager-installer.sh \
+    https://github.com/tuanlongsav/QManager-VN/raw/refs/heads/main/qmanager-installer.sh && \
+    bash /tmp/qmanager-installer.sh
+  ```
 
-- **Live Traffic widget removed.** The per-second ↓/↑ readout on the Dashboard and Discord embed couldn't see LAN-to-WAN traffic — Quectel's IPA hardware offload bypasses the kernel for forwarded packets, so the widget read near-zero during real downloads. Cumulative Data Used totals are unaffected.
+## 📋 Lộ trình
 
-- **IP Passthrough "Apply & Reboot" now reboots.** Saving USB Connection Mode applied the change but silently skipped the reboot (the web user couldn't talk to systemd). It now goes through the sudo helper and lands on the countdown page like every other reboot flow.
+- **v0.2.0-vn** — Phase B: cắt Tailscale, Email Alerts, Web Console, Discord Bot
+- **v0.3.0-vn** — Phase C: auto-detect smd7/smd11, hardware compat matrix
+- **v0.4.0-vn** — Phase D: SMS Vietnam, VN APN presets
+- **v0.5.0-vn** — Phase E: auto-cell-lock, Simple Mode, feature consolidation
 
-- **OTA no longer strands the reboot page on a blank screen.** On slow connections the modem could reboot before the countdown page finished loading. All reboot flows (IPPT, Carrier Profile, System Reboot, Tailscale, OTA) now wait for the page to confirm it's ready first.
+## 🙏 Credit
 
-- **Version Management → Install actually installs.** The button used to stop after download — the tarball staged but nothing ran. It now completes the full download → install → reboot in one click, same as the main Update flow. Works for upgrades, reinstalls, and rollbacks.
+Toàn bộ kiến trúc và phần lớn tính năng thuộc về [dr-dolomite](https://github.com/dr-dolomite). Fork này chỉ là tinh chỉnh cá nhân cho nhu cầu VN.
 
-## 📥 Installation
+Nếu thấy QManager hữu ích, support [DrDolomite trên GitHub Sponsors](https://github.com/sponsors/dr-dolomite).
 
-### Upgrading from v0.1.11
-
-**System Settings → Software Update** → Download → Install. No SSH/ADB needed. All settings preserved.
-
-### Fresh Install
-
-SSH or ADB into the modem and run:
-
-```sh
-curl -fsSL -o /tmp/qmanager-installer.sh \
-  https://github.com/dr-dolomite/QManager-RM520N/raw/refs/heads/main/qmanager-installer.sh && \
-  bash /tmp/qmanager-installer.sh
-```
-
-No `curl`? Use `wget` — the installer works either way:
-
-```sh
-wget -O /tmp/qmanager-installer.sh \
-  https://github.com/dr-dolomite/QManager-RM520N/raw/refs/heads/main/qmanager-installer.sh && \
-  bash /tmp/qmanager-installer.sh
-```
-
-## 💙 Thank You!
-
-Bug reports and feature requests welcome on [GitHub Issues](https://github.com/dr-dolomite/QManager-RM520N/issues).
-
-Like what's new? QManager is built and maintained for free — if these updates have made your setup a little better, you can show your support via [Wise](https://wise.com/pay/business/blackcatdev?currency=USD) or [PayPal](https://paypal.me/iamrusss). Every bit helps keep this project alive. [GitHub Sponsors](https://github.com/sponsors/dr-dolomite) works too.
-
-**License:** MIT + Commons Clause — **Happy connecting!**
+**License:** MIT + Commons Clause (kế thừa upstream)

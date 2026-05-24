@@ -43,7 +43,7 @@ qlog_init "auto_update"
 
 # --- Configuration -----------------------------------------------------------
 
-REPO="dr-dolomite/QManager-RM520N"
+REPO="tuanlongsav/QManager-VN"
 VERSION_FILE="/etc/qmanager/VERSION"
 PID_FILE="/tmp/qmanager_update.pid"
 UPDATER="/usr/bin/qmanager_update"
