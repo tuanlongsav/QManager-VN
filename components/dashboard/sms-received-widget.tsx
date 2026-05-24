@@ -22,8 +22,8 @@ interface SmsReceivedWidgetProps {
 // =============================================================================
 
 export function SmsReceivedWidget({ className }: SmsReceivedWidgetProps) {
-  const { messages, isLoading } = useSms();
-  const count = messages?.length ?? 0;
+  const { data, isLoading } = useSms();
+  const count = data?.messages?.length ?? 0;
 
   const body = (
     <Card
@@ -34,7 +34,7 @@ export function SmsReceivedWidget({ className }: SmsReceivedWidgetProps) {
       )}
     >
       <MailIcon className="size-12 mb-3 text-primary" />
-      {isLoading && messages.length === 0 ? (
+      {isLoading && !data ? (
         <Skeleton className="h-10 w-16 mb-2" />
       ) : (
         <div className="text-4xl font-semibold tabular-nums">{count}</div>
