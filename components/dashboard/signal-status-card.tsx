@@ -25,6 +25,7 @@ import {
   listVariants,
   rowVariants,
   getValueColorClass,
+  getQualityLabel,
 } from "./signal-card-utils";
 
 // --- Signal bar icon based on RSRP quality ---
@@ -168,6 +169,7 @@ export function SignalStatusCard({
                   ? getSignalQuality(row.rawValue, row.thresholds)
                   : "none";
               const valueColor = getValueColorClass(quality);
+              const tierLabel = getQualityLabel(quality);
 
               return (
                 <motion.div
@@ -179,8 +181,20 @@ export function SignalStatusCard({
                   <dt className="font-semibold text-muted-foreground text-sm">
                     {row.label}
                   </dt>
-                  <dd className={cn("font-semibold text-sm tabular-nums", valueColor)}>
-                    {row.value}
+                  <dd className="flex items-center gap-2.5">
+                    {tierLabel && (
+                      <span
+                        className={cn(
+                          "text-xs font-semibold uppercase tracking-wide",
+                          valueColor,
+                        )}
+                      >
+                        {tierLabel}
+                      </span>
+                    )}
+                    <span className={cn("font-semibold text-sm tabular-nums", valueColor)}>
+                      {row.value}
+                    </span>
                   </dd>
                 </motion.div>
               );

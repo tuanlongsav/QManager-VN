@@ -26,3 +26,23 @@ export function getValueColorClass(quality: string): string {
       return "";
   }
 }
+
+/**
+ * Maps a signal quality level to a short human-readable label. User-facing
+ * label "Best" is preferred over "Excellent" — shorter, fits inline with
+ * the metric value in narrow card layouts.
+ */
+export function getQualityLabel(quality: string): string {
+  switch (quality) {
+    case "excellent":
+      return "Best";
+    case "good":
+      return "Good";
+    case "fair":
+      return "Fair";
+    case "poor":
+      return "Poor";
+    default:
+      return "";
+  }
+}

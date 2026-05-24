@@ -311,6 +311,19 @@ export const SINR_THRESHOLDS: SignalThresholds = {
 };
 
 /**
+ * RSSI thresholds (dBm) — higher (less negative) is better.
+ * RSSI = total received power including noise, so typical values are
+ * 10–20 dBm higher than RSRP. Tiers calibrated against Quectel field
+ * data for the LTE band.
+ */
+export const RSSI_THRESHOLDS: SignalThresholds = {
+  excellent: -65,
+  good: -75,
+  fair: -85,
+  poor: -120,
+};
+
+/**
  * Categorizes a signal value into a quality level based on thresholds.
  * Works for any metric where higher = better.
  */

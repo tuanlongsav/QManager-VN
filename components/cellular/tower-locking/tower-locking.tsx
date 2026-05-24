@@ -6,7 +6,6 @@ import TowerLockingSettingsComponent from "@/components/cellular/tower-locking/t
 import ScheduleTowerLockingComponent from "./schedule-locking";
 import LTELockingComponent from "./lte-locking";
 import NRSALockingComponent from "./nr-sa-locking";
-import { AutolockCard } from "./autolock-card";
 import { useTowerLocking } from "@/hooks/use-tower-locking";
 import { useModemStatus } from "@/hooks/use-modem-status";
 
@@ -88,8 +87,9 @@ const TowerLockingComponent = () => {
           />
         </div>
 
-        {/* QManager-VN: auto cell-lock daemon (Phase E.1) */}
-        <AutolockCard />
+        {/* Auto cell-lock card moved to Dashboard in F.2.J. Manage it
+            there — it watches signal quality and acts when stable, which
+            ties more naturally to the dashboard than to manual locks. */}
       </div>
     </div>
   );

@@ -160,10 +160,11 @@ export function NetworkStatusCompact({
         {ratLabel(rat, caActive, isAirplane)}
       </div>
 
-      {/* Public IP + Uptime — small monospace block at bottom */}
-      <div className="text-xs text-muted-foreground space-y-0.5 mt-3">
+      {/* Public IP + Uptime — same size as other widgets' "Temperature" /
+          "avg N ms" subtitle so the 4 widgets feel uniform. */}
+      <div className="text-sm font-semibold text-muted-foreground space-y-1 mt-3">
         <div className="flex items-center justify-center gap-1.5">
-          <GlobeIcon className="size-3" />
+          <GlobeIcon className="size-4" />
           <span className="font-mono">{publicIp}</span>
         </div>
         <div>up {uptime}</div>

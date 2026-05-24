@@ -8,7 +8,7 @@ import { NetworkStatusCompact } from "./network-status-compact";
 import { TemperatureWidget } from "./temperature-widget";
 import { SmsReceivedWidget } from "./sms-received-widget";
 import { InternetQualityWidget } from "./internet-quality-widget";
-import { SignalQualityMonitor } from "./signal-quality-monitor";
+import { AutolockCard } from "@/components/cellular/tower-locking/autolock-card";
 import DeviceStatus from "./device-status";
 import LTEStatusComponent from "./lte-status";
 import NrStatusComponent from "./nr-status";
@@ -120,11 +120,12 @@ const HomeComponent = () => {
             <RecentActivitiesComponent />
           </motion.div>
           <motion.div variants={itemVariants} className="h-full *:data-[slot=card]:h-full">
-            <SignalQualityMonitor
-              lte={data?.lte ?? null}
-              nr={data?.nr ?? null}
-              isLoading={isLoading}
-            />
+            {/* Auto cell-lock — moved here from Cellular → Band Locking page
+                in F.2.J. Per-row quality tiers in 4G/5G cards above already
+                give the user a signal-quality view, so a dedicated quality
+                monitor widget became redundant. The auto-lock daemon belongs
+                here because it acts on signal-quality changes. */}
+            <AutolockCard />
           </motion.div>
         </motion.div>
       </section>

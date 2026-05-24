@@ -20,6 +20,12 @@ cgi_handle_options
 CONFIG_FILE="/etc/qmanager/autolock.json"
 STATUS_FILE="/tmp/qmanager_autolock_status.json"
 SERVICE="qmanager-autolock"
+# Boot-persistence symlink path. RM520N-GL's minimal systemd ignores
+# `systemctl enable` (see scripts/usr/lib/qmanager/platform.sh:47), so to
+# survive reboots we drop a symlink directly into the wants directory —
+# the same pattern install_rm520n.sh uses for every QManager service.
+WANTS_LINK="/lib/systemd/system/multi-user.target.wants/${SERVICE}.service"
+UNIT_FILE="/lib/systemd/system/${SERVICE}.service"
 
 # Default config (created on first GET if missing)
 default_config() {
@@ -125,14 +131,20 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
 
             # Re-read the (now atomic) file for the daemon control decision —
             # avoids dependence on the in-memory tmpcfg that no longer exists.
+            #
+            # Boot persistence uses symlink, not `systemctl enable` — minimal
+            # systemd on RM520N-GL silently ignores the enable subcommand
+            # (verified in platform.sh:47 and install_rm520n.sh:1594). User
+            # report v0.3.1-vn: daemon stuck inactive after restart because
+            # the old code relied on enable taking effect.
             final_enabled=$(jq -r '.enabled' "$CONFIG_FILE")
             if [ "$final_enabled" = "true" ]; then
-                sudo -n systemctl enable "$SERVICE" 2>/dev/null
-                sudo -n systemctl restart "$SERVICE" 2>/dev/null
+                sudo -n /bin/ln -sf "$UNIT_FILE" "$WANTS_LINK" 2>/dev/null
+                sudo -n /bin/systemctl restart "$SERVICE" 2>/dev/null
                 qlog_info "Auto-lock enabled, daemon (re)started"
             else
-                sudo -n systemctl stop "$SERVICE" 2>/dev/null
-                sudo -n systemctl disable "$SERVICE" 2>/dev/null
+                sudo -n /bin/systemctl stop "$SERVICE" 2>/dev/null
+                sudo -n /bin/rm -f "$WANTS_LINK" 2>/dev/null
                 qlog_info "Auto-lock disabled, daemon stopped"
             fi
 
