@@ -352,6 +352,13 @@ log_error() { qlog_error "$1"; }
     auto_apply_profile() { :; }
 }
 
+# Hardware detection (QManager-VN: one-shot at boot — writes hardware.json
+# that UI reads for the support badge, band whitelist, and feature gating).
+. /usr/lib/qmanager/detect_hardware.sh 2>/dev/null || {
+    qlog_warn "detect_hardware.sh not found, hardware info unavailable"
+    detect_hardware() { :; }
+}
+
 # =============================================================================
 # HELPER: SAFE QCMD CALL
 # =============================================================================
@@ -2192,6 +2199,9 @@ main() {
     collect_boot_data
     update_proc_metrics
     update_system_health
+    # Hardware detection runs once per device — writes /etc/qmanager/hardware.json.
+    # collect_boot_data has already warmed up the AT path; safe to probe model now.
+    detect_hardware
     sms_alerts_init
     restore_event_state
     crash_watcher_init

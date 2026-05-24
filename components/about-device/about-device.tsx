@@ -3,6 +3,7 @@
 import { useAboutDevice } from "@/hooks/use-about-device";
 import DeviceInformationCard from "./device-information-card";
 import AboutQManagerCard from "./about-qmanager-card";
+import { HardwareBadge } from "./hardware-badge";
 
 const AboutDeviceComponent = () => {
   const { data, isLoading, error, refresh } = useAboutDevice();
@@ -10,7 +11,10 @@ const AboutDeviceComponent = () => {
   return (
     <div className="@container/main mx-auto p-2">
       <div className="mb-6">
-        <h1 className="text-3xl font-bold mb-2">About Device</h1>
+        <div className="flex flex-wrap items-center gap-3 mb-2">
+          <h1 className="text-3xl font-bold">About Device</h1>
+          <HardwareBadge />
+        </div>
         <p className="text-muted-foreground">
           Device identity, network addresses, and system information.
         </p>

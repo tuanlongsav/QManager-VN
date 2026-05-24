@@ -23,6 +23,7 @@ import { Separator } from "@/components/ui/separator";
 import { AppSidebar } from "@/components/app-sidebar";
 import { useBreadcrumbs } from "@/hooks/use-breadcrumbs";
 import { SimSwapBanner } from "@/components/monitoring/watchdog/sim-swap-banner";
+import { UnsupportedModelBanner } from "@/components/layout/unsupported-model-banner";
 import { isLoggedIn } from "@/hooks/use-auth";
 import { useAutoLogout } from "@/hooks/use-auto-logout";
 
@@ -81,6 +82,9 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
           </div>
         </header>
         <SimSwapBanner />
+        <div className="px-2 lg:px-6">
+          <UnsupportedModelBanner />
+        </div>
         <motion.div
           id="main-content"
           key={pathname}
