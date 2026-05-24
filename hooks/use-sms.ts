@@ -2,6 +2,7 @@
 
 import { useState, useCallback, useRef, useEffect } from "react";
 import { authFetch } from "@/lib/auth-fetch";
+import { fetchJsonFixed } from "@/lib/fix-mixed-utf8";
 import type {
   SmsMessage,
   SmsStorage,
@@ -77,7 +78,10 @@ export function useSms(): UseSmsReturn {
       if (!resp.ok) {
         throw new Error(`HTTP ${resp.status}: ${resp.statusText}`);
       }
-      const json: SmsInboxResponse = await resp.json();
+      // Use fixed JSON parser — sms_tool emits some VN chars as stray
+      // Latin-1 bytes mixed with valid UTF-8, which would otherwise render
+      // as � in the browser. See lib/fix-mixed-utf8.ts.
+      const json = await fetchJsonFixed<SmsInboxResponse>(resp);
       if (!mountedRef.current) return;
       if (!json.success) {
         throw new Error(json.detail || json.error || "Failed to fetch SMS");

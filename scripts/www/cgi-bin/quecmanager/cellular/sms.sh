@@ -337,14 +337,18 @@ if [ "$REQUEST_METHOD" = "GET" ]; then
         exit 0
     fi
 
-    # 1b. Sanitize encoding — sms_tool sometimes outputs Latin-1/Windows-1252
-    # single bytes for 2-byte UTF-8 chars (Vietnamese à/ò/À), producing � in
-    # the browser. If raw_json is valid UTF-8 already, this is a no-op;
-    # otherwise we decode it from Windows-1252 (Latin-1 superset) to UTF-8.
-    if [ -n "$raw_json" ] && ! printf '%s' "$raw_json" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1; then
-        fixed=$(printf '%s' "$raw_json" | iconv -f WINDOWS-1252 -t UTF-8 2>/dev/null)
-        [ -n "$fixed" ] && raw_json="$fixed"
-    fi
+    # 1b. NOTE — encoding repair moved to the frontend
+    #
+    # An earlier version tried `iconv -f WINDOWS-1252 -t UTF-8` here when the
+    # raw output didn't validate as UTF-8. That backfires for the common
+    # mixed-encoding case: sms_tool emits some VN chars (e.g. à U+00E0) as a
+    # single 0xE0 byte while others (e.g. ặ U+1EB7) are already a valid
+    # 3-byte UTF-8 sequence E1 BA B7. A blanket Windows-1252 re-decode
+    # would mangle the good 3-byte sequences into "áº·"-style garbage.
+    #
+    # The frontend now uses lib/fix-mixed-utf8.ts to walk bytes one-by-one,
+    # preserving valid UTF-8 multi-byte runs and re-encoding only stray
+    # high bytes as Latin-1 → UTF-8.
 
     # 2. Merge multi-part messages by reference, collect indexes for deletion
     # Single-part messages (total=1) stay individual; multi-part are grouped
