@@ -19,6 +19,13 @@ export interface SmsMessage {
   content: string;
   /** Timestamp string (format: "MM/DD/YY HH:MM:SS") */
   timestamp: string;
+  /**
+   * Raw UCS-2 hex content joined across all parts (inbox only).
+   * Backend supplies this from AT+CMGL "ALL" because sms_tool's UCS-2
+   * decoder corrupts code points U+0080–U+00FF (Vietnamese precomposed
+   * chars like à/á/ò/ý). Frontend decodes this to overwrite `content`.
+   */
+  content_hex?: string;
 }
 
 /** Storage status info */

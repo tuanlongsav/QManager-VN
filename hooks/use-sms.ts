@@ -2,7 +2,7 @@
 
 import { useState, useCallback, useRef, useEffect } from "react";
 import { authFetch } from "@/lib/auth-fetch";
-import { fetchJsonFixed } from "@/lib/fix-mixed-utf8";
+import { decodeUcs2Hex } from "@/lib/decode-ucs2";
 import type {
   SmsMessage,
   SmsStorage,
@@ -78,16 +78,25 @@ export function useSms(): UseSmsReturn {
       if (!resp.ok) {
         throw new Error(`HTTP ${resp.status}: ${resp.statusText}`);
       }
-      // Use fixed JSON parser — sms_tool emits some VN chars as stray
-      // Latin-1 bytes mixed with valid UTF-8, which would otherwise render
-      // as � in the browser. See lib/fix-mixed-utf8.ts.
-      const json = await fetchJsonFixed<SmsInboxResponse>(resp);
+      const json: SmsInboxResponse = await resp.json();
       if (!mountedRef.current) return;
       if (!json.success) {
         throw new Error(json.detail || json.error || "Failed to fetch SMS");
       }
+
+      // For inbox messages, overwrite the broken sms_tool-decoded content
+      // with the decoded UCS-2 hex (see lib/decode-ucs2.ts). sms_tool's
+      // UCS-2 decoder replaces U+0080–U+00FF (Vietnamese à/á/ò/ý/...) with
+      // U+FFFD; the backend now also fetches the raw hex via AT+CMGL UCS-2
+      // and supplies it as content_hex so we can recover the original.
+      const fixed = (json.messages || []).map((m) => {
+        if (!m.content_hex) return m;
+        const decoded = decodeUcs2Hex(m.content_hex);
+        return decoded ? { ...m, content: decoded } : m;
+      });
+
       const next: SmsData = {
-        messages: json.messages || [],
+        messages: fixed,
         storage: json.storage || { used: 0, total: 0 },
       };
       if (folder === "outbox") {

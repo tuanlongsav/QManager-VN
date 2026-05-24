@@ -337,18 +337,17 @@ if [ "$REQUEST_METHOD" = "GET" ]; then
         exit 0
     fi
 
-    # 1b. NOTE — encoding repair moved to the frontend
+    # 1b. NOTE — Vietnamese content recovery via AT+CMGL UCS-2
     #
-    # An earlier version tried `iconv -f WINDOWS-1252 -t UTF-8` here when the
-    # raw output didn't validate as UTF-8. That backfires for the common
-    # mixed-encoding case: sms_tool emits some VN chars (e.g. à U+00E0) as a
-    # single 0xE0 byte while others (e.g. ặ U+1EB7) are already a valid
-    # 3-byte UTF-8 sequence E1 BA B7. A blanket Windows-1252 re-decode
-    # would mangle the good 3-byte sequences into "áº·"-style garbage.
+    # sms_tool's UCS-2 → UTF-8 decoder corrupts code points U+0080–U+00FF
+    # (Vietnamese precomposed chars like à/á/ò/ý) into U+FFFD ("�"). Code
+    # points outside that range (ặ U+1EB7, đ U+0111) survive intact.
     #
-    # The frontend now uses lib/fix-mixed-utf8.ts to walk bytes one-by-one,
-    # preserving valid UTF-8 multi-byte runs and re-encoding only stray
-    # high bytes as Latin-1 → UTF-8.
+    # We bypass sms_tool's content decoding by re-fetching the raw UCS-2
+    # hex via `AT+CMGF=1; AT+CSCS="UCS2"; AT+CMGL="ALL"`, then attaching
+    # per-message `content_hex` for the frontend to decode losslessly.
+    # sms_tool's index/sender/timestamp/multi-part grouping is still used
+    # because those fields decode correctly.
 
     # 2. Merge multi-part messages by reference, collect indexes for deletion
     # Single-part messages (total=1) stay individual; multi-part are grouped
@@ -370,6 +369,50 @@ if [ "$REQUEST_METHOD" = "GET" ]; then
         ]
     ' 2>/dev/null)
     [ -z "$messages" ] || printf '%s' "$messages" | jq empty 2>/dev/null || messages="[]"
+    [ -z "$messages" ] && messages="[]"
+
+    # 2b. Fetch raw UCS-2 hex per storage slot and attach as content_hex.
+    # The frontend decodes content_hex losslessly; if anything below fails,
+    # we leave content_hex unset and the user sees sms_tool's broken content.
+    qcmd 'AT+CMGF=1' >/dev/null 2>&1
+    qcmd 'AT+CSCS="UCS2"' >/dev/null 2>&1
+    cmgl_out=$(qcmd 'AT+CMGL="ALL"' 2>/dev/null)
+    # Restore PDU mode so subsequent sms_tool calls (and any other consumer)
+    # see the modem state they expect.
+    qcmd 'AT+CMGF=0' >/dev/null 2>&1
+
+    # Parse CMGL into a JSON map: { "<idx>": "<ucs2_hex>", ... }
+    hex_map_json=$(printf '%s' "$cmgl_out" | awk '
+        BEGIN { printf "{"; first = 1 }
+        /^\+CMGL:/ {
+            line = $0
+            sub(/^\+CMGL: */, "", line)
+            n = split(line, parts, ",")
+            idx = parts[1]
+            gsub(/[" \r]/, "", idx)
+            if (idx !~ /^[0-9]+$/) next
+            if ((getline hex) <= 0) next
+            gsub(/[\r\n ]/, "", hex)
+            if (hex !~ /^[0-9A-Fa-f]+$/) next
+            if (!first) printf ","
+            printf "\"%s\":\"%s\"", idx, hex
+            first = 0
+        }
+        END { printf "}" }
+    ')
+    # Validate; fall back to empty map on any awk/format problem
+    if ! printf '%s' "$hex_map_json" | jq empty >/dev/null 2>&1; then
+        qlog_warn "CMGL hex map parse failed; content_hex will be empty"
+        hex_map_json='{}'
+    fi
+
+    # Attach content_hex to each message by joining the hex of every index
+    # in its `indexes` list (preserves sms_tool's multi-part part order).
+    messages=$(printf '%s' "$messages" | jq -c --argjson hex_map "$hex_map_json" '
+        map(. + {
+            content_hex: ([.indexes[] | tostring | $hex_map[.] // ""] | join(""))
+        })
+    ' 2>/dev/null)
     [ -z "$messages" ] && messages="[]"
 
     # 3. Get storage status via AT+CPMS?
