@@ -20,18 +20,6 @@ www-data ALL=(root) NOPASSWD: /usr/bin/crontab
 # SSH password management (reads password from stdin, updates /etc/shadow)
 www-data ALL=(root) NOPASSWD: /usr/bin/qmanager_set_ssh_password
 
-# Tailscale VPN management
-www-data ALL=(root) NOPASSWD: /usr/bin/qmanager_tailscale_mgr
-www-data ALL=(root) NOPASSWD: /usrdata/tailscale/tailscale
-www-data ALL=(root) NOPASSWD: /usrdata/tailscale/tailscaled --version
-
-# Tailscale boot persistence (symlink-based)
-www-data ALL=(root) NOPASSWD: /bin/ln -sf /lib/systemd/system/tailscaled.service /lib/systemd/system/multi-user.target.wants/tailscaled.service
-www-data ALL=(root) NOPASSWD: /bin/rm -f /lib/systemd/system/multi-user.target.wants/tailscaled.service
-
-# Web console management
-www-data ALL=(root) NOPASSWD: /usr/bin/qmanager_console_mgr
-
 # OTA updater (download/stage/install/rollback — needs full root for install.sh)
 www-data ALL=(root) NOPASSWD: /usr/bin/qmanager_update
 

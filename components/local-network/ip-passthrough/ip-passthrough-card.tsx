@@ -488,8 +488,9 @@ const IPPassthroughCard = () => {
                     <p className="font-medium text-foreground">
                       Once IP Passthrough is active, the device&apos;s local
                       gateway will no longer be reachable. Make sure you have an
-                      active Tailscale connection or another out-of-band method
-                      to access the device after reboot.
+                      out-of-band method (SSH over cellular, ADB, or a VPN
+                      tunnel like Tailscale installed manually) to access the
+                      device after reboot.
                     </p>
                   )}
                   <p>This setting persists across reboots.</p>

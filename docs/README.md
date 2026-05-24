@@ -1,10 +1,13 @@
-# QManager Documentation
+# QManager-VN Documentation
 
-QManager is a modern web-based GUI for managing Quectel cellular modems. It supports two deployment targets: OpenWRT devices (RM551E-GL) and the Quectel RM520N-GL modem's internal Linux OS. It provides real-time signal monitoring, cellular configuration, network management, and advanced diagnostics through an intuitive interface.
+> **Fork notice (QManager-VN):** Đây là fork tối giản của [dr-dolomite/QManager-RM520N](https://github.com/dr-dolomite/QManager-RM520N). Một số tính năng đã được CẮT trong fork (xem [`../UPSTREAM_DIFF.md`](../UPSTREAM_DIFF.md)): **Tailscale VPN**, **Email Alerts (msmtp)**, **Web Console (ttyd) + AT Terminal**, **Discord Bot**. Các tài liệu chi tiết bên dưới có thể vẫn nhắc tới những tính năng này — đó là di sản từ upstream. Source code đã được xoá; tài liệu sẽ được sync dần theo lộ trình.
 
-**Version:** v0.1.2
-**License:** MIT
-**Successor to:** [SimpleAdmin](https://github.com/dr-dolomite/simpleadmin-mockup)
+QManager-VN là fork web-based GUI quản lý modem Quectel cho họ SDXLEMUR (RM520N-GL, RM520N-GLAA, RM502Q-AE, RM500Q-GL, RM520N-EU). Real-time signal monitoring, cellular configuration, network management.
+
+**Version:** v0.1.0-vn (codebase upstream v0.1.12)
+**License:** MIT + Commons Clause
+**Upstream:** [dr-dolomite/QManager-RM520N](https://github.com/dr-dolomite/QManager-RM520N)
+**Predecessor:** [SimpleAdmin](https://github.com/dr-dolomite/simpleadmin-mockup)
 
 ---
 

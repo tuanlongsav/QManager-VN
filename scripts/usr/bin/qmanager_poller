@@ -341,12 +341,6 @@ log_error() { qlog_error "$1"; }
     exit 1
 }
 
-# Email alerts (optional — non-fatal if missing)
-. /usr/lib/qmanager/email_alerts.sh 2>/dev/null || {
-    qlog_warn "email_alerts.sh not found, email alerts disabled"
-    check_email_alert() { :; }
-    email_alerts_init() { :; }
-}
 . /usr/lib/qmanager/sms_alerts.sh 2>/dev/null || {
     qlog_warn "sms_alerts.sh not found, SMS alerts disabled"
     check_sms_alert() { :; }
@@ -2092,7 +2086,6 @@ poll_cycle() {
     update_proc_metrics
     update_system_health
     read_ping_data
-    check_email_alert
     check_sms_alert
 
     if [ -f "$LONG_FLAG" ]; then
@@ -2199,7 +2192,6 @@ main() {
     collect_boot_data
     update_proc_metrics
     update_system_health
-    email_alerts_init
     sms_alerts_init
     restore_event_state
     crash_watcher_init

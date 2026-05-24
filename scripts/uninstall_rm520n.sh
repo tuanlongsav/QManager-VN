@@ -161,13 +161,13 @@ confirm_uninstall() {
     printf "    • CGI endpoints and frontend: %s\n" "$WWW_ROOT"
     printf "    • lighttpd config and TLS certs\n"
     printf "    • Sudoers rules\n"
-    printf "    • Web console (ttyd): %s\n" "$CONSOLE_DIR"
+    printf "    • Legacy web console (ttyd): %s ${DIM}(if present from upstream install)${NC}\n" "$CONSOLE_DIR"
     printf "    • Speedtest CLI: /usrdata/root/bin/speedtest\n"
     printf "    • Runtime state: /tmp/qmanager_*\n"
     printf "    • Cron jobs referencing qmanager\n"
     if [ "$PURGE" = "1" ]; then
         printf "    • Config directory: %s  ${YELLOW}[--purge]${NC}\n" "$CONF_DIR"
-        printf "    • Tailscale installation: %s  ${YELLOW}[--purge]${NC}\n" "$TAILSCALE_DIR"
+        printf "    • Legacy Tailscale installation: %s  ${YELLOW}[--purge]${NC} ${DIM}(if present)${NC}\n" "$TAILSCALE_DIR"
     fi
     printf "\n"
     printf "  ${YELLOW}Entware (/opt/) is preserved unconditionally.${NC}\n\n"

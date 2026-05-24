@@ -54,7 +54,6 @@ LIB_DIR="/usr/lib/qmanager"
 BIN_DIR="/usr/bin"
 SYSTEMD_DIR="/lib/systemd/system"
 WANTS_DIR="/lib/systemd/system/multi-user.target.wants"
-TAILSCALE_DIR="/usrdata/tailscale"
 
 # Detect Entware vs system sudo (called as function — must re-evaluate
 # after install_dependencies installs sudo on a fresh modem)
@@ -88,8 +87,9 @@ SRC_DEPS="$INSTALL_DIR/dependencies"
 # Entware opkg path
 OPKG="/opt/bin/opkg"
 
-# Optional packages (not bundled — installed from Entware if available)
-OPTIONAL_PACKAGES="msmtp"
+# Optional packages (not bundled — installed from Entware if available).
+# QManager-VN: email alerts (msmtp) removed in Phase B — list is empty for now.
+OPTIONAL_PACKAGES=""
 
 # Two-phase version write: written at preflight, finalized at the end
 VERSION_PENDING="/etc/qmanager/VERSION.pending"
@@ -105,7 +105,7 @@ SSH_BOOTSTRAP_STATUS="not_run"
 LOG_FILE="/tmp/qmanager_install.log"
 
 # Services gated on config: only re-enable if they were already enabled
-UCI_GATED_SERVICES="qmanager-watchcat qmanager-tower-failover qmanager-discord"
+UCI_GATED_SERVICES="qmanager-watchcat qmanager-tower-failover"
 
 # Conflict packages that must be removed before installing
 CONFLICT_PACKAGES="socat socat-at-bridge"
@@ -509,17 +509,6 @@ install_dependencies() {
         warn "sms_tool not found — SMS features will not work"
     fi
 
-    # --- qmanager_discord (optional Discord bot binary) -----------------------
-    if [ -f "$SRC_DEPS/qmanager_discord" ]; then
-        install_file "$SRC_DEPS/qmanager_discord" "$BIN_DIR/qmanager_discord" 755 \
-            || warn "Failed to install qmanager_discord"
-        info "qmanager_discord installed to $BIN_DIR/qmanager_discord"
-    elif [ -x "$BIN_DIR/qmanager_discord" ]; then
-        info "qmanager_discord already installed"
-    else
-        info "qmanager_discord not bundled — Discord bot feature disabled"
-    fi
-
     # --- Entware bootstrap -------------------------------------------------------
     # If opkg is not installed, bootstrap Entware from scratch.
     # This replicates the RGMII toolkit's Entware installation process.
@@ -669,7 +658,7 @@ RCEOF
             # Upgrade lighttpd + all modules together to prevent version mismatch
             # (plugin-version must match lighttpd-version or modules fail to load)
             "$OPKG" upgrade lighttpd lighttpd-mod-cgi lighttpd-mod-openssl \
-                lighttpd-mod-redirect lighttpd-mod-proxy >/dev/null 2>&1 \
+                lighttpd-mod-redirect >/dev/null 2>&1 \
                 && info "lighttpd packages synced" \
                 || true
         else
@@ -677,8 +666,9 @@ RCEOF
                 && info "lighttpd installed from Entware" \
                 || die "Failed to install lighttpd from Entware"
         fi
-        # Install required modules (Entware packages them ALL separately)
-        for mod in lighttpd-mod-cgi lighttpd-mod-openssl lighttpd-mod-redirect lighttpd-mod-proxy; do
+        # Install required modules (Entware packages them ALL separately).
+        # QManager-VN: mod_proxy removed (was used for ttyd web console).
+        for mod in lighttpd-mod-cgi lighttpd-mod-openssl lighttpd-mod-redirect; do
             "$OPKG" install "$mod" >/dev/null 2>&1 \
                 && info "$mod installed" \
                 || warn "$mod not available"
@@ -887,29 +877,6 @@ install_backend() {
         info "$lib_count libraries installed to $LIB_DIR"
     fi
 
-    # --- Tailscale systemd units (staged for on-demand install) ---
-    # These are NOT installed as active units — qmanager_tailscale_mgr copies
-    # them to /lib/systemd/system/ when the user clicks "Install Tailscale".
-    for f in tailscaled.service tailscaled.defaults qmanager-console.service; do
-        src="$SRC_SCRIPTS/etc/systemd/system/$f"
-        if [ -f "$src" ]; then
-            install_file "$src" "$LIB_DIR/$f" 644 \
-                || warn "Failed to stage $f"
-        fi
-    done
-
-    # --- Upgrade existing Tailscale deployment ---
-    # If Tailscale is already installed, update the live systemd unit and staged
-    # copy so service fixes (e.g. ExecStartPost chmod) take effect on next boot.
-    if [ -x "$TAILSCALE_DIR/tailscaled" ] && [ -f "$LIB_DIR/tailscaled.service" ]; then
-        install_file "$LIB_DIR/tailscaled.service" "$SYSTEMD_DIR/tailscaled.service" 644 \
-            || warn "Failed to update live tailscaled.service"
-        mkdir -p "$TAILSCALE_DIR/systemd"
-        install_file "$LIB_DIR/tailscaled.service" "$TAILSCALE_DIR/systemd/tailscaled.service" 644 \
-            || warn "Failed to update staged tailscaled.service"
-        info "Updated deployed tailscaled.service"
-    fi
-
     # --- Daemons and utilities ---
     local bin_count=0
     if [ -d "$SRC_SCRIPTS/usr/bin" ]; then
@@ -933,18 +900,6 @@ install_backend() {
         local cgi_count
         cgi_count=$(find "$CGI_DIR" -name "*.sh" -type f | wc -l | tr -d ' ')
         info "$cgi_count CGI scripts installed to $CGI_DIR"
-    fi
-
-    # --- Console startup script ---
-    if [ -d "$SRC_SCRIPTS/usrdata/qmanager/console" ]; then
-        mkdir -p "$QMANAGER_ROOT/console"
-        for f in "$SRC_SCRIPTS/usrdata/qmanager/console"/*; do
-            [ -f "$f" ] || continue
-            local mode=644
-            case "$f" in *.sh) mode=755 ;; esac
-            install_file "$f" "$QMANAGER_ROOT/console/$(basename "$f")" "$mode" || true
-        done
-        info "Console startup script installed"
     fi
 
     # --- Systemd unit files (SimpleAdmin pattern: /lib/systemd/system/) ---
@@ -1432,15 +1387,6 @@ enable_services() {
         fi
     done
 
-    # --- Discord bot (gated on binary + config + enabled flag) ----------------
-    if [ -x "$BIN_DIR/qmanager_discord" ] && [ -f /etc/qmanager/discord_bot.json ]; then
-        enabled=$(jq -r '.enabled // false' /etc/qmanager/discord_bot.json 2>/dev/null)
-        if [ "$enabled" = "true" ]; then
-            ln -sf "$SYSTEMD_DIR/qmanager-discord.service" "$WANTS_DIR/qmanager-discord.service"
-            info "Discord bot service enabled"
-        fi
-    fi
-
     sync
     systemctl daemon-reload
 }
@@ -1472,21 +1418,7 @@ start_services() {
         systemctl start "$svc" 2>/dev/null || true
     done
 
-    # Start Discord bot if binary present, config exists, and enabled flag is true
-    if [ -x "$BIN_DIR/qmanager_discord" ] && [ -f /etc/qmanager/discord_bot.json ]; then
-        _dc_enabled=$(jq -r '.enabled // false' /etc/qmanager/discord_bot.json 2>/dev/null)
-        if [ "$_dc_enabled" = "true" ]; then
-            systemctl start qmanager-discord 2>/dev/null || warn "Could not start qmanager-discord"
-            info "Discord bot started"
-        fi
-    fi
     sleep 2
-
-    # Download ttyd for web console (non-fatal — console is optional)
-    if [ ! -x /usrdata/qmanager/console/ttyd ]; then
-        info "Downloading ttyd for web console..."
-        /usr/bin/qmanager_console_mgr install 2>/dev/null || warn "ttyd download failed — web console unavailable"
-    fi
 
     # Verify critical services
     local svc_errors=0
@@ -1723,7 +1655,6 @@ print_summary() {
 
     printf "\n"
     printf "  Open in browser:  ${BOLD}https://192.168.225.1${NC}\n"
-    printf "  Web console:      ${BOLD}https://192.168.225.1/console${NC}\n"
 
     case "$SSH_BOOTSTRAP_STATUS" in
         installed)

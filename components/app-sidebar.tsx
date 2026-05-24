@@ -10,13 +10,11 @@ import {
   LucideSignal,
   MessageCircleIcon,
   DogIcon,
-  GlobeIcon,
   RouterIcon,
   User2Icon,
   HeartIcon,
   ScanIcon,
   SettingsIcon,
-  TerminalIcon,
   DownloadIcon,
   EthernetPort,
 } from "lucide-react";
@@ -80,14 +78,6 @@ const data = {
       title: "Software Update",
       url: "/system-settings/software-update",
       icon: DownloadIcon,
-    },
-    {
-      title: "Terminals",
-      url: "/system-settings/at-terminal",
-      icon: TerminalIcon,
-      items: [
-        { title: "Web Console", url: "/system-settings/web-console" },
-      ],
     },
   ],
   navSecondary: [
@@ -226,16 +216,8 @@ const data = {
           url: "/monitoring/latency",
         },
         {
-          title: "Email Alerts",
-          url: "/monitoring/email-alerts",
-        },
-        {
           title: "SMS Alerts",
           url: "/monitoring/sms-alerts",
-        },
-        {
-          title: "Discord Bot",
-          url: "/monitoring/discord-bot",
         },
       ],
     },
@@ -243,11 +225,6 @@ const data = {
       title: "Watchdog",
       url: "/monitoring/watchdog",
       icon: DogIcon,
-    },
-    {
-      title: "Tailscale VPN",
-      url: "/monitoring/tailscale",
-      icon: GlobeIcon,
     },
   ],
 };
