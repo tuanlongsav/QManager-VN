@@ -6,7 +6,6 @@ import {
   PieChart,
   Settings2,
   HomeIcon,
-  RadioTowerIcon,
   LucideSignal,
   MessageCircleIcon,
   DogIcon,
@@ -94,17 +93,6 @@ const data = {
     },
   ],
   cellular: [
-    {
-      title: "Cellular Information",
-      url: "/cellular",
-      icon: RadioTowerIcon,
-      items: [
-        {
-          title: "Antennas",
-          url: "/cellular/antennas",
-        },
-      ],
-    },
     {
       title: "SMS Center",
       url: "/cellular/sms",

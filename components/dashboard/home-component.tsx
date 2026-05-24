@@ -8,12 +8,12 @@ import { NetworkStatusCompact } from "./network-status-compact";
 import { TemperatureWidget } from "./temperature-widget";
 import { SmsReceivedWidget } from "./sms-received-widget";
 import { InternetQualityWidget } from "./internet-quality-widget";
+import { DeviceInfoWidget } from "./device-info-widget";
+import { RatPrimaryCard } from "./rat-primary-card";
 import { AutolockCard } from "@/components/cellular/tower-locking/autolock-card";
-import DeviceStatus from "./device-status";
-import LTEStatusComponent from "./lte-status";
-import NrStatusComponent from "./nr-status";
 import RecentActivitiesComponent from "./recent-activities";
 import DeviceMetricsComponent from "./device-metrics";
+import CellDataComponent from "@/components/cellular/cell-data";
 
 const DEFAULT_POLL_MS = 2000;
 const POLL_BUFFER_MS = 250;
@@ -37,7 +37,6 @@ const HomeComponent = () => {
   const { data, isLoading, isStale, error } = useModemStatus({ pollInterval });
   const { data: aboutDevice } = useAboutDevice();
 
-  // Tie poll cadence to the ping daemon's write interval (Connection Sensitivity).
   const daemonIntervalSec = data?.connectivity?.history_interval_sec;
   React.useEffect(() => {
     if (!daemonIntervalSec || daemonIntervalSec <= 0) return;
@@ -45,7 +44,6 @@ const HomeComponent = () => {
     setPollInterval((prev) => (prev === next ? prev : next));
   }, [daemonIntervalSec]);
 
-  // isStale reserved for future top-row indicator
   void isStale;
 
   return (
@@ -56,9 +54,11 @@ const HomeComponent = () => {
         </div>
       )}
 
-      {/* === Top widget row — 4 same-size tiles (QManager-VN F.1) === */}
+      {/* === Top row — 5 same-size widgets (QManager-VN F.2.L.4) ===
+          NetworkStatus / Temperature / SMS / InternetQuality / DeviceInfo.
+          Stack 1-col on phones, 2x3 on tablets, 5x1 on desktop. */}
       <motion.div
-        className="grid grid-cols-1 @md/main:grid-cols-2 @4xl/main:grid-cols-4 gap-4"
+        className="grid grid-cols-1 @md/main:grid-cols-2 @4xl/main:grid-cols-5 gap-4"
         variants={containerVariants}
         initial="hidden"
         animate="visible"
@@ -88,55 +88,59 @@ const HomeComponent = () => {
             isLoading={isLoading}
           />
         </motion.div>
+        <motion.div variants={itemVariants} className="h-full *:data-[slot=card]:h-full">
+          <DeviceInfoWidget />
+        </motion.div>
       </motion.div>
 
-      {/* === Signal Status section (QManager-VN F.2.D) ===
-          One labeled group containing 4 sub-cards in a 2×2 grid:
-          4G Primary Status · 5G Primary Status · Recent Activities · Signal Quality Monitor.
-          Replaces the previous full-width LTE/NR/SCC + Live Latency + Signal History rows
-          with a single coherent section the user can scan at a glance. */}
-      <section aria-labelledby="signal-status-heading" className="space-y-3">
-        <div>
-          <h2 id="signal-status-heading" className="text-xl font-bold">
-            Signal Status
-          </h2>
-          <p className="text-sm text-muted-foreground">
-            Trạng thái tín hiệu 4G/5G hiện tại, hoạt động gần đây và đánh giá chất lượng.
-          </p>
-        </div>
-        <motion.div
-          className="grid grid-cols-1 @3xl/main:grid-cols-2 gap-4"
-          variants={containerVariants}
-          initial="hidden"
-          animate="visible"
-        >
-          <motion.div variants={itemVariants} className="h-full *:data-[slot=card]:h-full">
-            <LTEStatusComponent data={data?.lte ?? null} isLoading={isLoading} />
-          </motion.div>
-          <motion.div variants={itemVariants} className="h-full *:data-[slot=card]:h-full">
-            <NrStatusComponent data={data?.nr ?? null} isLoading={isLoading} />
-          </motion.div>
-          <motion.div variants={itemVariants} className="h-full *:data-[slot=card]:h-full">
-            <RecentActivitiesComponent />
-          </motion.div>
-          <motion.div variants={itemVariants} className="h-full *:data-[slot=card]:h-full">
-            {/* Auto cell-lock — moved here from Cellular → Band Locking page
-                in F.2.J. Per-row quality tiers in 4G/5G cards above already
-                give the user a signal-quality view, so a dedicated quality
-                monitor widget became redundant. The auto-lock daemon belongs
-                here because it acts on signal-quality changes. */}
-            <AutolockCard />
-          </motion.div>
-        </motion.div>
-      </section>
-
-      {/* === System Health + Device Information (balanced 2-col, F.2.E + F.2.F) === */}
+      {/* === Row 1 — Signal detail (3 cards): 4G | 5G | Autolock ===
+          No section header per user feedback v0.3.2-vn — the cards speak
+          for themselves and the heading was visual noise. */}
       <motion.div
-        className="grid grid-cols-1 @3xl/main:grid-cols-2 gap-4"
+        className="grid grid-cols-1 @3xl/main:grid-cols-2 @5xl/main:grid-cols-3 gap-4"
         variants={containerVariants}
         initial="hidden"
         animate="visible"
       >
+        <motion.div variants={itemVariants} className="h-full *:data-[slot=card]:h-full">
+          <RatPrimaryCard
+            title="4G Primary Status"
+            description="Carrier components đang phục vụ trên LTE."
+            carrierComponents={data?.network?.carrier_components ?? null}
+            technology="LTE"
+            isLoading={isLoading}
+          />
+        </motion.div>
+        <motion.div variants={itemVariants} className="h-full *:data-[slot=card]:h-full">
+          <RatPrimaryCard
+            title="5G Primary Status"
+            description="Carrier components đang phục vụ trên NR."
+            carrierComponents={data?.network?.carrier_components ?? null}
+            technology="NR"
+            isLoading={isLoading}
+          />
+        </motion.div>
+        <motion.div variants={itemVariants} className="h-full *:data-[slot=card]:h-full">
+          <AutolockCard />
+        </motion.div>
+      </motion.div>
+
+      {/* === Row 2 — Cellular Information | System Health | Recent Activities === */}
+      <motion.div
+        className="grid grid-cols-1 @3xl/main:grid-cols-2 @5xl/main:grid-cols-3 gap-4"
+        variants={containerVariants}
+        initial="hidden"
+        animate="visible"
+      >
+        <motion.div variants={itemVariants} className="h-full *:data-[slot=card]:h-full">
+          <CellDataComponent
+            network={data?.network ?? null}
+            lte={data?.lte ?? null}
+            nr={data?.nr ?? null}
+            device={data?.device ?? null}
+            isLoading={isLoading}
+          />
+        </motion.div>
         <motion.div variants={itemVariants} className="h-full *:data-[slot=card]:h-full">
           <DeviceMetricsComponent
             deviceData={data?.device ?? null}
@@ -146,11 +150,7 @@ const HomeComponent = () => {
           />
         </motion.div>
         <motion.div variants={itemVariants} className="h-full *:data-[slot=card]:h-full">
-          <DeviceStatus
-            data={data?.device ?? null}
-            isLoading={isLoading}
-            lanGateway={aboutDevice?.network.lan_gateway}
-          />
+          <RecentActivitiesComponent />
         </motion.div>
       </motion.div>
     </div>
