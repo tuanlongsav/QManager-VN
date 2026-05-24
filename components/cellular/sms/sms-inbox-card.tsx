@@ -65,9 +65,15 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Badge } from "@/components/ui/badge";
 
 import type { SmsData } from "@/hooks/use-sms";
 import type { SmsMessage } from "@/types/sms";
+import {
+  classifySender,
+  formatSenderDisplay,
+  isKnownVnBrand,
+} from "@/lib/sms-format";
 import SmsComposeDialog from "./sms-compose-dialog";
 
 // =============================================================================
@@ -187,14 +193,34 @@ export default function SmsInboxCard({
       {
         accessorKey: "sender",
         header: "From",
-        cell: ({ row }) => (
-          <div className="min-w-0">
-            <div className="font-medium truncate">{row.original.sender}</div>
-            <span className="block text-xs text-muted-foreground @sm/card:hidden">
-              {row.original.timestamp}
-            </span>
-          </div>
-        ),
+        cell: ({ row }) => {
+          const raw = row.original.sender;
+          const display = formatSenderDisplay(raw);
+          const kind = classifySender(raw);
+          return (
+            <div className="min-w-0">
+              <div className="flex items-center gap-1.5 min-w-0">
+                <span className="font-medium truncate">{display}</span>
+                {kind === "brand" && (
+                  <Badge
+                    variant="outline"
+                    className="bg-info/15 text-info border-info/30 text-[10px] px-1.5 py-0 h-4 shrink-0"
+                    title={
+                      isKnownVnBrand(raw)
+                        ? "Brand sender (VN service)"
+                        : "Brand sender"
+                    }
+                  >
+                    {isKnownVnBrand(raw) ? "VN Brand" : "Brand"}
+                  </Badge>
+                )}
+              </div>
+              <span className="block text-xs text-muted-foreground @sm/card:hidden">
+                {row.original.timestamp}
+              </span>
+            </div>
+          );
+        },
       },
       {
         accessorKey: "content",
@@ -411,7 +437,7 @@ export default function SmsInboxCard({
                       key={row.id}
                       className="cursor-pointer"
                       tabIndex={0}
-                      aria-label={`Message from ${row.original.sender}`}
+                      aria-label={`Message from ${formatSenderDisplay(row.original.sender)}`}
                       onClick={() => setViewMessage(row.original)}
                       onKeyDown={(e) => {
                         if (e.key === "Enter" || e.key === " ") {
@@ -487,7 +513,9 @@ export default function SmsInboxCard({
       >
         <DialogContent className="sm:max-w-lg">
           <DialogHeader>
-            <DialogTitle>Message from {viewMessage?.sender}</DialogTitle>
+            <DialogTitle>
+              Message from {formatSenderDisplay(viewMessage?.sender)}
+            </DialogTitle>
             <DialogDescription>{viewMessage?.timestamp}</DialogDescription>
           </DialogHeader>
           <div className="whitespace-pre-wrap wrap-break-word text-sm">
@@ -506,7 +534,7 @@ export default function SmsInboxCard({
             <AlertDialogTitle>Delete Message</AlertDialogTitle>
             <AlertDialogDescription>
               Are you sure you want to delete this message from{" "}
-              {deleteTarget?.sender}? This action cannot be undone.
+              {formatSenderDisplay(deleteTarget?.sender)}? This action cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
