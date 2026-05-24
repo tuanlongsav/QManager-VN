@@ -5,6 +5,7 @@ import { motion, type Variants } from "motion/react";
 import { cn } from "@/lib/utils";
 import { useModemStatus } from "@/hooks/use-modem-status";
 import { useAboutDevice } from "@/hooks/use-about-device";
+import { useUiMode } from "@/hooks/use-ui-mode";
 import NetworkStatusComponent from "./network-status";
 import DeviceStatus from "./device-status";
 import LTEStatusComponent from "./lte-status";
@@ -14,6 +15,7 @@ import { SignalHistoryComponent } from "./signal-history";
 import RecentActivitiesComponent from "./recent-activities";
 import DeviceMetricsComponent from "./device-metrics";
 import LiveLatencyComponent from "./live-latency";
+import { UiModeToggle } from "./ui-mode-toggle";
 
 const DEFAULT_POLL_MS = 2000;
 const POLL_BUFFER_MS = 250; // Small lag past each daemon write to avoid catching a half-written cache
@@ -36,6 +38,7 @@ const HomeComponent = () => {
   const [pollInterval, setPollInterval] = React.useState<number>(DEFAULT_POLL_MS);
   const { data, isLoading, isStale, error } = useModemStatus({ pollInterval });
   const { data: aboutDevice } = useAboutDevice();
+  const { isPro } = useUiMode();
 
   // Tie poll cadence to the ping daemon's write interval (Connection Sensitivity).
   // history_interval_sec comes straight from the active profile, so this adapts
@@ -53,6 +56,9 @@ const HomeComponent = () => {
 
   return (
     <div className="grid grid-cols-1 gap-6 px-4 lg:px-6 @4xl/main:grid-cols-5" aria-live="polite" aria-atomic="false">
+      <div className="col-span-full flex items-center justify-end">
+        <UiModeToggle />
+      </div>
       {error && !isLoading && (
         <div role="alert" className="col-span-full rounded-lg bg-destructive/10 px-4 py-3 text-sm text-destructive">
           Unable to reach the modem. Data shown may be outdated.
@@ -66,6 +72,9 @@ const HomeComponent = () => {
           isLoading={isLoading}
           isStale={isStale}
         />
+        {/* QManager-VN: LTE/NR/SCC detail row is Pro-mode only. Simple mode
+            keeps just the high-level Network Status card above. */}
+        {isPro && (
         <motion.div
           className="grid grid-cols-1 @3xl/main:grid-cols-2 grid-flow-row gap-4"
           variants={containerVariants}
@@ -115,6 +124,7 @@ const HomeComponent = () => {
             </motion.div>
           )}
         </motion.div>
+        )}
       </div>
       <div className="col-span-1 @4xl/main:col-span-2 h-full *:data-[slot=card]:h-full">
         <DeviceStatus
@@ -124,36 +134,49 @@ const HomeComponent = () => {
         />
       </div>
 
+      {/* Latency widget is kept in BOTH modes — quick read of internet health is
+          fundamental even for Simple users. Device metrics + Recent activities are
+          Pro-only since they need interpretation. */}
       <div className="col-span-full">
         <motion.div
-          className="grid grid-cols-1 @3xl/main:grid-cols-2 @5xl/main:grid-cols-3 grid-flow-row gap-4"
+          className={cn(
+            "grid grid-cols-1 grid-flow-row gap-4",
+            isPro && "@3xl/main:grid-cols-2 @5xl/main:grid-cols-3",
+          )}
           variants={containerVariants}
           initial="hidden"
           animate="visible"
         >
-          <motion.div variants={itemVariants} className="h-full *:data-[slot=card]:h-full">
-            <DeviceMetricsComponent
-              deviceData={data?.device ?? null}
-              lteData={data?.lte ?? null}
-              nrData={data?.nr ?? null}
-              isLoading={isLoading}
-            />
-          </motion.div>
+          {isPro && (
+            <motion.div variants={itemVariants} className="h-full *:data-[slot=card]:h-full">
+              <DeviceMetricsComponent
+                deviceData={data?.device ?? null}
+                lteData={data?.lte ?? null}
+                nrData={data?.nr ?? null}
+                isLoading={isLoading}
+              />
+            </motion.div>
+          )}
           <motion.div variants={itemVariants} className="h-full *:data-[slot=card]:h-full">
             <LiveLatencyComponent
               connectivity={data?.connectivity ?? null}
               isLoading={isLoading}
             />
           </motion.div>
-          <motion.div variants={itemVariants} className="h-full *:data-[slot=card]:h-full">
-            <RecentActivitiesComponent />
-          </motion.div>
+          {isPro && (
+            <motion.div variants={itemVariants} className="h-full *:data-[slot=card]:h-full">
+              <RecentActivitiesComponent />
+            </motion.div>
+          )}
         </motion.div>
       </div>
 
-      <div className="col-span-full">
-        <SignalHistoryComponent />
-      </div>
+      {/* Signal History — Pro mode only. Simple users get sparkline via Live Latency. */}
+      {isPro && (
+        <div className="col-span-full">
+          <SignalHistoryComponent />
+        </div>
+      )}
     </div>
   );
 };
