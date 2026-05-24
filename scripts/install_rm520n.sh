@@ -568,9 +568,33 @@ SVCEOF
             info "Created start-opt-mount.service"
         fi
 
+        # /opt may not exist on a fresh modem — systemd bind-mount requires the
+        # target path to already exist as a directory. Create it (on writable
+        # root) before invoking the mount unit. Safe to retry: idempotent on
+        # existing dirs, and `mountpoint -q` later confirms the bind actually
+        # took hold.
+        if [ ! -d /opt ]; then
+            mkdir -p /opt 2>/dev/null \
+                || die "Could not create /opt directory (rootfs read-only?)"
+            info "Created /opt mount point"
+        fi
+
         systemctl daemon-reload
         systemctl start opt.mount 2>/dev/null || true
-        info "Mounted /usrdata/opt → /opt"
+
+        # Verify the bind actually mounted — `systemctl start ... || true`
+        # masks failure, and mkdir below silently lands on read-only / if it
+        # didn't. Use mountpoint to confirm before continuing.
+        if ! mountpoint -q /opt 2>/dev/null; then
+            # Fallback: bind-mount directly. This handles modems where
+            # systemctl rejects the unit (e.g. transient generator failure)
+            # but the kernel mount syscall works fine.
+            mount --bind /usrdata/opt /opt 2>/dev/null \
+                || die "Failed to bind /usrdata/opt → /opt (rootfs read-only or systemd error?)"
+            info "Bind-mounted /usrdata/opt → /opt (fallback)"
+        else
+            info "Mounted /usrdata/opt → /opt"
+        fi
 
         # Create directory structure
         for folder in bin etc lib/opkg tmp var/lock; do
