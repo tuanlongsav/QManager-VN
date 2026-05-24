@@ -1,60 +1,49 @@
-# QManager-VN v0.2.0-vn — Phase B → E milestone
+# QManager-VN v0.2.3-vn — Fix OTA version stamping
 
-Bản tích lũy thay đổi từ v0.1.0-vn (rebrand baseline). Bao gồm Phase B
-(cắt feature), Phase C (broad SDXLEMUR compat), Phase D (VN localization),
-và Phase E (auto-cell-lock + Simple Mode + Antennas consolidation).
+**Sửa bug nghiêm trọng**: mọi bản v0.1.0-vn → v0.2.2-vn đều stamp `/etc/qmanager/VERSION` = `"0.1.0"` thay vì tag thực tế. User cài + cập nhật báo thành công nhưng UI vẫn hiển thị `0.1.0`. **Bản này khắc phục** — OTA upgrade từ bất kỳ bản cũ nào về v0.2.3-vn sẽ stamp đúng version.
 
-> Update từ v0.1.0-vn: **System Settings → Software Update** → Download → Install.
+## 🐛 Bug chính được sửa
 
-## ✂️ Cắt tính năng không cần (Phase B)
+**Triệu chứng:** User cài QManager-VN, UI luôn hiển thị `0.1.0` cho dù tag thực tế là v0.2.0-vn / v0.2.1-vn / v0.2.2-vn. OTA update báo "install + reboot" nhưng sau reboot version vẫn `0.1.0`.
 
-- Tailscale VPN — route, components, hooks, CGI, systemd, sudoers, installer
-- Email Alerts (msmtp/Gmail SMTP) — toàn bộ pipeline + msmtp dependency
-- Web Console (ttyd) + AT Terminal — page, ttyd binary, reverse proxy, lighttpd-mod-proxy
-- Discord Bot — discord-bot/ folder, build script, systemd, workflows
+**Nguyên nhân:** [`build.sh:69`](https://github.com/tuanlongsav/QManager-VN/blob/v0.2.3-vn/build.sh#L69) đọc version từ [`package.json`](https://github.com/tuanlongsav/QManager-VN/blob/v0.2.3-vn/package.json) và stamp vào `scripts/install_rm520n.sh:46` (`VERSION="..."`). Nhưng `package.json` của fork chốt ở `"0.1.0"` từ Phase A rebrand và không bump theo tag. Mọi release tarball đều stamp `VERSION="0.1.0"` vào installer. Sau khi modem install, `/etc/qmanager/VERSION` luôn = `"0.1.0"`.
 
-Kết quả: 78 files xoá. Bundle nhỏ hơn ~20-30%, 4 daemon ít hơn, mod_proxy lighttpd bỏ.
+**Fix:**
+- `.github/workflows/release.yml` — bước mới "Stamp package.json version from tag" trước Setup Bun. Đọc tag (vd `v0.2.3-vn`), sed thay top-level `"version"` field trong `package.json`. Bun install không bị ảnh hưởng (frozen-lockfile chỉ validate dep versions, không phải version của chính package).
+- `package.json` — bump version sang `v0.2.3-vn` cho consistency với dev local.
 
-## 🔧 Tương thích broad SDXLEMUR (Phase C)
+Sau fix, mỗi release từ v0.2.3-vn trở đi sẽ stamp đúng `VERSION="v0.2.x-vn"` vào installer → `/etc/qmanager/VERSION` đúng → `post_install_check` pass → UI hiển thị đúng version.
 
-Hỗ trợ chính thức **họ SDXLEMUR (Qualcomm SDX62)** thay vì single-target RM520N-GL:
+## 🔄 Cách phục hồi từ bản 0.1.0 bị kẹt
 
-- ✅ **Primary tested**: RM520N-GLAA, RM520N-GL
-- 🟡 **Best-effort**: RM520N-EU, RM502Q-AE, RM500Q-GL
+**Trong WebUI:**
+1. System Settings → Software Update → Check for updates
+2. Sẽ thấy "Update available: v0.2.3-vn" (semver compare đúng "v0.2.3-vn" > "0.1.0")
+3. Click Download → Install
+4. Sau reboot, UI hiển thị `v0.2.3-vn` ✓
 
-Auto-detect modem model + firmware ở boot qua `AT+CGMM/CGMR/CGSN`, lưu `/etc/qmanager/hardware.json`. UI hiển thị:
-- **Hardware Badge** trên trang About Device (model + tier + firmware tooltip)
-- **Dynamic band whitelist** trong band selector (cảnh báo nếu pick band ngoài datasheet)
-- **Feature gating** cho MBN profile, antenna, NR5G SA
-- **Unsupported Model Banner** (dismissible) cho best-effort tiers
+**Hoặc qua SSH (force re-install):**
+```sh
+rm -f /etc/qmanager/VERSION    # Force fresh-install path nếu cần
+curl -fsSL -o /tmp/qmanager-installer.sh \
+  https://github.com/tuanlongsav/QManager-VN/raw/refs/heads/main/qmanager-installer.sh && \
+  bash /tmp/qmanager-installer.sh
+```
 
-Doc mới: [`docs/COMPATIBILITY.md`](docs/COMPATIBILITY.md). Issue template `.github/ISSUE_TEMPLATE/compatibility-report.md`.
+## ✅ Bao gồm các fix trước
 
-## 🇻🇳 Tối ưu Việt Nam (Phase D)
+Bản này tích lũy mọi fix từ v0.1.0-vn → v0.2.2-vn:
 
-- **APN presets VN**: Viettel, Vinaphone, Mobifone, Vietnamobile, Wintel (đẩy lên đầu danh sách)
-- **Auto-suggest preset** theo MCC/MNC SIM (mã 452 → match Viettel/Vina/Mobi/etc.)
-- **SMS sender display**:
-  - Brand sender (VIETTEL/VINAPHONE/MOBIFONE/ngân hàng/Grab…) → uppercase + badge "VN Brand"
-  - Phone +84/84 → format local 0xxxxxxxxxx
-- 35+ known VN brand list (cả carrier + ngân hàng + service)
+- **Phase B**: Cắt Tailscale / Email Alerts / Web Console / AT Terminal / Discord Bot
+- **Phase C**: SDXLEMUR broad compat + hardware auto-detect + feature gating + UnsupportedModelBanner
+- **Phase D**: VN APN presets (Viettel/Vinaphone/Mobifone/Vietnamobile/Wintel) + auto-suggest by IMSI + SMS brand decode + phone normalize
+- **Phase E.1**: Auto cell-lock state machine daemon
+- **Phase E.2**: Dashboard Simple Mode vs Pro Mode toggle
+- **Phase E.3**: Antennas tabbed consolidation (statistics + alignment)
+- **v0.2.1**: Entware bootstrap `/opt` mount point fix
+- **v0.2.2**: React `setState` in render → `useEffect`; atomic config write trong autolock CGI; defensive AT response parser
 
-## ✨ Tính năng mới (Phase E)
-
-### Auto cell-lock state machine (E.1)
-Daemon mới `qmanager-autolock` tự động khóa cell khi tín hiệu ổn định (RSRP > -85, SINR > 5 trong 3 sample), tự động bỏ khóa khi tín hiệu yếu (RSRP < -110 trong 3 sample). Toggle + tune threshold tại **Cellular → Tower Locking → Auto cell-lock card**. Service gated (off-by-default), state machine indicator realtime.
-
-### Dashboard Simple Mode (E.2)
-Toggle trên top-right dashboard:
-- **Simple** (default): Network status, Device status, Live latency sparkline — đủ check nhanh
-- **Pro**: full dashboard với LTE/NR/SCC detail, device metrics, recent activities, signal history chart
-
-Persist trong localStorage; cross-tab sync.
-
-### Antennas consolidation (E.3)
-Gộp `cellular/antenna-statistics` + `cellular/antenna-alignment` thành 1 route `cellular/antennas` với 2 tab (URL `?tab=stats|alignment`). Routes cũ vẫn truy cập được cho bookmark cũ.
-
-## 📥 Cài đặt mới
+## 📥 Cài đặt
 
 ```sh
 curl -fsSL -o /tmp/qmanager-installer.sh \
@@ -64,8 +53,6 @@ curl -fsSL -o /tmp/qmanager-installer.sh \
 
 ## 🙏 Credit
 
-Upstream [dr-dolomite/QManager-RM520N](https://github.com/dr-dolomite/QManager-RM520N) — toàn bộ kiến trúc gốc và phần lớn tính năng. Support [DrDolomite trên GitHub Sponsors](https://github.com/sponsors/dr-dolomite).
+Upstream [dr-dolomite/QManager-RM520N](https://github.com/dr-dolomite/QManager-RM520N). Support [DrDolomite trên GitHub Sponsors](https://github.com/sponsors/dr-dolomite).
 
-VN tweaks port từ [tuanlongsav/quectel-rgmii-toolkit](https://github.com/tuanlongsav/quectel-rgmii-toolkit).
-
-**License:** MIT + Commons Clause (kế thừa upstream).
+**License:** MIT + Commons Clause.

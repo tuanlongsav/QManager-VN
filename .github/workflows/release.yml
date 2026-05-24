@@ -32,6 +32,27 @@ jobs:
             echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Stamp package.json version from tag
+        # build.sh reads the version from package.json and stamps it into
+        # scripts/install_rm520n.sh (VERSION=...). That value then becomes
+        # the contents of /etc/qmanager/VERSION on the modem after install,
+        # which post_install_check compares against the tag the OTA worker
+        # was asked to install. If package.json drifts from the tag, every
+        # release stamps the same stale version and OTA fails the post-
+        # install check — symptom: install reports success then reboots
+        # but UI still shows the old version.
+        #
+        # Stamping here keeps the lockfile-compatible install dependencies
+        # untouched (bun install --frozen-lockfile only validates deps,
+        # not the package's own "version" field).
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          echo "Stamping package.json version → $TAG"
+          # Replace ONLY the top-level version field (first match)
+          sed -i '0,/"version":[[:space:]]*"[^"]*"/s||"version": "'"$TAG"'"|' package.json
+          grep -E '"version":[[:space:]]*"'"$TAG"'"' package.json \
+            || { echo "Failed to stamp package.json with $TAG"; cat package.json | head -5; exit 1; }
+
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
