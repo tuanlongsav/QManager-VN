@@ -20,15 +20,6 @@ www-data ALL=(root) NOPASSWD: /usr/bin/crontab
 # SSH password management (reads password from stdin, updates /etc/shadow)
 www-data ALL=(root) NOPASSWD: /usr/bin/qmanager_set_ssh_password
 
-# Auto cell-lock daemon management (QManager-VN).
-# Note: start/stop/restart are already covered by the wildcard rule at line 5.
-# Symlink boot persistence is covered by the wildcard at line 8-9. These
-# explicit rules are kept for clarity and as documentation; safe to remove
-# if a future cleanup grows the sudoers file.
-# (Previously contained `systemctl enable/disable qmanager-autolock` — removed
-# in F.2.G because RM520N-GL's minimal systemd ignores those commands; see
-# autolock CGI for the symlink-based boot persistence.)
-
 # OTA updater (download/stage/install/rollback — needs full root for install.sh)
 www-data ALL=(root) NOPASSWD: /usr/bin/qmanager_update
 

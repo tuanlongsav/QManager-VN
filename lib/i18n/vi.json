@@ -65,7 +65,8 @@
     "tapForDetails": "Nhấn để xem chi tiết",
     "fourGPrimary": "Tín hiệu 4G",
     "fiveGPrimary": "Tín hiệu 5G",
-    "autoCellLock": "Tự động khóa cell",
+    "bandLockingSettings": "Cài đặt khóa Band",
+    "bandLockingDescription": "Giới hạn modem chỉ chạy trên các band LTE và 5G cụ thể. Bật Failover để tự động quay về tất cả band nếu band đang khóa mất tín hiệu.",
     "cellularInformation": "Thông tin di động",
     "systemHealth": "Sức khỏe hệ thống",
     "recentActivities": "Hoạt động gần đây",
@@ -95,27 +96,6 @@
     "dlFrequency": "Tần số DL",
     "bandwidth": "Bandwidth",
     "pci": "PCI"
-  },
-  "autolock": {
-    "title": "Tự động khóa cell",
-    "description": "Tự động khóa cell khi tín hiệu ổn định (RSRP > {{rsrp}} dBm, SINR > {{sinr}} dB trong {{samples}} sample), tự động bỏ khóa khi tín hiệu rớt (RSRP < {{lost}} dBm).",
-    "enable": "Bật auto-lock",
-    "enableHint": "Daemon chạy nền, không can thiệp khi đang khóa thủ công.",
-    "thresholds": "Ngưỡng (nâng cao)",
-    "rsrpStable": "RSRP stable (dBm)",
-    "sinrStable": "SINR stable (dB)",
-    "rsrpLost": "RSRP lost (dBm)",
-    "samples": "Samples",
-    "saveThresholds": "Lưu ngưỡng",
-    "stateIdle": "Nghỉ",
-    "stateWatching": "Đang theo dõi",
-    "stateLocked": "Đã khóa",
-    "stateSignalLost": "Mất tín hiệu",
-    "toastEnabled": "Auto-lock đã bật",
-    "toastDisabled": "Auto-lock đã tắt",
-    "toastSaveFailed": "Không lưu được cấu hình auto-lock",
-    "toastThresholdsUpdated": "Đã cập nhật ngưỡng auto-lock",
-    "toastThresholdsFailed": "Không lưu được ngưỡng"
   },
   "apn": {
     "autoFilledHint": "Đã tự điền theo nhà mạng {{carrier}}. Sửa nếu cần."

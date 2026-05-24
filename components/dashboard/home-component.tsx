@@ -11,7 +11,8 @@ import { SmsReceivedWidget } from "./sms-received-widget";
 import { InternetQualityWidget } from "./internet-quality-widget";
 import { DeviceInfoWidget } from "./device-info-widget";
 import { RatPrimaryCard } from "./rat-primary-card";
-import { AutolockCard } from "@/components/cellular/tower-locking/autolock-card";
+import BandSettingsComponent from "@/components/cellular/band-locking/band-settings";
+import { useBandLocking } from "@/hooks/use-band-locking";
 import RecentActivitiesComponent from "./recent-activities";
 import DeviceMetricsComponent from "./device-metrics";
 import CellDataComponent from "@/components/cellular/cell-data";
@@ -38,6 +39,10 @@ const HomeComponent = () => {
   const { data, isLoading, isStale, error } = useModemStatus({ pollInterval });
   const { data: aboutDevice } = useAboutDevice();
   const { t } = useT();
+  // Band failover state — drives the dashboard's Band Locking Settings card
+  // (replaced the Auto cell-lock card in F.4 after the autolock daemon
+  // was removed). The hook handles its own polling + state machine.
+  const bandLocking = useBandLocking();
 
   const daemonIntervalSec = data?.connectivity?.history_interval_sec;
   React.useEffect(() => {
@@ -123,7 +128,12 @@ const HomeComponent = () => {
           />
         </motion.div>
         <motion.div variants={itemVariants} className="h-full *:data-[slot=card]:h-full">
-          <AutolockCard />
+          <BandSettingsComponent
+            failover={bandLocking.failover}
+            carrierComponents={data?.network?.carrier_components ?? []}
+            onToggleFailover={bandLocking.toggleFailover}
+            isLoading={bandLocking.isLoading}
+          />
         </motion.div>
       </motion.div>
 

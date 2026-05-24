@@ -1,74 +1,66 @@
-# QManager-VN v0.4.0-vn — i18n EN/VI với language toggle 🇻🇳 🇬🇧
+# QManager-VN v0.4.1-vn — Xoá Auto cell-lock + thay bằng Band Locking Settings
 
-Phase F.3 — đa ngôn ngữ. Mặc định Tiếng Việt, có nút chuyển sang English với cờ.
+User feedback v0.4.0-vn: Auto cell-lock không còn cần thiết → xoá toàn bộ. Thay vào dashboard slot bằng **Band Locking Settings** card hiển thị Band Failover toggle/status + Active LTE/5G Bands/Channels.
 
-## 🌐 Đa ngôn ngữ EN / VI
+## 🗑️ Xoá Auto cell-lock
 
-### Language Toggle
-- **Dropdown nút cờ** đặt cạnh "QManager Admin" trong sidebar header
-- 2 ngôn ngữ: 🇻🇳 **Tiếng Việt** (mặc định) và 🇬🇧 **English**
-- Persist preference qua `localStorage` (`qmanager_vn_lang`)
-- Cross-tab sync qua native `storage` event
-- Cross-component sync trong cùng tab qua module-level event bus
+Xoá toàn bộ stack (daemon, CGI, UI, config, sudoers, i18n keys):
 
-### Mặc định Tiếng Việt
-- Lần đầu mở app: detect `navigator.language` — nếu là `vi-*` → VI, else → fallback VI (audience VN-first)
-- User chọn ngôn ngữ → lưu localStorage, áp dụng lập tức (không reload)
-- Missing VN key → fallback EN tự động (không hiện raw key)
+- `scripts/usr/bin/qmanager_autolock` — daemon
+- `scripts/www/cgi-bin/quecmanager/cellular/autolock.sh` — CGI
+- `scripts/etc/systemd/system/qmanager-autolock.service` — systemd unit
+- `hooks/use-autolock.ts`, `types/autolock.ts` — frontend hook + types
+- `components/cellular/tower-locking/autolock-card.tsx` — UI component
+- `lib/i18n/{en,vi}.json` — `autolock` section + `autoCellLock` key
+- `scripts/install_rm520n.sh` — gỡ `qmanager-autolock` khỏi `UCI_GATED_SERVICES`
+- `scripts/etc/sudoers.d/qmanager` — gỡ comment block về autolock
 
-### Strings đã translated
-**Sidebar (đầy đủ):**
-- Home, SMS Center, Custom Profiles, Connection Scenarios
-- Band Locking, Tower Locking, Frequency Locking
-- Cell Scanner, Neighboring Cells, Frequency Calculator
-- Settings, APN Management, Network Priority, IMEI Settings, FPLMN Settings
-- System Settings, Logs, Connection Quality, Software Update
-- Ethernet Status, TTL & MTU Settings, Custom DNS
-- Network Events, Latency Monitor, SMS Alerts, Watchdog
-- About Device, Support, Donate to the Project
+Không ảnh hưởng tới Tower Locking, Band Locking, Frequency Locking thủ công — tất cả vẫn hoạt động bình thường ở trang `/cellular/cell-locking`.
 
-**Dashboard top row (5 widgets):**
-- Network Status: RAT labels (5G + LTE / 5G Standalone / LTE+ / Low Power / No 4G/5G), uptime prefix
-- Temperature, SMS Received, Internet Quality, Device Information
-- Tier labels: Best / Good / Fair / Poor / No data / Offline
-- "Tap for details", "avg N ms", "Awaiting samples", "No internet"
+## ✨ Band Locking Settings card lên Dashboard
 
-**Dashboard Row 1 (3 cards):**
-- 4G Primary Status, 5G Primary Status (titles + descriptions + carrier count message)
+Reuse `BandSettingsComponent` (đã có sẵn từ Band Locking page) — không tạo component mới. Wire vào Dashboard Row 1 slot 3 (chỗ AutolockCard cũ).
 
-**Dashboard Row 2 (3 cards):**
-- System Health card title + "Run Diagnostics" button + "System Diagnostics" dialog title
+**Hiển thị:**
+- **Title:** Band Locking Settings (translated: "Cài đặt khóa Band")
+- **Description:** "Restrict the modem to specific LTE and 5G bands. Enable failover to fall back to all bands if locked bands lose signal."
+- **Band Failover** — switch on/off (toggle gọi `useBandLocking.toggleFailover`)
+- **Band Failover Status** — badge: Disabled / Ready / Monitoring / Fallback Active
+- **Active LTE Bands** — e.g. "B3" (derived từ `carrier_components.filter(c => c.technology === "LTE")`)
+- **Active LTE Channels** — EARFCN list, e.g. "1300"
+- **Active 5G Bands** — e.g. "N78"
+- **Active 5G Channels** — ARFCN list, e.g. "648096"
 
-**Misc:**
-- "Unable to reach the modem..." error banner
+Data sources:
+- `useBandLocking()` → `failover` state + `toggleFailover` mutation
+- `useModemStatus().data.network.carrier_components` → derived active bands/channels
 
-### Chưa translate (follow-up)
-- Deep page strings: APN form labels, Band Lock controls, IMEI settings, SMS center detail, Network Priority, FPLMN, Connection Scenarios, Watchdog detail, System Settings nested forms, About Device card detail rows, AutolockCard threshold form labels
-- These keep English in current release — pattern hết để translate dần khi cần
+## 📦 Files changed
 
-## 🏗️ Infrastructure
+**Deleted (7):**
+- `scripts/usr/bin/qmanager_autolock`
+- `scripts/www/cgi-bin/quecmanager/cellular/autolock.sh`
+- `scripts/etc/systemd/system/qmanager-autolock.service`
+- `hooks/use-autolock.ts`
+- `types/autolock.ts`
+- `components/cellular/tower-locking/autolock-card.tsx`
 
-**New files:**
-- `lib/i18n/en.json` (~3 KB) — base translation set
-- `lib/i18n/vi.json` (~3 KB) — Vietnamese
-- `hooks/use-i18n.ts` — `useT()` hook returning `{ lang, setLang, t }`. Pure JSON lookup + interpolation, no external dep.
-- `components/language-toggle.tsx` — flag dropdown component (inline SVG flags VN/UK, no emoji to avoid OS rendering differences)
+**Modified (5):**
+- `components/dashboard/home-component.tsx` — replace AutolockCard with BandSettingsComponent
+- `lib/i18n/en.json` + `lib/i18n/vi.json` — add band locking keys, remove autolock section
+- `scripts/install_rm520n.sh` — gỡ qmanager-autolock khỏi UCI_GATED_SERVICES
+- `scripts/etc/sudoers.d/qmanager` — clean autolock comment
 
-**Modified:**
-- `components/app-sidebar.tsx` — `buildData(t)` factory inside component renders translated menu titles; LanguageToggle mounted next to QManager logo
-- All dashboard widgets: `useT` hook + `t("...")` for visible labels
+**Verified:**
+- 119 shell scripts pass syntax check (–2 từ xoá daemon + CGI)
+- Không còn broken import
+- Tower Locking + Band Locking page riêng vẫn hoạt động đầy đủ
 
 ## 📥 Cập nhật
 
 OTA từ WebUI: **System Settings → Software Update → Download → Install**.
 
-```sh
-curl -fsSL -o /tmp/qmanager-installer.sh \
-  https://github.com/tuanlongsav/QManager-VN/raw/refs/heads/main/qmanager-installer.sh && \
-  bash /tmp/qmanager-installer.sh
-```
-
-Sau cài, click cờ ở sidebar header để toggle EN ↔ VI. Refresh không cần.
+Sau cài, dashboard Row 1 sẽ hiển thị: **4G Primary Status** | **5G Primary Status** | **Band Locking Settings** (thay vì Auto cell-lock).
 
 ## 🙏 Credit
 

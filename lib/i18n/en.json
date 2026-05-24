@@ -65,7 +65,8 @@
     "tapForDetails": "Tap for details",
     "fourGPrimary": "4G Primary Status",
     "fiveGPrimary": "5G Primary Status",
-    "autoCellLock": "Auto cell-lock",
+    "bandLockingSettings": "Band Locking Settings",
+    "bandLockingDescription": "Restrict the modem to specific LTE and 5G bands. Enable failover to fall back to all bands if locked bands lose signal.",
     "cellularInformation": "Cellular Information",
     "systemHealth": "System Health",
     "recentActivities": "Recent Activities",
@@ -95,27 +96,6 @@
     "dlFrequency": "DL Frequency",
     "bandwidth": "Bandwidth",
     "pci": "PCI"
-  },
-  "autolock": {
-    "title": "Auto cell-lock",
-    "description": "Automatically lock to the serving cell when signal is stable (RSRP > {{rsrp}} dBm, SINR > {{sinr}} dB for {{samples}} samples) and release the lock when signal degrades (RSRP < {{lost}} dBm).",
-    "enable": "Enable auto-lock",
-    "enableHint": "Daemon runs in the background, does not interfere with manual locks.",
-    "thresholds": "Thresholds (advanced)",
-    "rsrpStable": "Stable RSRP (dBm)",
-    "sinrStable": "Stable SINR (dB)",
-    "rsrpLost": "Lost RSRP (dBm)",
-    "samples": "Samples",
-    "saveThresholds": "Save thresholds",
-    "stateIdle": "Idle",
-    "stateWatching": "Watching",
-    "stateLocked": "Locked",
-    "stateSignalLost": "Signal lost",
-    "toastEnabled": "Auto-lock enabled",
-    "toastDisabled": "Auto-lock disabled",
-    "toastSaveFailed": "Failed to save auto-lock config",
-    "toastThresholdsUpdated": "Auto-lock thresholds updated",
-    "toastThresholdsFailed": "Failed to save thresholds"
   },
   "apn": {
     "autoFilledHint": "Auto-filled from carrier {{carrier}}. Edit if needed."
