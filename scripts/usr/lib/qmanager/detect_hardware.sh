@@ -22,28 +22,40 @@
 HARDWARE_INFO_FILE="/etc/qmanager/hardware.json"
 QCMD="/usr/bin/qcmd"
 
-# Strip CR + trailing whitespace from AT responses. Parses single-line responses
-# from raw atcli_smd11 output that already includes the echoed command + OK.
-_dh_parse_at_response() {
-    _raw="$1"
-    _cmd="$2"
-    # Drop echoed command, "OK", and blank lines. Take first non-empty data line.
-    printf '%s' "$_raw" \
-        | tr -d '\r' \
-        | grep -v "^${_cmd}$" \
-        | grep -v "^OK$" \
-        | grep -v "^$" \
+# Anchored regex parsers — same defensive pattern as qmanager_health_check
+# (scripts/usr/bin/qmanager_health_check:354,366). Picking the data line by
+# format rather than "strip echo+OK then take first" survives URC interleaving
+# and any extra blank-line noise atcli_smd11 might emit on edge firmware.
+_dh_parse_model() {
+    # AT+CGMM returns a bare model string starting with the Quectel prefix.
+    printf '%s' "$1" | tr -d '\r' \
+        | grep -E '^(RM|RG|EG|EC)[0-9A-Za-z\-]+' | head -1
+}
+_dh_parse_imei() {
+    # AT+CGSN returns a bare 15-digit IMEI on its own line.
+    printf '%s' "$1" | tr -d '\r' \
+        | grep -E '^[0-9]{15}$' | head -1
+}
+_dh_parse_firmware() {
+    # AT+CGMR returns a firmware string. Quectel SDXLEMUR pattern is
+    # MODEL_REV-style with an underscore (e.g. RM520NGLAAR01A08M4G_01.206.01.206).
+    # The grep accepts that and also bare alphanumeric+dot strings as a
+    # fallback for other Quectel families that omit the underscore.
+    printf '%s' "$1" | tr -d '\r' \
+        | grep -E '^[A-Za-z0-9._-]+$' \
+        | grep -v -E '^(OK|ERROR|AT\+)' \
         | head -1
 }
 
-# Probe modem with one AT command, return clean value or empty on failure.
+# Probe modem with one AT command and a parser. Returns parsed value or empty.
 _dh_probe() {
     _cmd="$1"
+    _parser="$2"
     if [ ! -x "$QCMD" ]; then
         return 1
     fi
     _result=$("$QCMD" "$_cmd" 2>/dev/null) || return 1
-    _dh_parse_at_response "$_result" "$_cmd"
+    "$_parser" "$_result"
 }
 
 # Normalize model string: strip Quectel prefix, trim whitespace.
@@ -87,9 +99,9 @@ detect_hardware() {
         return 1
     fi
 
-    _model=$(_dh_probe "AT+CGMM")
-    _firmware=$(_dh_probe "AT+CGMR")
-    _imei=$(_dh_probe "AT+CGSN")
+    _model=$(_dh_probe "AT+CGMM" _dh_parse_model)
+    _firmware=$(_dh_probe "AT+CGMR" _dh_parse_firmware)
+    _imei=$(_dh_probe "AT+CGSN" _dh_parse_imei)
 
     _model=$(_dh_normalize_model "$_model")
     [ -z "$_model" ] && _model="unknown"

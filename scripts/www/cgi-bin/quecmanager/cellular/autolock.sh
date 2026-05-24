@@ -98,34 +98,34 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
 
     case "$ACTION" in
         save)
-            # Merge new fields into existing config (preserves untouched keys)
+            # Merge new fields into existing config (preserves untouched keys).
+            # Single jq pass + tmp+mv keeps the read-modify-write atomic on
+            # disk — concurrent POSTs can't lose updates the way 5 sequential
+            # jq pipes through a shell variable could.
             new_enabled=$(printf '%s' "$POST_DATA" | jq -r '.enabled // empty')
             new_rsrp_stable=$(printf '%s' "$POST_DATA" | jq -r '.rsrp_stable // empty')
             new_sinr_stable=$(printf '%s' "$POST_DATA" | jq -r '.sinr_stable // empty')
             new_rsrp_lost=$(printf '%s' "$POST_DATA" | jq -r '.rsrp_lost // empty')
             new_samples=$(printf '%s' "$POST_DATA" | jq -r '.samples // empty')
 
-            tmpcfg=$(cat "$CONFIG_FILE")
-            if [ -n "$new_enabled" ]; then
-                tmpcfg=$(printf '%s' "$tmpcfg" | jq --argjson v "$new_enabled" '.enabled = $v')
+            jq_filter='.'
+            [ -n "$new_enabled" ]      && jq_filter="$jq_filter | .enabled = $new_enabled"
+            [ -n "$new_rsrp_stable" ]  && jq_filter="$jq_filter | .thresholds.rsrp_stable = $new_rsrp_stable"
+            [ -n "$new_sinr_stable" ]  && jq_filter="$jq_filter | .thresholds.sinr_stable = $new_sinr_stable"
+            [ -n "$new_rsrp_lost" ]    && jq_filter="$jq_filter | .thresholds.rsrp_lost = $new_rsrp_lost"
+            [ -n "$new_samples" ]      && jq_filter="$jq_filter | .thresholds.samples = $new_samples"
+
+            if ! jq "$jq_filter" "$CONFIG_FILE" > "$CONFIG_FILE.tmp" 2>/dev/null; then
+                rm -f "$CONFIG_FILE.tmp"
+                cgi_error "config_write_failed" "Could not update autolock config (jq error)"
+                exit 0
             fi
-            if [ -n "$new_rsrp_stable" ]; then
-                tmpcfg=$(printf '%s' "$tmpcfg" | jq --argjson v "$new_rsrp_stable" '.thresholds.rsrp_stable = $v')
-            fi
-            if [ -n "$new_sinr_stable" ]; then
-                tmpcfg=$(printf '%s' "$tmpcfg" | jq --argjson v "$new_sinr_stable" '.thresholds.sinr_stable = $v')
-            fi
-            if [ -n "$new_rsrp_lost" ]; then
-                tmpcfg=$(printf '%s' "$tmpcfg" | jq --argjson v "$new_rsrp_lost" '.thresholds.rsrp_lost = $v')
-            fi
-            if [ -n "$new_samples" ]; then
-                tmpcfg=$(printf '%s' "$tmpcfg" | jq --argjson v "$new_samples" '.thresholds.samples = $v')
-            fi
-            printf '%s' "$tmpcfg" > "$CONFIG_FILE"
+            mv "$CONFIG_FILE.tmp" "$CONFIG_FILE"
             chmod 644 "$CONFIG_FILE"
 
-            # Start or stop daemon based on enabled flag
-            final_enabled=$(printf '%s' "$tmpcfg" | jq -r '.enabled')
+            # Re-read the (now atomic) file for the daemon control decision —
+            # avoids dependence on the in-memory tmpcfg that no longer exists.
+            final_enabled=$(jq -r '.enabled' "$CONFIG_FILE")
             if [ "$final_enabled" = "true" ]; then
                 sudo -n systemctl enable "$SERVICE" 2>/dev/null
                 sudo -n systemctl restart "$SERVICE" 2>/dev/null

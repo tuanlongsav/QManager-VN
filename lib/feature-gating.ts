@@ -38,7 +38,10 @@ export function isFeatureAvailable(
     case "mbn_profiles":
       // MBN profiles shipped on global SKUs (-GL, -GLAA, -EU). RM500Q-GL also
       // has them. The Q variants and unknowns may not.
-      return /^RM52(0N|1F)-G[LU]|^RM500Q-GL/.test(hardware.model);
+      // Anchored on both ends so the alternation matches the whole model
+      // string — avoids a future edit accidentally dropping the leading `^`
+      // on the second branch.
+      return /^(RM52(0N|1F)-G[LU]|RM500Q-GL)/.test(hardware.model);
 
     case "antenna_alignment":
     case "antenna_statistics":

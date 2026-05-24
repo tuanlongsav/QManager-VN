@@ -12,7 +12,11 @@
  * international contacts.
  */
 
-/** Brand sender heuristic: alphanumeric-only, no digits-only, length 2-11. */
+/**
+ * Brand sender heuristic: starts with a letter, followed by 1-10 more chars
+ * (letters/digits/dot/underscore/dash). Total length 2-11 characters — the
+ * GSM 03.38 spec caps alphanumeric sender IDs at 11 chars.
+ */
 const BRAND_SENDER_RE = /^[A-Za-z][A-Za-z0-9._-]{1,10}$/;
 
 /** Known VN telco / service brand senders (case-insensitive). */

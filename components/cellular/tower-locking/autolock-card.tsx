@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import {
   CheckCircle2Icon,
   TriangleAlertIcon,
@@ -63,13 +63,18 @@ export function AutolockCard() {
   const [samples, setSamples] = useState<string>("");
   const [thresholdsDirty, setThresholdsDirty] = useState(false);
 
-  // Initialize threshold input fields when config first loads
-  if (config && !thresholdsDirty && rsrpStable === "") {
-    setRsrpStable(String(config.thresholds.rsrp_stable));
-    setSinrStable(String(config.thresholds.sinr_stable));
-    setRsrpLost(String(config.thresholds.rsrp_lost));
-    setSamples(String(config.thresholds.samples));
-  }
+  // Initialize threshold input fields once when config first loads. Guard with
+  // both `thresholdsDirty` (user-edited yet?) and `rsrpStable === ""` (already
+  // populated?) so re-renders don't clobber in-progress edits, and so the
+  // effect terminates after the first run.
+  useEffect(() => {
+    if (config && !thresholdsDirty && rsrpStable === "") {
+      setRsrpStable(String(config.thresholds.rsrp_stable));
+      setSinrStable(String(config.thresholds.sinr_stable));
+      setRsrpLost(String(config.thresholds.rsrp_lost));
+      setSamples(String(config.thresholds.samples));
+    }
+  }, [config, thresholdsDirty, rsrpStable]);
 
   if (isLoading || !config || !status) {
     return (
