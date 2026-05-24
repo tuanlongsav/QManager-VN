@@ -5,6 +5,15 @@ import { toast } from "sonner";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { MetricBar } from "@/components/ui/metric-bar";
 import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
+import SystemHealthCheck from "@/components/system-settings/system-health-check/system-health-check";
+import { StethoscopeIcon } from "lucide-react";
+import {
   Tooltip,
   TooltipTrigger,
   TooltipContent,
@@ -113,7 +122,7 @@ const DeviceMetricsComponent = ({
       <Card className="@container/card">
         <CardHeader className="-mb-4">
           <CardTitle className="text-lg font-semibold">
-            Device Metrics
+            System Health
           </CardTitle>
         </CardHeader>
         <CardContent>
@@ -135,10 +144,27 @@ const DeviceMetricsComponent = ({
 
   return (
     <Card className="@container/card">
-      <CardHeader className="-mb-4">
+      <CardHeader className="-mb-4 flex flex-row items-center justify-between gap-2">
         <CardTitle className="text-lg font-semibold tabular-nums">
-          Device Metrics
+          System Health
         </CardTitle>
+        {/* Inline diagnostics — opens the full system-health-check UI in a
+            dialog so the user can run the same probes that used to live on a
+            dedicated System Settings page (route deleted in F.2.E). */}
+        <Dialog>
+          <DialogTrigger asChild>
+            <Button variant="outline" size="sm" className="h-8">
+              <StethoscopeIcon className="size-4" />
+              Run Diagnostics
+            </Button>
+          </DialogTrigger>
+          <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle>System Diagnostics</DialogTitle>
+            </DialogHeader>
+            <SystemHealthCheck />
+          </DialogContent>
+        </Dialog>
       </CardHeader>
       <CardContent>
         <div className="grid gap-2">

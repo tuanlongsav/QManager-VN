@@ -1,45 +1,60 @@
-# QManager-VN v0.3.0-vn — Dashboard UX overhaul + APN auto-fill
+# QManager-VN v0.3.1-vn — Dashboard refactor (Signal Status section + System Health merge)
 
-Bản này tập trung vào trải nghiệm hàng ngày — lấy cảm hứng từ layout 4-widget top-row của Simple Admin (rgmii-toolkit) mà vẫn giữ chiều sâu Pro mode của QManager.
+User feedback v0.3.0-vn: 4 widget chưa đều kích thước, dưới đó dashboard rườm rà với nhiều section nhỏ. Bản này tinh gọn theo direction mới — 1 section "Signal Status" gộp các thông tin liên quan, System Health gộp diagnostics, xoá Live Latency để nhẹ hơn.
 
-## ✨ Tính năng mới
+## ✨ Thay đổi UI
 
-### APN Management tự điền theo nhà mạng (Phase F.1.A)
-- Mở form APN profile lần đầu, nếu APN trống và SIM có IMSI VN → tự fill `m3-world` (Vinaphone) / `v-internet` (Viettel) / `m-i-internet` (Mobifone) / `internet` (Vietnamobile) / `v-internet` (Wintel) theo MCC/MNC.
-- Hint nhỏ dưới input: "Đã tự điền theo nhà mạng {Viettel}. Sửa nếu cần." User edit thì hint biến mất.
-- Carrier-managed profile vẫn read-only — không bị override.
-- KHÔNG động vào profile đã có APN trước đó.
+### Top row 4 widget — đồng đều kích thước
+- Tất cả 4 widget (Network / Temperature / SMS / Internet Quality) cùng `min-h-[200px]`, icon size 12, value text 4xl bold.
+- Label uppercase tracking semibold đồng nhất.
+- Network Status compact giờ dùng cùng cỡ icon + cỡ font với 3 widget khác.
 
-### Dashboard Home — top row 4 widget (Phase F.1.B + F.1.C)
-4 card vuông cùng size (responsive 1/2/4 cột), thay thế Network Status full + UiMode toggle:
+### Xoá Live Latency and Speed Test (F.2.B)
+- Component dashboard `live-latency.tsx` đã xoá.
+- Component `speedtest-dialog.tsx` đã xoá.
+- Hook `use-speedtest.ts` + types đã xoá.
+- 4 CGI scripts `speedtest_*.sh` đã xoá.
+- Speedtest CLI download khỏi installer (gỡ ~5MB Ookla binary).
+- Lighter dashboard — internet quality vẫn show qua widget Internet Quality (tier + avg latency).
 
-1. **Network Status (compact)** — big RAT icon (5G / LTE+ / LTE / 3G) + carrier name + public IPv4 + uptime. Dot chỉ trạng thái internet ở góc.
-2. **Temperature** — số °C to giống Simple Admin, color tier (cool/warm/hot).
-3. **SMS Received** — count messages, click → SMS center.
-4. **Internet Quality** — tier (Excellent / Good / Fair / Poor / Offline) + avg latency 30 phút. Tooltip detail: loss %, sample count, jitter.
+### Signal Status section (F.2.D)
+- Section duy nhất dưới 4 widget top row, label "Signal Status".
+- Grid 2×2 gồm **4 sub-cards**:
+  - **4G Primary Status** (LTE detail card)
+  - **5G Primary Status** (NR detail card)
+  - **Recent Activities** (timeline events)
+  - **Signal Quality Monitor** (NEW) — bar chart hiển thị RSRP / RSRQ / SINR với tier (Excellent / Good / Fair / Poor) + raw value
+- Auto chọn 5G NR nếu đang connected, fallback LTE.
 
-### Xoá Simple Mode (Phase F.1.B)
-- Toggle Simple/Pro đã được gỡ — dashboard luôn show full content.
-- LTE/NR/SCC detail, Device Status, Device Metrics, Live Latency chart, Recent Activities, Signal History luôn hiển thị.
-- `hooks/use-ui-mode.ts` + `components/dashboard/ui-mode-toggle.tsx` đã xoá.
+### System Health merge (F.2.E)
+- Card "Device Metrics" → đổi tên **"System Health"**.
+- Thêm button "Run Diagnostics" trong header → mở dialog chứa toàn bộ giao diện System Health Check (categories, tests, bundle download).
+- Xoá page riêng `/system-settings/system-health-check` + sidebar entry.
+- Xoá Signal History chart full-width khỏi dashboard (không còn liên quan sau khi gộp section).
 
-### Temperature widget ở trang About Device (Phase F.1.D)
-- Cùng component `TemperatureWidget` mount ở About Device page (grid 3-col: Temperature + Device Information + About QManager).
-- User xem nhiệt độ modem nhanh ở 2 nơi: Home dashboard + About Device.
+### Bố cục cân đối (F.2.F)
+- Hàng cuối: **System Health** + **Device Information** trong grid 2-col đều nhau, cùng `h-full`.
 
-## 🛠️ Internal changes
+## 🗑️ Files removed
 
-- New: `components/dashboard/temperature-widget.tsx`, `sms-received-widget.tsx`, `internet-quality-widget.tsx`, `network-status-compact.tsx`
-- Modified: `components/dashboard/home-component.tsx` — restructure 4-widget top row + Pro layout always-on
-- Modified: `components/cellular/settings/apn-management/wan-profile-edit.tsx` — auto-fill effect
-- Modified: `components/about-device/about-device.tsx` — mount TemperatureWidget
-- Deleted: `hooks/use-ui-mode.ts`, `components/dashboard/ui-mode-toggle.tsx`, `components/dashboard/network-status.tsx` (replaced by compact variant)
+- `components/dashboard/live-latency.tsx`
+- `components/dashboard/speedtest-dialog.tsx`
+- `components/dashboard/signal-history.tsx`
+- `hooks/use-speedtest.ts`
+- `hooks/use-signal-history.ts`
+- `types/speedtest.ts`
+- `scripts/www/cgi-bin/quecmanager/at_cmd/speedtest_{start,status,check,servers}.sh`
+- `scripts/www/cgi-bin/quecmanager/at_cmd/fetch_signal_history.sh`
+- `app/system-settings/system-health-check/`
+
+## 🚧 Đến
+
+Bản v0.4.0-vn sẽ thêm: **i18n EN/VI + language toggle** (cờ Việt/Anh cạnh user menu).
 
 ## 📥 Cài đặt / Cập nhật
 
-OTA từ WebUI: **System Settings → Software Update → Download → Install**. Sau reboot UI hiển thị `v0.3.0-vn`.
+OTA từ WebUI: **System Settings → Software Update → Download → Install**.
 
-Fresh install:
 ```sh
 curl -fsSL -o /tmp/qmanager-installer.sh \
   https://github.com/tuanlongsav/QManager-VN/raw/refs/heads/main/qmanager-installer.sh && \
@@ -48,6 +63,5 @@ curl -fsSL -o /tmp/qmanager-installer.sh \
 
 ## 🙏 Credit
 
-Upstream [dr-dolomite/QManager-RM520N](https://github.com/dr-dolomite/QManager-RM520N). VN reference [iamromulan/quectel-rgmii-toolkit](https://github.com/iamromulan/quectel-rgmii-toolkit) + fork [tuanlongsav/quectel-rgmii-toolkit](https://github.com/tuanlongsav/quectel-rgmii-toolkit).
-
+Upstream [dr-dolomite/QManager-RM520N](https://github.com/dr-dolomite/QManager-RM520N).
 **License:** MIT + Commons Clause.

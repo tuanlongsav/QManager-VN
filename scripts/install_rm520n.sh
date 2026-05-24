@@ -749,23 +749,8 @@ RCEOF
         fi
     fi
 
-    # --- Ookla Speedtest CLI (speed test from web UI) ---
-    if command -v speedtest >/dev/null 2>&1; then
-        info "speedtest CLI is already installed"
-    else
-        SPEEDTEST_URL="https://install.speedtest.net/app/cli/ookla-speedtest-1.2.0-linux-armhf.tgz"
-        SPEEDTEST_DIR="/usrdata/root/bin"
-        mkdir -p "$SPEEDTEST_DIR"
-        if dl_get "$SPEEDTEST_URL" /tmp/speedtest.tgz 2>/dev/null; then
-            tar -xzf /tmp/speedtest.tgz -C "$SPEEDTEST_DIR" speedtest 2>/dev/null
-            rm -f /tmp/speedtest.tgz "$SPEEDTEST_DIR/speedtest.md"
-            chmod +x "$SPEEDTEST_DIR/speedtest"
-            ln -sf "$SPEEDTEST_DIR/speedtest" /bin/speedtest
-            info "speedtest CLI installed to $SPEEDTEST_DIR/speedtest"
-        else
-            warn "speedtest CLI download failed (optional — requires internet)"
-        fi
-    fi
+    # Ookla Speedtest CLI removed in QManager-VN Phase F.2 — the Live Latency
+    # & Speedtest dashboard widget was deleted to keep the UI light.
 
     # --- Optional packages (from Entware, not bundled) ---
     if [ -x "$OPKG" ]; then

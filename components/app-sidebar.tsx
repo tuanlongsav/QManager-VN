@@ -65,10 +65,6 @@ const data = {
           url: "/system-settings/logs",
         },
         {
-          title: "System Health Check",
-          url: "/system-settings/system-health-check",
-        },
-        {
           title: "Connection Quality",
           url: "/system-settings/connection-quality",
         },

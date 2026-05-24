@@ -17,8 +17,7 @@ export type GatedFeature =
   | "antenna_alignment"
   | "antenna_statistics"
   | "tower_lock"
-  | "nr5g_sa"
-  | "speedtest";
+  | "nr5g_sa";
 
 /**
  * Returns true if a feature is expected to work on the detected hardware.
@@ -55,10 +54,6 @@ export function isFeatureAvailable(
       // ship with SA enabled. RM500Q-GL was originally NSA-only on early firmware
       // — gate optimistically and let the AT command surface the error.
       return hardware.support_tier !== "unsupported";
-
-    case "speedtest":
-      // Pure user-space, no AT dependency — always available.
-      return true;
   }
 }
 

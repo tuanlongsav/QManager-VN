@@ -28,7 +28,7 @@ export function SmsReceivedWidget({ className }: SmsReceivedWidgetProps) {
   const body = (
     <Card
       className={cn(
-        "p-6 flex flex-col items-center justify-center text-center min-h-[180px]",
+        "p-6 flex flex-col items-center justify-center text-center min-h-[200px] h-full",
         "transition-colors hover:bg-accent/40",
         className,
       )}
@@ -37,9 +37,11 @@ export function SmsReceivedWidget({ className }: SmsReceivedWidgetProps) {
       {isLoading && !data ? (
         <Skeleton className="h-10 w-16 mb-2" />
       ) : (
-        <div className="text-4xl font-semibold tabular-nums">{count}</div>
+        <div className="text-4xl font-bold tabular-nums">{count}</div>
       )}
-      <div className="text-sm text-muted-foreground mt-2">SMS Received</div>
+      <div className="text-sm font-semibold uppercase tracking-wide text-muted-foreground mt-2">
+        SMS Received
+      </div>
     </Card>
   );
 

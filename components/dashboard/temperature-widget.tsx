@@ -46,7 +46,7 @@ export function TemperatureWidget({
 }: TemperatureWidgetProps) {
   if (isLoading && temperature === null) {
     return (
-      <Card className={cn("p-6 flex flex-col items-center justify-center min-h-[180px]", className)}>
+      <Card className={cn("p-6 flex flex-col items-center justify-center min-h-[200px] h-full", className)}>
         <Skeleton className="size-12 rounded-full mb-3" />
         <Skeleton className="h-10 w-24 mb-2" />
         <Skeleton className="h-4 w-20" />
@@ -60,15 +60,17 @@ export function TemperatureWidget({
   return (
     <Card
       className={cn(
-        "p-6 flex flex-col items-center justify-center text-center min-h-[180px]",
+        "p-6 flex flex-col items-center justify-center text-center min-h-[200px] h-full",
         className,
       )}
     >
       <ThermometerIcon className={cn("size-12 mb-3", tierClasses.icon)} />
-      <div className={cn("text-4xl font-semibold tabular-nums", tierClasses.value)}>
+      <div className={cn("text-4xl font-bold tabular-nums", tierClasses.value)}>
         {temperature !== null ? `${Math.round(temperature)} °C` : "—"}
       </div>
-      <div className="text-sm text-muted-foreground mt-2">Temperature</div>
+      <div className="text-sm font-semibold uppercase tracking-wide text-muted-foreground mt-2">
+        Temperature
+      </div>
     </Card>
   );
 }

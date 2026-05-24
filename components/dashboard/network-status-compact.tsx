@@ -95,11 +95,10 @@ export function NetworkStatusCompact({
 
   if (isLoading && !network) {
     return (
-      <Card className={cn("p-6 flex flex-col items-center justify-center min-h-[180px]", className)}>
-        <Skeleton className="size-16 rounded-full mb-3" />
-        <Skeleton className="h-5 w-24 mb-2" />
-        <Skeleton className="h-3 w-32 mb-1" />
-        <Skeleton className="h-3 w-20" />
+      <Card className={cn("p-6 flex flex-col items-center justify-center min-h-[200px] h-full", className)}>
+        <Skeleton className="size-12 rounded-full mb-3" />
+        <Skeleton className="h-10 w-24 mb-2" />
+        <Skeleton className="h-4 w-20" />
       </Card>
     );
   }
@@ -125,7 +124,7 @@ export function NetworkStatusCompact({
   return (
     <Card
       className={cn(
-        "p-6 flex flex-col items-center text-center min-h-[180px] relative",
+        "p-6 flex flex-col items-center justify-center text-center min-h-[200px] h-full relative",
         className,
       )}
     >
@@ -138,10 +137,10 @@ export function NetworkStatusCompact({
         )}
       />
 
-      {/* Big RAT icon */}
+      {/* Big RAT icon (same size as other widgets' icon) */}
       <div
         className={cn(
-          "rounded-full size-16 flex items-center justify-center p-1.5 mb-2",
+          "rounded-full size-12 flex items-center justify-center p-1 mb-3",
           isAirplane
             ? "bg-success/15"
             : hasNetwork
@@ -152,16 +151,17 @@ export function NetworkStatusCompact({
         {pickRatIcon(rat, caActive, isAirplane)}
       </div>
 
-      {/* Carrier */}
-      <div className="text-lg font-semibold leading-tight truncate max-w-full">
+      {/* Carrier — primary text matching other widgets' 4xl bold pattern but
+          allowing long carrier names to truncate gracefully */}
+      <div className="text-2xl font-bold leading-tight truncate max-w-full">
         {carrier}
       </div>
-      <div className="text-xs text-muted-foreground mb-2">
+      <div className="text-sm font-semibold uppercase tracking-wide text-muted-foreground mt-2">
         {ratLabel(rat, caActive, isAirplane)}
       </div>
 
-      {/* Public IP + Uptime — small monospace block */}
-      <div className="text-xs text-muted-foreground space-y-0.5 mt-auto">
+      {/* Public IP + Uptime — small monospace block at bottom */}
+      <div className="text-xs text-muted-foreground space-y-0.5 mt-3">
         <div className="flex items-center justify-center gap-1.5">
           <GlobeIcon className="size-3" />
           <span className="font-mono">{publicIp}</span>
