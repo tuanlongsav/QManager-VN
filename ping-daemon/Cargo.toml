@@ -24,4 +24,4 @@ opt-level = "z"
 lto = true
 codegen-units = 1
 panic = "abort"
-strip = "symbols"
+strip = true          # strip symbols AND remaining debug sections, not just symbols

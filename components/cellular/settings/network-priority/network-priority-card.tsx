@@ -31,8 +31,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 
-import { RotateCcwIcon } from "lucide-react";
-import { IconGripVertical } from "@tabler/icons-react";
+import { RotateCcwIcon, GripVerticalIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { AiFillSignal } from "react-icons/ai";
@@ -106,7 +105,7 @@ function DraggableNetworkItem({
         className="text-muted-foreground size-7 hover:bg-accent cursor-grab active:cursor-grabbing"
         disabled={disabled}
       >
-        <IconGripVertical className="text-muted-foreground size-4" />
+        <GripVerticalIcon className="text-muted-foreground size-4" />
         <span className="sr-only">Drag to reorder</span>
       </Button>
       <div className="flex items-center gap-x-3">
