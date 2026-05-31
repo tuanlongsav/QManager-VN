@@ -117,7 +117,7 @@ All paths are relative to the repository root. The source tree mirrors the devic
 | `scripts/etc/qmanager/` | `/etc/qmanager/` | Persistent config and state (template files) |
 | `scripts/www/cgi-bin/quecmanager/` | `/usrdata/qmanager/www/cgi-bin/quecmanager/` | CGI scripts |
 | `scripts/usrdata/qmanager/lighttpd.conf` | `/usrdata/qmanager/lighttpd.conf` | lighttpd configuration (ends with an `include_shell` that optionally pulls in gzip config) |
-| _(generated at install time)_ | `/usrdata/qmanager/lighttpd-deflate.conf` | gzip/`mod_deflate` snippet — written by the installer **only** after `lighttpd-mod-deflate` installs; absent ⇒ no compression, never a brick. Not shipped in the tarball. |
+| _(generated at install time)_ | `/usrdata/qmanager/lighttpd-deflate.conf` | gzip/`mod_deflate` snippet — `install_backend()` auto-installs the module (`opkg install --nodeps`, runs on OTA too), writes this file, then validates with `lighttpd -tt` and reverts (rm) if it can't load. Absent ⇒ no compression, never a brick. Not shipped in the tarball. |
 | `scripts/usrdata/qmanager/console/` | `/usrdata/qmanager/console/` | Web console (ttyd) |
 | `dependencies/atcli_smd11` | `/usr/bin/atcli_smd11` | AT CLI binary (Rust, ARMv7 static) |
 | `dependencies/sms_tool` | `/usr/bin/sms_tool` | SMS send/receive binary (ARMv7) |
