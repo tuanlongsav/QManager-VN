@@ -290,7 +290,7 @@ export function ProfileTable({
                   key={row.id}
                   initial={{ opacity: 0, x: -8 }}
                   animate={{ opacity: 1, x: 0 }}
-                  transition={{ duration: 0.2, delay: Math.min(index * 0.05, 0.4), ease: "easeOut" }}
+                  transition={{ duration: 0.18, delay: Math.min(index * 0.03, 0.15), ease: "easeOut" }}
                 >
                   {row.getVisibleCells().map((cell) => (
                     <TableCell key={cell.id}>

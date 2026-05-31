@@ -17,11 +17,6 @@ const euclid = Euclid({
   variable: "--font-euclid",
   src: [
     {
-      path: "./fonts/EuclidCircularB-Light.woff2",
-      weight: "300",
-      style: "normal",
-    },
-    {
       path: "./fonts/EuclidCircularB-Regular.woff2",
       weight: "400",
       style: "normal",

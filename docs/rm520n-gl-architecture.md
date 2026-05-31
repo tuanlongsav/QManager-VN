@@ -73,7 +73,7 @@ The RM520N-GL is a fundamentally different platform: it runs its own Linux OS in
 | **AT device perms** | Defaults `crw------- root:root`; `qmanager_setup` sets `660 root:dialout` at boot |
 | **AT port (legacy)** | `/dev/smd7` (claimed by `port_bridge` at boot — used by socat-at-bridge if installed) |
 | **AT tools** | `atcli_smd11` (Rust, via `qcmd`, production — from [1alessandro1/atcli_rust](https://github.com/1alessandro1/atcli_rust), works across RM502/RM520/RM521/RM551), `microcom` (interactive), `atcmd`/`atcmd11` (legacy socat) |
-| **Web server** | lighttpd (Entware: base + mod-cgi + mod-openssl + mod-redirect + mod-proxy) |
+| **Web server** | lighttpd (Entware: base + mod-cgi + mod-openssl + mod-redirect + mod-deflate (optional, gzip)) |
 | **Web root** | `/usrdata/qmanager/www` (independent, not SimpleAdmin) |
 | **CGI PATH caveat** | lighttpd CGI excludes `/opt/bin`; `cgi_base.sh` exports full PATH |
 | **Config storage** | `/usrdata/` (persistent, writable) |
@@ -148,7 +148,7 @@ This section consolidates everything an automation author needs to know about th
 | `curl` | 8.12.0 / OpenSSL 1.1.1l | `/usr/bin/curl` | Full TLS. Preferred HTTP downloader, but **not required** — the install/OTA pipeline auto-detects `curl` or `wget` via `/usr/lib/qmanager/downloader.sh`. |
 | `openssl` | 1.1.1l (system); 3.5.5 (Entware `libopenssl`) | `/usr/bin/openssl` | Two versions coexist — prefer system `/usr/bin/openssl` for scripts unless a 3.x feature is needed. |
 | `dropbear` | 2024.86 | Entware | SSH server. No `sftp-server` — use `scp -O` (legacy mode) for transfers. |
-| `lighttpd` | 1.4.82 | `/opt/sbin/lighttpd` | Modules: `mod_cgi`, `mod_dirlisting`, `mod_h2`, `mod_openssl`, `mod_proxy` confirmed loaded. |
+| `lighttpd` | 1.4.82 | `/opt/sbin/lighttpd` | Modules: `mod_cgi`, `mod_dirlisting`, `mod_h2`, `mod_openssl`, `mod_proxy` confirmed loaded. `mod_deflate` (gzip) is optionally enabled by the installer when `lighttpd-mod-deflate` is present — see [Web Server: lighttpd](#web-server-lighttpd). |
 | `python` / `python3` / `perl` / `lua` / `node` | **MISSING** | — | No script interpreters beyond shell. Pure POSIX shell + jq is the only option. Adding any of these means an Entware install (~5–15 MB on the persistent partition). |
 | Editor | BusyBox `vi` | `/bin/vi` | Only editor on-device. No `nano`, no `vim`. |
 | Hashing | `md5sum` `sha1sum` `sha256sum` `sha512sum` `base64` | `/usr/bin/`, `/bin/` | `xxd` is **not** installed. |
