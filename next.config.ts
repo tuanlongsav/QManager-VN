@@ -5,6 +5,13 @@ const nextConfig: NextConfig = {
   output: "export",
   trailingSlash: true,
 
+  // Tree-shake large libraries down to the symbols actually used so the ARMv7
+  // modem parses/executes less JS. Next applies a per-package modularize-imports
+  // transform for everything listed here.
+  experimental: {
+    optimizePackageImports: ["lucide-react", "recharts", "motion"],
+  },
+
   // Uncomment for local dev. Comment out before `bun run build` (static export).
   // async rewrites() {
   //   return [

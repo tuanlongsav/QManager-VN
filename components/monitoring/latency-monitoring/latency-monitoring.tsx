@@ -1,9 +1,28 @@
 "use client";
 
-import LatencyMonitoringCard, {
-  useLatencyMonitoring,
-} from "./latency-monitoring-card";
+import dynamic from "next/dynamic";
+import { useLatencyMonitoring } from "./use-latency-monitoring";
 import PingEntriesCard from "./ping-entries-card";
+import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { Skeleton } from "@/components/ui/skeleton";
+
+// recharts (~150 KB) lives entirely inside LatencyMonitoringCard. Loading it
+// with next/dynamic + ssr:false keeps it out of the initial bundle the modem
+// has to parse — it only downloads when this page is actually opened.
+const LatencyMonitoringCard = dynamic(() => import("./latency-monitoring-card"), {
+  ssr: false,
+  loading: () => (
+    <Card>
+      <CardHeader className="border-b">
+        <Skeleton className="h-5 w-48" />
+        <Skeleton className="h-4 w-64" />
+      </CardHeader>
+      <CardContent className="pt-6">
+        <Skeleton className="h-[250px] w-full" />
+      </CardContent>
+    </Card>
+  ),
+});
 
 const LatencyMonitoringComponent = () => {
   const { viewMode, setViewMode, chartData, total, tableData } =
