@@ -462,7 +462,7 @@ bun run lint    # ESLint check
 
 | File | Purpose |
 |------|---------|
-| `next.config.ts` | Static export, trailing slash, dev API proxy |
+| `next.config.ts` | Static export, trailing slash, dev API proxy, `optimizePackageImports` (lucide-react, recharts, motion) |
 | `tsconfig.json` | Strict mode, `@/*` path alias → `./*` |
 | `postcss.config.mjs` | Tailwind CSS v4 PostCSS plugin |
 | `eslint.config.mjs` | next/core-web-vitals + next/typescript rules |
@@ -478,3 +478,17 @@ import { Button } from "@/components/ui/button";
 import { useModemStatus } from "@/hooks/use-modem-status";
 import type { ModemStatus } from "@/types/modem-status";
 ```
+
+---
+
+## Performance & Bundle Size
+
+The UI is served by lighttpd off the modem's flash and runs on a **single-core ARMv7 Cortex-A7**, so initial download + parse cost matters. Guidelines and the decisions already baked in:
+
+- **Lazy-load heavy chart code.** Recharts (~380 KB) is the single biggest dependency. It is isolated in `components/monitoring/latency-monitoring/latency-monitoring-card.tsx` and loaded with `next/dynamic({ ssr: false })` from `latency-monitoring.tsx`, with a `<Skeleton>` fallback. The data hook lives in a separate `use-latency-monitoring.ts` so importing it never drags recharts into the static graph. Net effect: recharts ships in a lazy chunk that downloads only when `/monitoring/latency` is opened — it is **not** in any page's initial load. Use the same split for any future recharts/heavy-viz page.
+- **`optimizePackageImports`** in `next.config.ts` tree-shakes `lucide-react`, `recharts`, and `motion` down to used symbols.
+- **One icon library.** Use **`lucide-react`** only. `react-icons` and `@tabler/icons-react` were consolidated out to avoid shipping multiple icon packs (lucide has equivalents, e.g. `GripVerticalIcon`). Don't reintroduce other icon libraries.
+- **Fonts.** Euclid Circular B ships as 5 WOFF2 weights (Regular/Medium/SemiBold/Bold + Italic). The Light (300) weight was dropped — there were no `font-light` usages. Add a weight back only if it's actually used.
+- **Static assets.** Run large SVGs through SVGO before committing. `public/device-icon.svg` went 497 KB → 156 KB at `--precision=2` with no visible quality loss.
+- **Animations** use `motion`. `MotionProvider` wraps the app in `<MotionConfig reducedMotion="user">`, so all motion already respects `prefers-reduced-motion` globally — no need to thread `useReducedMotion()` everywhere. Keep per-item list `staggerChildren`/`delay` small so lists settle quickly on slow CPUs.
+- **Transfer compression** is handled server-side by lighttpd `mod_deflate` (gzip) — see `docs/BACKEND.md` / `docs/reference/qmanager-independence.md`. It's enabled by the installer only when the Entware module is present, so the build itself doesn't need to pre-compress.
