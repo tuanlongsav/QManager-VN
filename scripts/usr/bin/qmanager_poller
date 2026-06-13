@@ -400,23 +400,24 @@ qcmd_exec() {
 # =============================================================================
 
 update_proc_metrics() {
-    # All reads below use bash builtins (read / arithmetic / parameter
-    # expansion) instead of head|echo|awk|grep|cat|cut pipelines. On a
-    # single-core ARMv7 modem this runs every 2s, and the old version forked
-    # ~12 short-lived processes per call just to parse three /proc files.
-
     # --- CPU Usage % (from /proc/stat delta) ---
-    # First line: "cpu user nice system idle iowait irq softirq steal ...".
-    # `read` grabs only the first line; default IFS collapses the double space.
-    local _c c_user c_nice c_sys c_idle c_iowait c_irq c_softirq c_steal
-    if read -r _c c_user c_nice c_sys c_idle c_iowait c_irq c_softirq c_steal < /proc/stat; then
-        local cur_idle=$c_idle
-        local cur_total=$(( c_user + c_nice + c_sys + c_idle + c_iowait + c_irq + c_softirq + c_steal ))
+    local cpu_line
+    cpu_line=$(head -1 /proc/stat 2>/dev/null)
+    if [ -n "$cpu_line" ]; then
+        # /proc/stat format: cpu user nice system idle iowait irq softirq steal
+        local cur_idle
+        local cur_total
+        cur_idle=$(echo "$cpu_line" | awk '{print $5}')
+        cur_total=$(echo "$cpu_line" | awk '{print $2+$3+$4+$5+$6+$7+$8+$9}')
 
         if [ "$prev_cpu_total" -gt 0 ] 2>/dev/null; then
-            local diff_idle=$(( cur_idle - prev_cpu_idle ))
-            local diff_total=$(( cur_total - prev_cpu_total ))
+            local diff_idle
+            local diff_total
+            diff_idle=$((cur_idle - prev_cpu_idle))
+            diff_total=$((cur_total - prev_cpu_total))
+
             if [ "$diff_total" -gt 0 ] 2>/dev/null; then
+                # Integer math: (diff_total - diff_idle) * 100 / diff_total
                 cpu_usage=$(( (diff_total - diff_idle) * 100 / diff_total ))
             fi
         fi
@@ -425,14 +426,11 @@ update_proc_metrics() {
         prev_cpu_total=$cur_total
     fi
 
-    # --- Memory (parse /proc/meminfo with read; MemAvailable follows MemTotal) ---
-    local mem_total="" mem_available="" _mk _mv _mu
-    while read -r _mk _mv _mu; do
-        case "$_mk" in
-            MemTotal:)     mem_total=$_mv ;;
-            MemAvailable:) mem_available=$_mv; break ;;
-        esac
-    done < /proc/meminfo
+    # --- Memory ---
+    local mem_total
+    local mem_available
+    mem_total=$(grep '^MemTotal:' /proc/meminfo 2>/dev/null | awk '{print $2}')
+    mem_available=$(grep '^MemAvailable:' /proc/meminfo 2>/dev/null | awk '{print $2}')
 
     if [ -n "$mem_total" ]; then
         memory_total_mb=$((mem_total / 1024))
@@ -446,10 +444,8 @@ update_proc_metrics() {
         memory_used_mb=0
     fi
 
-    # --- Uptime (first field of /proc/uptime, strip fractional part) ---
-    local _up _uprest
-    read -r _up _uprest < /proc/uptime
-    uptime_seconds="${_up%%.*}"
+    # --- Uptime ---
+    uptime_seconds=$(cat /proc/uptime 2>/dev/null | cut -d' ' -f1 | cut -d'.' -f1)
     uptime_seconds="${uptime_seconds:-0}"
 
     cpu_usage="${cpu_usage:-0}"
@@ -540,20 +536,23 @@ update_system_health() {
     fi
 
     # --- storage (/usrdata partition) ---------------------------------------
-    # df -P guarantees one POSIX line per filesystem (no wrapping). Parse the
-    # data row with the read builtin instead of four printf|awk pipelines —
-    # one df fork instead of ~8 processes per cycle.
     sh_storage_total_kb="null"
     sh_storage_used_kb="null"
     sh_storage_avail_kb="null"
-    local _df_dev _df_total _df_used _df_avail _df_rest
-    while read -r _df_dev _df_total _df_used _df_avail _df_rest; do
-        [ "$_df_dev" = "Filesystem" ] && continue   # skip header row
-        [ -n "$_df_total" ] && sh_storage_total_kb="$_df_total"
-        [ -n "$_df_used" ]  && sh_storage_used_kb="$_df_used"
-        [ -n "$_df_avail" ] && sh_storage_avail_kb="$_df_avail"
-        break
-    done <<< "$(df -P /usrdata 2>/dev/null)"
+    local _df_out
+    _df_out=$(df -P /usrdata 2>/dev/null)
+    if [ $? -eq 0 ] && [ -n "$_df_out" ]; then
+        local _df_line
+        _df_line=$(printf '%s\n' "$_df_out" | awk 'NR==2{print}')
+        if [ -n "$_df_line" ]; then
+            sh_storage_total_kb=$(printf '%s\n' "$_df_line" | awk '{print $2}')
+            sh_storage_used_kb=$(printf '%s\n' "$_df_line"  | awk '{print $3}')
+            sh_storage_avail_kb=$(printf '%s\n' "$_df_line" | awk '{print $4}')
+            [ -z "$sh_storage_total_kb" ] && sh_storage_total_kb="null"
+            [ -z "$sh_storage_used_kb"  ] && sh_storage_used_kb="null"
+            [ -z "$sh_storage_avail_kb" ] && sh_storage_avail_kb="null"
+        fi
+    fi
 }
 
 # --- Connection Uptime -------------------------------------------------------
