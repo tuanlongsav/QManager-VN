@@ -157,7 +157,6 @@ _test_catalog_pending() {
         {id:"bin.openssl",        category:"binaries", label:"openssl present",             status:"pending", duration_ms:0, detail:""},
         {id:"bin.speedtest",      category:"binaries", label:"speedtest CLI",               status:"pending", duration_ms:0, detail:""},
         {id:"bin.tailscale",      category:"binaries", label:"tailscale binary",            status:"pending", duration_ms:0, detail:""},
-        {id:"bin.msmtp",          category:"binaries", label:"msmtp binary",                status:"pending", duration_ms:0, detail:""},
         {id:"bin.ttyd",           category:"binaries", label:"ttyd binary",                 status:"pending", duration_ms:0, detail:""},
 
         {id:"perm.smd11",         category:"permissions", label:"/dev/smd11 mode 660 root:dialout", status:"pending", duration_ms:0, detail:""},
@@ -194,7 +193,6 @@ _test_catalog_pending() {
 
         {id:"cfg.qmanager_dir",   category:"configuration", label:"/etc/qmanager exists",          status:"pending", duration_ms:0, detail:""},
         {id:"cfg.sms_alerts_json",category:"configuration", label:"sms_alerts.json valid",         status:"pending", duration_ms:0, detail:""},
-        {id:"cfg.email_alerts_json",category:"configuration", label:"email_alerts.json valid",     status:"pending", duration_ms:0, detail:""},
         {id:"cfg.poller_cache_fresh", category:"configuration", label:"poller cache mtime < 60s",  status:"pending", duration_ms:0, detail:""},
         {id:"cfg.cgi_path_opt",   category:"configuration", label:"lighttpd CGI PATH includes /opt/bin", status:"pending", duration_ms:0, detail:""},
         {id:"data_used.fresh",    category:"configuration", label:"data_used.json fresh (mtime < 60s)",  status:"pending", duration_ms:0, detail:""},
@@ -250,19 +248,6 @@ t_bin_tailscale() {
     else
         echo "not installed" >> "$OUTPUT_FILE"
         echo "skip|not installed (optional)"
-    fi
-}
-t_bin_msmtp() {
-    if [ -x /opt/bin/msmtp ]; then
-        local v; v=$(/opt/bin/msmtp --version 2>&1 | head -1)
-        echo "$v" >> "$OUTPUT_FILE"
-        echo "pass|$v"
-    elif [ ! -f /etc/qmanager/email_alerts.json ]; then
-        echo "msmtp not installed; email_alerts.json not present" >> "$OUTPUT_FILE"
-        echo "skip|email alerts not configured"
-    else
-        echo "msmtp not installed but /etc/qmanager/email_alerts.json exists" >> "$OUTPUT_FILE"
-        echo "fail|missing but email alerts configured"
     fi
 }
 t_bin_ttyd()       { _check_bin ttyd /usrdata/qmanager/console/ttyd 1; }
@@ -418,7 +403,16 @@ t_sms_recv_listing() {
     # On RM520N-GL the AT device is /dev/smd11. Without -d, sms_tool tries
     # to autodetect and may pick the wrong port. tcsetattr warnings are
     # harmless on smd devices (per CLAUDE.md), so suppress stderr.
-    local out; out=$(sms_tool -j recv -d /dev/smd11 2>/dev/null)
+    #
+    # sms_tool talks to /dev/smd11 directly (NOT via qcmd), so it must hold the
+    # SAME /tmp/qmanager_at.lock that qcmd + the poller use. Otherwise a
+    # multi-second `recv` can interleave with the poller's 2s AT exchange and
+    # corrupt both sides. Blocking flock (matches _with_lock) serializes it.
+    local out
+    out=$(
+        flock -x 9
+        sms_tool -j recv -d /dev/smd11 2>/dev/null
+    ) 9>/tmp/qmanager_at.lock
     echo "$out" >> "$OUTPUT_FILE"
     if echo "$out" | jq -e . >/dev/null 2>&1; then echo "pass|valid JSON"
     else echo "fail|invalid JSON or sms_tool error"; fi
@@ -576,7 +570,6 @@ _cfg_validate_json() {
     else echo "fail|invalid JSON"; fi
 }
 t_cfg_sms_alerts()   { _cfg_validate_json /etc/qmanager/sms_alerts.json; }
-t_cfg_email_alerts() { _cfg_validate_json /etc/qmanager/email_alerts.json; }
 t_cfg_poller_cache_fresh() {
     local f=/tmp/qmanager_status.json
     if [ ! -f "$f" ]; then echo "fail|missing $f" >> "$OUTPUT_FILE"; echo "fail|missing"; return; fi
@@ -818,7 +811,6 @@ _run_test bin.curl            binaries     "curl present"                       
 _run_test bin.openssl         binaries     "openssl present"                       t_bin_openssl
 _run_test bin.speedtest       binaries     "speedtest CLI"                         t_bin_speedtest
 _run_test bin.tailscale       binaries     "tailscale binary"                      t_bin_tailscale
-_run_test bin.msmtp           binaries     "msmtp binary"                          t_bin_msmtp
 _run_test bin.ttyd            binaries     "ttyd binary"                           t_bin_ttyd
 
 _run_test perm.smd11          permissions  "/dev/smd11 mode 660 root:dialout"      t_perm_smd11
@@ -856,7 +848,6 @@ _run_test data_used.divergence_low network "data_used divergence count low"     
 
 _run_test cfg.qmanager_dir         configuration "/etc/qmanager exists"               t_cfg_qmanager_dir
 _run_test cfg.sms_alerts_json      configuration "sms_alerts.json valid"              t_cfg_sms_alerts
-_run_test cfg.email_alerts_json    configuration "email_alerts.json valid"            t_cfg_email_alerts
 _run_test cfg.poller_cache_fresh   configuration "poller cache mtime < 60s"           t_cfg_poller_cache_fresh
 _run_test cfg.cgi_path_opt         configuration "lighttpd CGI PATH includes /opt/bin" t_cfg_cgi_path_opt
 _run_test data_used.fresh          configuration "data_used.json fresh (mtime < 60s)" t_cfg_data_used_fresh
