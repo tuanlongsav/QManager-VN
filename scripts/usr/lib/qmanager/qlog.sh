@@ -188,6 +188,15 @@ qlog_at_cmd() {
     local response="$2"
     local exit_code="${3:-0}"
 
+    # Fast path (zero forks): a successful AT command logs at DEBUG, which is
+    # filtered out unless QLOG_LEVEL is DEBUG. Skip the cut/tr formatting below
+    # (3 subshell forks) when it would just be discarded. This runs ~once per
+    # second, so on a single-core modem the saved forks matter. Failures log at
+    # WARN (always kept), so never skip those.
+    if [ "$exit_code" -eq 0 ] && [ "$QLOG_LEVEL" != "DEBUG" ]; then
+        return
+    fi
+
     # Truncate response for logging (first 200 chars)
     local truncated
     if [ ${#response} -gt 200 ]; then

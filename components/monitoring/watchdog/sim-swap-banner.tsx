@@ -11,7 +11,11 @@ import { useModemStatus } from "@/hooks/use-modem-status";
 const CGI_ENDPOINT = "/cgi-bin/quecmanager/monitoring/watchdog.sh";
 
 export function SimSwapBanner() {
-  const { data: modemStatus } = useModemStatus();
+  // This banner mounts on every page just to surface a rare SIM-swap flag, so
+  // it asks for a slow 30s cadence. Thanks to the shared poller, when a page
+  // also shows live status (2s) the banner rides that existing poll for free;
+  // on pages without live status it polls only every 30s instead of every 2s.
+  const { data: modemStatus } = useModemStatus({ pollInterval: 30000 });
   const router = useRouter();
   const [isDismissing, setIsDismissing] = useState(false);
   const [dismissed, setDismissed] = useState(false);
