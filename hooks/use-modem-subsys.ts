@@ -62,34 +62,15 @@ export function useModemSubsys(): UseModemSubsysReturn {
   useEffect(() => {
     mountedRef.current = true;
 
-    const startInterval = () => {
-      if (intervalRef.current) return;
-      intervalRef.current = setInterval(() => void fetchData(), POLL_INTERVAL);
-    };
-    const stopInterval = () => {
+    void fetchData();
+    intervalRef.current = setInterval(() => void fetchData(), POLL_INTERVAL);
+
+    return () => {
+      mountedRef.current = false;
       if (intervalRef.current) {
         clearInterval(intervalRef.current);
         intervalRef.current = null;
       }
-    };
-    // Pause while the tab is hidden so a backgrounded device stops forking CGI.
-    const onVisibility = () => {
-      if (document.hidden) {
-        stopInterval();
-      } else {
-        void fetchData();
-        startInterval();
-      }
-    };
-
-    void fetchData();
-    startInterval();
-    document.addEventListener("visibilitychange", onVisibility);
-
-    return () => {
-      mountedRef.current = false;
-      stopInterval();
-      document.removeEventListener("visibilitychange", onVisibility);
     };
   }, [fetchData]);
 
