@@ -174,7 +174,7 @@ The following features have been **completely removed** from the `dev-rm520` bra
 |---------|--------|-----------------|
 | VPN Management (NetBird only) | Third-party binary, fw4/mwan3 dependencies | CGI, hooks, components for NetBird |
 | Video Optimizer / Traffic Masquerade (DPI) | nftables dependency, nfqws ARM32 not validated | CGI, hooks, components, types, dpi_helper.sh, installer |
-| Low Power Mode (daemons) | Daemon scripts removed; cron/config management retained in settings.sh | qmanager_low_power, qmanager_low_power_check |
+| Low Power Mode | Fully removed — daemons, plus the now-dead `save_low_power` CGI handler / `low_power_*` config defaults / event+SMS guards (the handler called deleted binaries and was unreachable from the UI) | qmanager_low_power, qmanager_low_power_check, settings.sh save_low_power |
 
 ## Feature-Specific Notes
 

@@ -43,8 +43,12 @@ export function useDataUsed(): UseDataUsedReturn {
 
   const mountedRef = useRef(true);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Prevents request pile-up at 2s polling if the device is briefly slow.
+  const inFlightRef = useRef(false);
 
   const fetchData = useCallback(async () => {
+    if (inFlightRef.current) return; // a request is still pending — skip
+    inFlightRef.current = true;
     try {
       const response = await authFetch(FETCH_ENDPOINT);
       if (!response.ok) {
@@ -62,6 +66,8 @@ export function useDataUsed(): UseDataUsedReturn {
         err instanceof Error ? err.message : "Failed to fetch data usage";
       setError(message);
       setIsLoading(false);
+    } finally {
+      inFlightRef.current = false;
     }
   }, []);
 
@@ -93,15 +99,35 @@ export function useDataUsed(): UseDataUsedReturn {
   useEffect(() => {
     mountedRef.current = true;
 
-    fetchData();
-    intervalRef.current = setInterval(fetchData, DEFAULT_POLL_INTERVAL);
-
-    return () => {
-      mountedRef.current = false;
+    const startInterval = () => {
+      if (intervalRef.current) return;
+      intervalRef.current = setInterval(fetchData, DEFAULT_POLL_INTERVAL);
+    };
+    const stopInterval = () => {
       if (intervalRef.current) {
         clearInterval(intervalRef.current);
         intervalRef.current = null;
       }
+    };
+    // Pause polling while the tab is hidden so a backgrounded/locked device
+    // stops forking CGI processes; catch up immediately on return.
+    const onVisibility = () => {
+      if (document.hidden) {
+        stopInterval();
+      } else {
+        fetchData();
+        startInterval();
+      }
+    };
+
+    fetchData();
+    startInterval();
+    document.addEventListener("visibilitychange", onVisibility);
+
+    return () => {
+      mountedRef.current = false;
+      stopInterval();
+      document.removeEventListener("visibilitychange", onVisibility);
     };
   }, [fetchData]);
 
