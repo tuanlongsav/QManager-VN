@@ -17,10 +17,6 @@
 PORTS="80 443"
 TRUSTED="lo bridge0 eth0"
 
-if [ -x /usrdata/tailscale/tailscale ]; then
-    TRUSTED="$TRUSTED tailscale0"
-fi
-
 CHAIN="QMANAGER_FW"
 
 ensure_chain() {

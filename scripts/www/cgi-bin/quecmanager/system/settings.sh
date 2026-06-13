@@ -11,7 +11,7 @@
 # POST: Saves settings, scheduled reboot config, or low-power config.
 #
 # Config: /etc/qmanager/qmanager.conf (settings section)
-# Cron:   qmanager_scheduled_reboot, qmanager_low_power markers
+# Cron:   qmanager_scheduled_reboot markers
 #
 # Endpoint: GET/POST /cgi-bin/quecmanager/system/settings.sh
 # Install location: /www/cgi-bin/quecmanager/system/settings.sh
@@ -63,14 +63,6 @@ if [ "$REQUEST_METHOD" = "GET" ]; then
     sched_days_json=$(printf '%s' "$sched_days_raw" | jq -Rc 'split(",") | map(tonumber)' 2>/dev/null)
     [ -z "$sched_days_json" ] && sched_days_json="[0,1,2,3,4,5,6]"
 
-    # --- Low power ---
-    lp_enabled=$(qm_config_get settings low_power_enabled "0")
-    lp_start=$(qm_config_get settings low_power_start "23:00")
-    lp_end=$(qm_config_get settings low_power_end "06:00")
-    lp_days_raw=$(qm_config_get settings low_power_days "0,1,2,3,4,5,6")
-    lp_days_json=$(printf '%s' "$lp_days_raw" | jq -Rc 'split(",") | map(tonumber)' 2>/dev/null)
-    [ -z "$lp_days_json" ] && lp_days_json="[0,1,2,3,4,5,6]"
-
     jq -n \
         --argjson wan_guard "$wan_guard_enabled" \
         --arg hostname "$hostname" \
@@ -82,10 +74,6 @@ if [ "$REQUEST_METHOD" = "GET" ]; then
         --argjson sched_enabled "$sched_enabled" \
         --arg sched_time "$sched_time" \
         --argjson sched_days "$sched_days_json" \
-        --argjson lp_enabled "$lp_enabled" \
-        --arg lp_start "$lp_start" \
-        --arg lp_end "$lp_end" \
-        --argjson lp_days "$lp_days_json" \
         '{
             success: true,
             settings: {
@@ -101,12 +89,6 @@ if [ "$REQUEST_METHOD" = "GET" ]; then
                 enabled: ($sched_enabled == 1),
                 time: $sched_time,
                 days: $sched_days
-            },
-            low_power: {
-                enabled: ($lp_enabled == 1),
-                start_time: $lp_start,
-                end_time: $lp_end,
-                days: $lp_days
             }
         }'
     exit 0
@@ -282,133 +264,6 @@ ${sched_min} ${sched_hour} * * ${DAYS_RAW} ${SCHEDULE_SCRIPT}  # ${CRON_MARKER}"
             --arg time "$SCHED_TIME" \
             --argjson days "$DAYS_RESP" \
             '{success: true, scheduled_reboot: {enabled: $enabled, time: $time, days: $days}}'
-        exit 0
-    fi
-
-    # -------------------------------------------------------------------------
-    # action: save_low_power
-    # -------------------------------------------------------------------------
-    if [ "$ACTION" = "save_low_power" ]; then
-        qlog_info "Saving low power settings"
-        qm_config_init
-
-        # Parse fields
-        ENABLED=$(printf '%s' "$POST_DATA" | jq -r 'if has("enabled") then (.enabled | tostring) else "" end')
-        START_TIME=$(printf '%s' "$POST_DATA" | jq -r '.start_time // empty')
-        END_TIME=$(printf '%s' "$POST_DATA" | jq -r '.end_time // empty')
-        DAYS_RAW=$(printf '%s' "$POST_DATA" | jq -r '.days // [] | map(tostring) | join(",")' 2>/dev/null)
-
-        if [ -z "$ENABLED" ]; then
-            cgi_error "missing_enabled" "enabled field is required"
-            exit 0
-        fi
-
-        # Validate when enabling
-        if [ "$ENABLED" = "true" ]; then
-            case "$START_TIME" in
-                [0-2][0-9]:[0-5][0-9]) ;;
-                *)
-                    cgi_error "invalid_start_time" "start_time must be HH:MM format"
-                    exit 0
-                    ;;
-            esac
-            case "$END_TIME" in
-                [0-2][0-9]:[0-5][0-9]) ;;
-                *)
-                    cgi_error "invalid_end_time" "end_time must be HH:MM format"
-                    exit 0
-                    ;;
-            esac
-
-            if [ -z "$DAYS_RAW" ]; then
-                cgi_error "no_days" "At least one day must be selected"
-                exit 0
-            fi
-
-            invalid_day=""
-            for d in $(printf '%s' "$DAYS_RAW" | tr ',' ' '); do
-                case "$d" in
-                    0|1|2|3|4|5|6) ;;
-                    *) invalid_day="$d" ;;
-                esac
-            done
-            if [ -n "$invalid_day" ]; then
-                cgi_error "invalid_day" "Days must be 0-6 (0=Sun, 6=Sat)"
-                exit 0
-            fi
-        fi
-
-        # Defaults for disabled state
-        [ -z "$START_TIME" ] && START_TIME="23:00"
-        [ -z "$END_TIME" ] && END_TIME="06:00"
-        [ -z "$DAYS_RAW" ] && DAYS_RAW="0,1,2,3,4,5,6"
-
-        # Write to config
-        case "$ENABLED" in
-            true)  qm_config_set settings low_power_enabled 1 ;;
-            false) qm_config_set settings low_power_enabled 0 ;;
-        esac
-        qm_config_set settings low_power_start "$START_TIME"
-        qm_config_set settings low_power_end "$END_TIME"
-        qm_config_set settings low_power_days "$DAYS_RAW"
-
-        # --- Manage crontab (write directly to root's crontab file) ---
-        CRON_MARKER="qmanager_low_power"
-        LP_SCRIPT="/usr/bin/qmanager_low_power"
-        CRON_FILE="/var/spool/cron/crontabs/root"
-
-        current_cron=$(cat "$CRON_FILE" 2>/dev/null || true)
-        cleaned_cron=$(printf '%s\n' "$current_cron" | grep -v "$CRON_MARKER")
-
-        if [ "$ENABLED" = "true" ]; then
-            start_hour=$(printf '%s' "$START_TIME" | cut -d: -f1)
-            start_min=$(printf '%s' "$START_TIME" | cut -d: -f2)
-            start_hour=$(strip_leading_zero "$start_hour")
-            start_min=$(strip_leading_zero "$start_min")
-
-            end_hour=$(printf '%s' "$END_TIME" | cut -d: -f1)
-            end_min=$(printf '%s' "$END_TIME" | cut -d: -f2)
-            end_hour=$(strip_leading_zero "$end_hour")
-            end_min=$(strip_leading_zero "$end_min")
-
-            new_cron="${cleaned_cron}
-# QManager Low Power Mode — DO NOT EDIT MANUALLY
-${start_min} ${start_hour} * * ${DAYS_RAW} ${LP_SCRIPT} enter  # ${CRON_MARKER}
-${end_min} ${end_hour} * * 0,1,2,3,4,5,6 ${LP_SCRIPT} exit  # ${CRON_MARKER}"
-
-            printf '%s\n' "$new_cron" > "$CRON_FILE"
-            qlog_info "Low power cron installed: enter=${START_TIME} exit=${END_TIME} days=${DAYS_RAW}"
-
-            # Enable boot-time checker
-            svc_enable qmanager_low_power_check
-        else
-            if [ -n "$cleaned_cron" ]; then
-                printf '%s\n' "$cleaned_cron" > "$CRON_FILE"
-            else
-                rm -f "$CRON_FILE"
-            fi
-            qlog_info "Low power cron entries removed"
-
-            # Disable boot-time checker
-            svc_disable qmanager_low_power_check
-
-            # If currently in low-power mode, restore CFUN=1 immediately
-            if [ -f /tmp/qmanager_low_power_active ]; then
-                qlog_info "Low power active flag found, triggering exit"
-                ( /usr/bin/qmanager_low_power exit </dev/null >/dev/null 2>&1 & )
-            fi
-        fi
-
-        # Build response
-        DAYS_RESP=$(printf '%s' "$DAYS_RAW" | jq -Rc 'split(",") | map(tonumber)' 2>/dev/null)
-        [ -z "$DAYS_RESP" ] && DAYS_RESP="[0,1,2,3,4,5,6]"
-
-        jq -n \
-            --argjson enabled "$([ "$ENABLED" = "true" ] && echo true || echo false)" \
-            --arg start "$START_TIME" \
-            --arg end "$END_TIME" \
-            --argjson days "$DAYS_RESP" \
-            '{success: true, low_power: {enabled: $enabled, start_time: $start, end_time: $end, days: $days}}'
         exit 0
     fi
 

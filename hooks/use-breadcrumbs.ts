@@ -34,7 +34,6 @@ const routeNameMap: Record<string, string> = {
   monitoring: 'Monitoring',
   latency: 'Latency Monitor',
   logs: 'Logs',
-  'email-alerts': 'Email Alerts',
   watchdog: 'Watchdog',
   'system-settings': 'System Settings',
   'about-device': 'About Device',

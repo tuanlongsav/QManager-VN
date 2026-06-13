@@ -142,8 +142,6 @@ export function useSystemSettings(): UseSystemSettingsReturn {
         // fall back to silent re-fetch for actions that don't return full state.
         if (json.scheduled_reboot) {
           setScheduledReboot(json.scheduled_reboot);
-        } else if (json.low_power) {
-          // Future: setLowPower(json.low_power) when low power hook exists
         }
 
         // Re-fetch for save_settings (preferences) which doesn't return
