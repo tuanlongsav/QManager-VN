@@ -45,7 +45,10 @@ export default function SmsComposeDialog({
   const charCount = message.length;
   const isOverLimit = charCount > maxChars;
 
-  const isValid = phone.trim().length > 0 && message.trim().length > 0;
+  const isValid =
+    phone.trim().length > 0 &&
+    message.trim().length > 0 &&
+    !isOverLimit;
 
   const handleSend = async (e: React.FormEvent) => {
     e.preventDefault();

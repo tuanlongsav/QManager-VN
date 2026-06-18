@@ -124,6 +124,7 @@
     "logOut": "Log out",
     "changeProfilePhoto": "Change profile photo",
     "toastImageOnly": "Please select an image file.",
+    "toastImageTooLarge": "Image must be under 500 KB.",
     "toastPhotoUpdated": "Profile photo updated.",
     "toastNameUpdated": "Display name updated.",
     "toastNameFailed": "Failed to update display name.",

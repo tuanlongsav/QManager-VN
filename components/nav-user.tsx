@@ -14,6 +14,8 @@ import {
 import { toast } from "sonner";
 import { logout } from "@/hooks/use-auth";
 import { authFetch } from "@/lib/auth-fetch";
+import { fileToAvatarDataUrl } from "@/lib/avatar-image";
+import { prepareForReboot } from "@/lib/session";
 import { useT } from "@/hooks/use-i18n";
 
 import {
@@ -105,22 +107,21 @@ export function NavUser({
     fileInputRef.current?.click();
   };
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     if (!file.type.startsWith("image/")) {
       toast.error(t("navUser.toastImageOnly"));
       return;
     }
-    const reader = new FileReader();
-    reader.onload = () => {
-      const base64 = reader.result as string;
-      localStorage.setItem("qm_display_avatar", base64);
-      setAvatarSrc(base64);
-      toast.success(t("navUser.toastPhotoUpdated"));
-    };
-    reader.readAsDataURL(file);
-    // Reset so same file can be re-selected
+    const base64 = await fileToAvatarDataUrl(file);
+    if (!base64) {
+      toast.error(t("navUser.toastImageTooLarge"));
+      return;
+    }
+    localStorage.setItem("qm_display_avatar", base64);
+    setAvatarSrc(base64);
+    toast.success(t("navUser.toastPhotoUpdated"));
     e.target.value = "";
   };
 
@@ -161,8 +162,7 @@ export function NavUser({
     setRebooting(true);
 
     // Prepare session state for the countdown page
-    sessionStorage.setItem("qm_rebooting", "1");
-    document.cookie = "qm_logged_in=; Path=/; Max-Age=0";
+    prepareForReboot();
 
     // Fire-and-forget: keepalive ensures the request survives page navigation.
     fetch("/cgi-bin/quecmanager/system/reboot.sh", {

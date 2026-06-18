@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { clearIndicatorCookie, isLoggedIn } from "@/lib/session";
 
 const CHECK_ENDPOINT = "/cgi-bin/quecmanager/auth/check.sh";
 const LOGIN_ENDPOINT = "/cgi-bin/quecmanager/auth/login.sh";
@@ -8,18 +9,7 @@ const LOGOUT_ENDPOINT = "/cgi-bin/quecmanager/auth/logout.sh";
 const PASSWORD_ENDPOINT = "/cgi-bin/quecmanager/auth/password.sh";
 const SSH_PASSWORD_ENDPOINT = "/cgi-bin/quecmanager/auth/ssh_password.sh";
 
-// ---------------------------------------------------------------------------
-// Cookie helpers
-// ---------------------------------------------------------------------------
-
-export function isLoggedIn(): boolean {
-  if (typeof document === "undefined") return false;
-  return document.cookie.includes("qm_logged_in=1");
-}
-
-function clearIndicatorCookie() {
-  document.cookie = "qm_logged_in=; Path=/; Max-Age=0";
-}
+export { isLoggedIn, clearIndicatorCookie };
 
 // ---------------------------------------------------------------------------
 // Hook for login page (setup detection + login/setup actions)

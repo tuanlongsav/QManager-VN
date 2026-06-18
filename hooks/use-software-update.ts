@@ -2,6 +2,7 @@
 
 import { useState, useCallback, useRef, useEffect } from "react";
 import { authFetch } from "@/lib/auth-fetch";
+import { prepareForReboot } from "@/lib/session";
 
 // =============================================================================
 // useSoftwareUpdate — Check, download, install QManager updates
@@ -206,8 +207,7 @@ export function useSoftwareUpdate(): UseSoftwareUpdateReturn {
           // so any delay here only widens the race.
           if (pollRef.current) clearInterval(pollRef.current);
           pollRef.current = null;
-          sessionStorage.setItem("qm_rebooting", "1");
-          document.cookie = "qm_logged_in=; Path=/; Max-Age=0";
+          prepareForReboot();
           window.location.href = "/reboot/";
         }
 
@@ -224,8 +224,7 @@ export function useSoftwareUpdate(): UseSoftwareUpdateReturn {
         // doesn't help since the device won't come back any sooner.
         if (pollRef.current) clearInterval(pollRef.current);
         pollRef.current = null;
-        sessionStorage.setItem("qm_rebooting", "1");
-        document.cookie = "qm_logged_in=; Path=/; Max-Age=0";
+        prepareForReboot();
         window.location.href = "/reboot/";
       }
     }, POLL_INTERVAL);
@@ -331,19 +330,38 @@ export function useSoftwareUpdate(): UseSoftwareUpdateReturn {
         if (json.status === "ready" && !installPosted) {
           installPosted = true;
           setUpdateStatus({ status: "installing", message: "Installing update...", version });
-          await authFetch(CGI_ENDPOINT, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ action: "install_staged" }),
-          });
-          return; // next tick will pick up the installing/rebooting status
+          try {
+            const installResp = await authFetch(CGI_ENDPOINT, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ action: "install_staged" }),
+            });
+            const installJson = await installResp.json();
+            if (!installJson.success) {
+              installPosted = false;
+              if (pollRef.current) clearInterval(pollRef.current);
+              pollRef.current = null;
+              setIsUpdating(false);
+              setError(
+                installJson.detail || installJson.error || "Failed to start installation",
+              );
+            }
+          } catch (err) {
+            installPosted = false;
+            if (pollRef.current) clearInterval(pollRef.current);
+            pollRef.current = null;
+            setIsUpdating(false);
+            setError(
+              err instanceof Error ? err.message : "Failed to start installation",
+            );
+          }
+          return;
         }
 
         if (json.status === "rebooting") {
           if (pollRef.current) clearInterval(pollRef.current);
           pollRef.current = null;
-          sessionStorage.setItem("qm_rebooting", "1");
-          document.cookie = "qm_logged_in=; Path=/; Max-Age=0";
+          prepareForReboot();
           window.location.href = "/reboot/";
         }
 
@@ -359,8 +377,7 @@ export function useSoftwareUpdate(): UseSoftwareUpdateReturn {
         if (installPosted) {
           if (pollRef.current) clearInterval(pollRef.current);
           pollRef.current = null;
-          sessionStorage.setItem("qm_rebooting", "1");
-          document.cookie = "qm_logged_in=; Path=/; Max-Age=0";
+          prepareForReboot();
           window.location.href = "/reboot/";
         }
       }

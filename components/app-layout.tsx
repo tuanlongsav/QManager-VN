@@ -1,6 +1,6 @@
 "use client";
 
-import React from "react";
+import React, { useEffect, useSyncExternalStore } from "react";
 import { usePathname } from "next/navigation";
 import { motion } from "motion/react";
 
@@ -27,14 +27,25 @@ import { UnsupportedModelBanner } from "@/components/layout/unsupported-model-ba
 import { isLoggedIn } from "@/hooks/use-auth";
 import { useAutoLogout } from "@/hooks/use-auto-logout";
 
+const subscribeNoop = () => () => {};
+
 export function AppLayout({ children }: { children: React.ReactNode }) {
   const breadcrumbs = useBreadcrumbs();
   const pathname = usePathname();
+  const loggedIn = useSyncExternalStore(
+    subscribeNoop,
+    isLoggedIn,
+    () => false,
+  );
   useAutoLogout();
 
-  // Sync cookie check — no API call, no loading state
-  if (typeof document !== "undefined" && !isLoggedIn()) {
-    window.location.href = "/login/";
+  useEffect(() => {
+    if (!loggedIn) {
+      window.location.href = "/login/";
+    }
+  }, [loggedIn]);
+
+  if (!loggedIn) {
     return null;
   }
 

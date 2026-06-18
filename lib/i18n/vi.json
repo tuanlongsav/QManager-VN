@@ -124,6 +124,7 @@
     "logOut": "Đăng xuất",
     "changeProfilePhoto": "Đổi ảnh đại diện",
     "toastImageOnly": "Vui lòng chọn tệp hình ảnh.",
+    "toastImageTooLarge": "Ảnh phải nhỏ hơn 500 KB.",
     "toastPhotoUpdated": "Đã cập nhật ảnh đại diện.",
     "toastNameUpdated": "Đã cập nhật tên hiển thị.",
     "toastNameFailed": "Không thể cập nhật tên hiển thị.",

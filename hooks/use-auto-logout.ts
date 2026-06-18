@@ -2,6 +2,7 @@
 
 import { useEffect, useRef } from "react";
 import { authFetch } from "@/lib/auth-fetch";
+import { clearIndicatorCookie } from "@/lib/session";
 
 const CHECK_ENDPOINT = "/cgi-bin/quecmanager/auth/check.sh";
 
@@ -17,10 +18,6 @@ const POLL_INTERVAL_MS = 10_000;
  * back (e.g. power loss, long watchdog reboot).
  */
 const OFFLINE_THRESHOLD_MS = 90_000;
-
-function clearSessionCookie() {
-  document.cookie = "qm_logged_in=; Path=/; Max-Age=0";
-}
 
 /**
  * Polls auth/check.sh every POLL_INTERVAL_MS while the dashboard is mounted.
@@ -38,16 +35,27 @@ export function useAutoLogout() {
 
     const tick = async () => {
       try {
-        // authFetch handles 401 → redirect internally
-        await authFetch(CHECK_ENDPOINT);
-        // Any successful response: device is reachable, reset clock
+        const response = await authFetch(CHECK_ENDPOINT);
+        if (!response.ok) {
+          // Server error — don't treat as "online"; let offline clock run.
+          if (offlineSinceRef.current === null) {
+            offlineSinceRef.current = Date.now();
+          } else if (
+            Date.now() - offlineSinceRef.current >= OFFLINE_THRESHOLD_MS
+          ) {
+            clearIndicatorCookie();
+            window.location.href = "/login/?reason=offline";
+          }
+          return;
+        }
         offlineSinceRef.current = null;
       } catch {
-        // Network error: device is unreachable
         if (offlineSinceRef.current === null) {
           offlineSinceRef.current = Date.now();
-        } else if (Date.now() - offlineSinceRef.current >= OFFLINE_THRESHOLD_MS) {
-          clearSessionCookie();
+        } else if (
+          Date.now() - offlineSinceRef.current >= OFFLINE_THRESHOLD_MS
+        ) {
+          clearIndicatorCookie();
           window.location.href = "/login/?reason=offline";
         }
       }

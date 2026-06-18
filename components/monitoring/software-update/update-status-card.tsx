@@ -3,6 +3,7 @@
 import { useState, useCallback } from "react";
 import { motion, type Variants } from "motion/react";
 import Markdown from "react-markdown";
+import { safeMarkdownComponents } from "@/lib/safe-markdown";
 import {
   Card,
   CardAction,
@@ -272,7 +273,7 @@ export function UpdateStatusCard({
                       tabIndex={0}
                       className={`max-h-64 overflow-y-auto overflow-x-hidden wrap-break-word rounded-lg border bg-muted/50 p-4 ${PROSE_CLASSES}`}
                     >
-                      <Markdown>{displayChangelog}</Markdown>
+                      <Markdown components={safeMarkdownComponents}>{displayChangelog}</Markdown>
                     </div>
                   </motion.div>
                 </>
@@ -403,7 +404,7 @@ export function UpdateStatusCard({
             tabIndex={0}
             className={`max-h-[60vh] overflow-y-auto overflow-x-hidden wrap-break-word rounded-lg border bg-muted/50 p-5 ${PROSE_CLASSES}`}
           >
-            <Markdown>
+            <Markdown components={safeMarkdownComponents}>
               {(updateAvailable ? updateInfo?.changelog : updateInfo?.current_changelog) ?? ""}
             </Markdown>
           </div>

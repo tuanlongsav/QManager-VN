@@ -42,6 +42,7 @@ import { Switch } from "@/components/ui/switch";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { RotateCcwIcon, AlertTriangleIcon } from "lucide-react";
+import { validateImei } from "@/lib/imei-utils";
 import type { BackupImeiConfig } from "@/types/imei-settings";
 
 interface BackupIMEICardProps {
@@ -74,7 +75,9 @@ const BackupIMEICard = ({
     }
   }, [backupEnabled, backupImei]);
 
-  const isValidImei = /^\d{15}$/.test(localImei);
+  const isValidImei = validateImei(localImei);
+  const showImeiError =
+    localEnabled && localImei.length > 0 && !isValidImei;
 
   const handleSwitchChange = (checked: boolean) => {
     if (checked) {
@@ -99,7 +102,11 @@ const BackupIMEICard = ({
     e.preventDefault();
 
     if (localEnabled && !isValidImei) {
-      toast.error("Backup IMEI must be exactly 15 digits");
+      toast.error(
+        localImei.length !== 15
+          ? "Backup IMEI must be exactly 15 digits"
+          : "Backup IMEI failed Luhn checksum validation",
+      );
       return;
     }
 

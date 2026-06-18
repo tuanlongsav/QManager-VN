@@ -3,6 +3,7 @@
 import { useState, useEffect, type FormEvent, type ChangeEvent } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { toast } from "sonner";
+import { prepareForReboot } from "@/lib/session";
 
 import {
   Card,
@@ -176,8 +177,7 @@ const IPPassthroughCard = () => {
     // Hand off to the countdown page. The backend (cgi_reboot_response) is
     // waiting on /tmp/qmanager_reboot_ack — the /reboot/ page touches it on
     // mount, so the device reboots only after the page is in browser memory.
-    sessionStorage.setItem("qm_rebooting", "1");
-    document.cookie = "qm_logged_in=; Path=/; Max-Age=0";
+    prepareForReboot();
     window.location.href = "/reboot/";
   };
 

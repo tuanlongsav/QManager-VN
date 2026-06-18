@@ -2,6 +2,7 @@
 
 import { useState, useEffect, type FormEvent } from "react";
 import { toast } from "sonner";
+import { prepareForReboot } from "@/lib/session";
 import {
   Card,
   CardContent,
@@ -136,8 +137,7 @@ const MBNCard = ({
     setIsRebooting(true);
 
     // Prepare session state for the countdown page
-    sessionStorage.setItem("qm_rebooting", "1");
-    document.cookie = "qm_logged_in=; Path=/; Max-Age=0";
+    prepareForReboot();
 
     // Fire-and-forget: keepalive ensures the request survives page navigation.
     fetch("/cgi-bin/quecmanager/cellular/mbn.sh", {

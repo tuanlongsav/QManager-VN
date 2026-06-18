@@ -117,7 +117,7 @@ const PingEntriesCard = ({
             {sortedEntries.length > 0 ? (
               sortedEntries.map((ping, index) => (
                 <MotionTableRow
-                  key={ping.timestamp}
+                  key={`${ping.timestamp}-${index}`}
                   initial={{ opacity: 0, x: -8 }}
                   animate={{ opacity: 1, x: 0 }}
                   transition={{ duration: 0.2, delay: Math.min(index * 0.04, 0.4), ease: "easeOut" }}

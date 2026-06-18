@@ -40,6 +40,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Loader2, RotateCcwIcon, AlertTriangleIcon } from "lucide-react";
+import { validateImei } from "@/lib/imei-utils";
 
 interface IMEISettingsCardProps {
   currentImei: string | null;
@@ -67,7 +68,7 @@ const IMEISettingsCard = ({
     }
   }, [currentImei]);
 
-  const isValidImei = /^\d{15}$/.test(imei);
+  const isValidImei = validateImei(imei);
   const hasChanged = imei !== (currentImei ?? "");
   const showImeiError = imei.length > 0 && !isValidImei;
 
@@ -194,7 +195,9 @@ const IMEISettingsCard = ({
                   </InputGroup>
                   {showImeiError && (
                     <FieldError id="imei-error">
-                      IMEI must be exactly 15 digits ({imei.length}/15)
+                      {imei.length !== 15
+                        ? `IMEI must be exactly 15 digits (${imei.length}/15)`
+                        : "IMEI failed Luhn checksum validation"}
                     </FieldError>
                   )}
                   <FieldDescription>
