@@ -13,8 +13,11 @@ const eslintConfig = defineConfig([
     "build/**",
     "next-env.d.ts",
     // Tooling scratch dirs — not project source. Without these, throwaway
-    // files the tooling writes (e.g. .remember/tmp/*.ts) show up as lint
-    // findings against the project.
+    // files the tooling writes show up as lint findings against the project:
+    // .remember/tmp/*.ts, and above all .claude/worktrees/, which holds full
+    // repo checkouts (node_modules included) and alone contributed ~15.7k
+    // findings. Git already ignores these via the /.claude rule.
+    ".claude/**",
     ".remember/**",
     ".codegraph/**",
     "qmanager-build/**",

@@ -62,10 +62,11 @@ Bug fixes match the tier of the *fix*, not the bug. Pure refactors with no behav
 
 All agents are defined in `.claude/agents/` and run on Sonnet.
 
-> **Status:** `.claude/agents/` does not exist yet — none of the five agents below
-> are defined, in this project or globally. Until they are written, treat the
-> phases as a checklist to work through directly rather than agents to dispatch;
-> the validators map to `bun run test:harness`, `bash scripts/test/run-all.sh`,
+> **If `.claude/agents/` is missing, your checkout is incomplete** — the five
+> agents are committed to the repo. Restore them with
+> `git checkout origin/main -- .claude/ .gitattributes .github/` rather than
+> working around their absence. When they genuinely cannot be dispatched, the
+> validators map to `bash scripts/test/run-all.sh`, `bun run test:harness`,
 > `bunx tsc --noEmit` and `bunx eslint .`.
 
 - **Gate (Phase 1, read-only):** `installer-safety-auditor` — audits installer/systemd/sudoers/OTA changes; can halt work before code is written.

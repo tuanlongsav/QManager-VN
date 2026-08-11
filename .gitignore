@@ -61,3 +61,22 @@ RELEASE_NOTE.md
 
 # Investigation scratch (probe scripts, raw logs)
 /scratch/
+
+# Rust ping-daemon build output
+/ping-daemon/target/
+
+# Code intelligence / session tooling state (machine-local, not shared)
+/.codegraph/
+/.remember/
+
+# Editor state
+.vscode/
+.idea/
+
+# macOS / Windows filesystem junk. iCloud and Finder also drop "name 2.ext"
+# conflict copies into synced folders — those are caught during review, not
+# here, since the pattern is too broad to ignore safely.
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
