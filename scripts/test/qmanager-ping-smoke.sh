@@ -28,6 +28,17 @@ if [ ! -x "$BIN" ]; then
     exit 1
 fi
 
+# The daemon ships as a statically-linked ARMv7 ELF built for the modem. On a
+# non-ARM workstation the kernel refuses to exec it and the shell reports 126
+# ("cannot execute"). That is an unsupported host, not a regression — skip so
+# the suite stays green on macOS while still running for real on the device.
+exec_rc=0
+"$BIN" --version >/dev/null 2>&1 || exec_rc=$?
+if [ "$exec_rc" -eq 126 ]; then
+    echo "SKIP: $BIN cannot exec on $(uname -m) (ARMv7 binary) — run this smoke on the device or in an ARM environment."
+    exit 0
+fi
+
 WORK=$(mktemp -d)
 SERVER_PID=""
 DAEMON_PID=""

@@ -70,16 +70,12 @@ esac
 # NOTE: The "traffic rate uses elapsed wall time" test was removed when the
 # live traffic-rate computation was deleted from qmanager_poller alongside
 # the Live Traffic feature removal. Cumulative bytes are now sourced
-# exclusively through update_data_used() and have their own coverage.
-
-# Also assert the patched code is in place — both the init and the update
-# assignment must exist, not just the bare token (a comment would falsely match).
-if grep -qE '^prev_traffic_ts=0$' "$REPO_ROOT/scripts/usr/bin/qmanager_poller" && \
-   grep -q 'prev_traffic_ts=\$now_ts' "$REPO_ROOT/scripts/usr/bin/qmanager_poller"; then
-    ok "qmanager_poller uses prev_traffic_ts state variable"
-else
-    bad "qmanager_poller missing prev_traffic_ts init or assignment"
-fi
+# exclusively through update_data_used() and have their own coverage in
+# scripts/test/poller-data-used.sh.
+#
+# The companion assertion that the poller still declares prev_traffic_ts was
+# dropped with it: that variable was deleted in the very same change, so the
+# check could only ever report a failure for code that is gone on purpose.
 
 section "LONG_FLAG older than 5 minutes is auto-cleared"
 
@@ -104,6 +100,29 @@ SHIM
 awk '/# --- LONG_FLAG expiry guard/,/# --- end LONG_FLAG expiry guard/' \
     "$REPO_ROOT/scripts/usr/bin/qmanager_poller" > "$work/expire_block.sh"
 
+# The block declares `local`, which bash only honours inside a function — and
+# in the poller it does live inside poll_cycle(). Sourcing it at top level made
+# bash reject that line and continue with the variables unset. Wrap it in a
+# function so the fixture reproduces the real execution context.
+{ printf '_expire_long_flag() {\n'; cat "$work/expire_block.sh"; printf '\n}\n'; } \
+    > "$work/expire_fn.sh"
+
+# The guard reads mtime via `stat -c %Y`, which is right on the modem
+# (GNU/BusyBox stat) but unsupported by BSD stat on macOS. There it fails and
+# the `|| echo 0` fallback yields mtime 0, making every flag look infinitely
+# old — the "stale flag is cleared" assertion would then pass for the wrong
+# reason while "fresh flag survives" fails. Map -c %Y onto BSD's -f %m.
+install_stat_shim() {
+    command stat -c %Y . >/dev/null 2>&1 && return 0
+    stat() {
+        if [ "$1" = "-c" ] && [ "$2" = "%Y" ]; then
+            command stat -f %m "$3"
+        else
+            command stat "$@"
+        fi
+    }
+}
+
 if [ ! -s "$work/expire_block.sh" ]; then
     bad "LONG_FLAG expiry guard not found in qmanager_poller"
 else
@@ -111,7 +130,9 @@ else
         set +eu
         . "$work/expire_shim.sh"
         qlog_warn() { :; }
-        . "$work/expire_block.sh"
+        install_stat_shim
+        . "$work/expire_fn.sh"
+        _expire_long_flag
     )
     if [ -f "$flag" ]; then
         bad "stale LONG_FLAG (>300s) was not cleared"
@@ -128,7 +149,9 @@ touch "$fresh"
     LONG_FLAG="$fresh"
     LONG_FLAG_MAX_AGE=300
     qlog_warn() { :; }
-    . "$work/expire_block.sh" 2>/dev/null || true
+    install_stat_shim
+    . "$work/expire_fn.sh" 2>/dev/null || true
+    _expire_long_flag
 )
 if [ -f "$fresh" ]; then
     ok "fresh LONG_FLAG preserved"

@@ -20,14 +20,25 @@ Cookie: session=abcdef1234567890
 Authorization: Bearer eyJhbGciOiJIUzI1NiJ9
 EOF
 
-# Run the same sed pipeline used in qmanager_health_check::_redact_tree
-find "$work" -type f -print | while read -r f; do
-    sed -i \
+# Run the same sed expressions used in qmanager_health_check::_redact_tree.
+#
+# The production script edits in place with `sed -i`, which is fine on the
+# modem (GNU/BusyBox sed). This fixture is documented to run on a workstation,
+# and BSD sed on macOS reads the argument after -i as a mandatory backup
+# suffix — `sed -i -e ...` there consumes "-e" as the suffix and dies. Write to
+# a temp file and move it back instead: portable on both seds, while the
+# redaction expressions stay byte-identical to the production ones.
+#
+# The glob expands once, before the loop body runs, so the .redacted temp files
+# created below are never picked up as inputs.
+for f in "$work"/*; do
+    [ -f "$f" ] || continue
+    sed \
         -e 's/^\([[:space:]]*password[[:space:]]\).*/\1REDACTED/' \
         -e 's/tskey-[A-Za-z0-9_-]\{20,\}/tskey-REDACTED/g' \
         -e 's/\(Cookie:[[:space:]]\).*/\1REDACTED/I' \
         -e 's/\(Authorization:[[:space:]]\).*/\1REDACTED/I' \
-        "$f"
+        "$f" > "$f.redacted" && mv "$f.redacted" "$f"
 done
 
 fail=0

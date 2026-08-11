@@ -23,6 +23,13 @@ cat >"$WORK/iptables" <<'FAKE'
 #!/usr/bin/env bash
 STATE="$IPTABLES_STATE"
 LOG="$IPTABLES_LOG"
+# Delete lines from a file in place. BSD sed (macOS, where this fixture runs)
+# reads the argument after -i as a mandatory backup suffix, so `sed -i EXPR
+# FILE` there treats EXPR as the suffix and mangles the call. Route through a
+# temp file so the same code works under both BSD and GNU/BusyBox sed.
+sed_del() {
+    sed "$1" "$2" > "$2.tmp" && mv "$2.tmp" "$2"
+}
 # Strip `-w <secs>` (space-separated only — glued form `-w5` is NOT stripped;
 # acceptable because qmanager_firewall never uses -w).
 args=()
@@ -40,10 +47,10 @@ case "${args[0]}" in
         echo "CHAIN $chain" >> "$STATE" ;;
     -X)  # -X CHAIN
         chain="${args[1]}"
-        sed -i "/^CHAIN $chain$/d; /^RULE $chain /d" "$STATE" ;;
+        sed_del "/^CHAIN $chain$/d; /^RULE $chain /d" "$STATE" ;;
     -F)  # -F CHAIN
         chain="${args[1]}"
-        sed -i "/^RULE $chain /d" "$STATE" ;;
+        sed_del "/^RULE $chain /d" "$STATE" ;;
     -A)  # -A CHAIN ...rule...
         chain="${args[1]}"
         rest="${args[*]:2}"
@@ -131,7 +138,10 @@ echo "RULE INPUT -p tcp --dport 80 -j DROP" >> "$IPTABLES_STATE"
 echo "RULE INPUT -i bridge0 -p tcp --dport 80 -j ACCEPT" >> "$IPTABLES_STATE"
 "$SCRIPT" start
 # After start, all legacy INPUT rules should be drained
-remaining_orphans=$({ grep -E '^RULE INPUT (-i [^ ]+ )?-p tcp --dport (80|443) -j (ACCEPT|DROP)$' "$IPTABLES_STATE" || true; } | wc -l)
+# `tr -d` because BSD wc (macOS, where this fixture runs) pads its count with
+# leading spaces while GNU/BusyBox wc does not — without it the string compare
+# below sees "       0" and reports a false failure.
+remaining_orphans=$({ grep -E '^RULE INPUT (-i [^ ]+ )?-p tcp --dport (80|443) -j (ACCEPT|DROP)$' "$IPTABLES_STATE" || true; } | wc -l | tr -d '[:space:]')
 [ "$remaining_orphans" = "0" ] \
     || { echo "FAIL: $remaining_orphans legacy orphan rules remain"; cat "$IPTABLES_STATE"; exit 1; }
 

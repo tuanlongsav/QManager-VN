@@ -44,7 +44,7 @@ run_tick() {
         qlog_warn()  { :; }
         qlog_error() { :; }
         NETWORK_IFACE="rmnet_ipa0"
-        DATA_USED_SCHEMA=3
+        DATA_USED_SCHEMA=4
         DATA_USED_PROC_DEV="$proc_dev"
         DATA_USED_FILE="$state_file"
         DATA_USED_TMP="${state_file}.tmp"
@@ -55,6 +55,19 @@ run_tick() {
         du_prev_ipa_rx=0; du_prev_ipa_tx=0
         du_last_update_ts=0; du_last_reset_ts=0
         du_modem_reset_count=0
+        # Orientation globals (qmanager_poller:231-235). update_data_used reads
+        # these to pick the /proc/net/dev download/upload columns; the poller
+        # declares them at top level, but this fixture only sources the two
+        # functions under test, so they must be seeded here. Left unset, awk
+        # gets `-v f=` and dies with "illegal field $()", making every tick a
+        # silent no-op. Pinned to detected_normal + the 2/10 default columns so
+        # no live 5 MB orientation probe is started.
+        orientation_state="detected_normal"
+        orientation_dl_field=2
+        orientation_ul_field=10
+        orientation_probe_attempted=true
+        orientation_history_swapped=false
+        start_orientation_probe() { :; }
         . "$work/fn_write.sh"
         . "$work/fn_update.sh"
         update_data_used
@@ -87,7 +100,7 @@ if [ -f "$state" ]; then
         || bad "accumulators not 0 (rx=$arx tx=$atx)"
     [ "$prx" = "200000" ] && ok "prev_ipa_rx baselined to current kernel value" \
         || bad "prev_ipa_rx wrong ($prx)"
-    [ "$sch" = "3" ] && ok "schema written as 3" || bad "schema wrong ($sch)"
+    [ "$sch" = "4" ] && ok "schema written as 4" || bad "schema wrong ($sch)"
     [ "$sel" = "rmnet_ipa0" ] && ok "selected_counter is rmnet_ipa0" \
         || bad "selected_counter wrong ($sel)"
 else
@@ -150,7 +163,7 @@ run_tick "$proc" "$state"
 arx=$(jq -r '.accumulated_rx_bytes' "$state")
 sch=$(jq -r '.schema' "$state")
 [ "$arx" = "0" ] && ok "old-schema accumulator discarded" || bad "stale accumulator survived ($arx)"
-[ "$sch" = "3" ] && ok "rewritten at schema 3" || bad "schema not migrated ($sch)"
+[ "$sch" = "4" ] && ok "rewritten at schema 4" || bad "schema not migrated ($sch)"
 
 # --- Test 6: missing interface — tick skipped, state untouched --------
 section "missing interface skips the tick safely"
