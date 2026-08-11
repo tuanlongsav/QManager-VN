@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { TriangleAlertIcon, XIcon } from "lucide-react";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -21,12 +21,16 @@ const DISMISS_KEY = "qmanager_vn_unsupported_banner_dismissed";
  */
 export function UnsupportedModelBanner() {
   const { hardware } = useHardwareInfo();
-  const [dismissedFor, setDismissedFor] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    setDismissedFor(window.sessionStorage.getItem(DISMISS_KEY));
-  }, []);
+  // Read the dismissal once, when the state is created. The `typeof window`
+  // guard covers the static-export prerender, where there is no sessionStorage;
+  // that prerendered pass can't render the banner anyway, since `hardware` is
+  // still null until the fetch below it resolves — so no hydration mismatch.
+  const [dismissedFor, setDismissedFor] = useState<string | null>(() =>
+    typeof window === "undefined"
+      ? null
+      : window.sessionStorage.getItem(DISMISS_KEY),
+  );
 
   if (!shouldShowUnsupportedBanner(hardware)) return null;
   if (!hardware) return null;

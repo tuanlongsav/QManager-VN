@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, type FormEvent, type ChangeEvent } from "react";
+import { useState, type FormEvent, type ChangeEvent } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { toast } from "sonner";
 import { prepareForReboot } from "@/lib/session";
@@ -36,7 +36,10 @@ import {
 } from "@/components/ui/alert-dialog";
 import { RotateCcwIcon } from "lucide-react";
 
-import { useIpPassthrough } from "@/hooks/use-ip-passthrough";
+import {
+  useIpPassthrough,
+  type UseIpPassthroughReturn,
+} from "@/hooks/use-ip-passthrough";
 import type {
   PassthroughMode,
   DnsProxy,
@@ -64,55 +67,78 @@ const USB_MODE_FROM_API: Record<string, UsbModeLocal> = {
   "3": "rndis",
 };
 
+interface PassthroughFormSeed {
+  mode: PassthroughMode;
+  macSource: MacSource;
+  macInput: string;
+  ipptNat: NatMode | "";
+  usbMode: UsbModeLocal;
+  dnsProxy: DnsProxy;
+}
+
+/**
+ * The form's starting values for a given server snapshot. Every field falls
+ * back to the same default the form used before the first fetch landed, so a
+ * null snapshot seeds an untouched form. A MAC only shows as "manual" while
+ * passthrough is active and the device reported a specific address —
+ * FF:FF:FF:FF:FF:FF means "first connected device", i.e. automatic.
+ */
+function seedForm(server: UseIpPassthroughReturn): PassthroughFormSeed {
+  const { passthroughMode, targetMac, ipptNat, usbMode, dnsProxy } = server;
+  const manualMac =
+    passthroughMode !== null &&
+    passthroughMode !== "disabled" &&
+    targetMac &&
+    targetMac !== "FF:FF:FF:FF:FF:FF"
+      ? targetMac
+      : null;
+
+  return {
+    mode: passthroughMode ?? "disabled",
+    macSource: manualMac ? "manual" : "automatic",
+    macInput: manualMac ?? "",
+    ipptNat: ipptNat === null ? "" : ipptNat === "1" ? "nat-on" : "nat-off",
+    usbMode: usbMode === null ? "ecm" : USB_MODE_FROM_API[usbMode] ?? "ecm",
+    dnsProxy: dnsProxy ?? "disabled",
+  };
+}
+
 const IPPassthroughCard = () => {
-  const {
-    passthroughMode,
-    targetMac,
-    ipptNat,
-    usbMode,
-    dnsProxy,
-    isLoading,
-    isSaving,
-    error,
-    saveSettings,
-    refresh,
-  } = useIpPassthrough();
+  const server = useIpPassthrough();
+
+  // The form seeds every field from the server snapshot at mount. Keying on
+  // that snapshot remounts it whenever the values change — the same trigger the
+  // old sync effect fired on, without the cascading render.
+  const seedKey = [
+    server.passthroughMode,
+    server.targetMac,
+    server.ipptNat,
+    server.usbMode,
+    server.dnsProxy,
+  ].join("|");
+
+  return <IPPassthroughForm key={seedKey} {...server} />;
+};
+
+const IPPassthroughForm = (server: UseIpPassthroughReturn) => {
+  const { isLoading, isSaving, error, saveSettings, refresh } = server;
   const { saved, markSaved } = useSaveFlash();
+
+  const seed = seedForm(server);
 
   // Local form state — NatMode and UsbModeLocal use descriptive strings to
   // avoid Radix Select treating "0" as falsy and showing the placeholder
-  const [localMode, setLocalMode] = useState<PassthroughMode>("disabled");
-  const [localMacSource, setLocalMacSource] = useState<MacSource>("automatic");
-  const [localMacInput, setLocalMacInput] = useState<string>("");
-  const [localIpptNat, setLocalIpptNat] = useState<NatMode | "">("");
-  const [localUsbMode, setLocalUsbMode] = useState<UsbModeLocal>("ecm");
-  const [localDnsProxy, setLocalDnsProxy] = useState<DnsProxy>("disabled");
+  const [localMode, setLocalMode] = useState<PassthroughMode>(seed.mode);
+  const [localMacSource, setLocalMacSource] = useState<MacSource>(
+    seed.macSource
+  );
+  const [localMacInput, setLocalMacInput] = useState<string>(seed.macInput);
+  const [localIpptNat, setLocalIpptNat] = useState<NatMode | "">(seed.ipptNat);
+  const [localUsbMode, setLocalUsbMode] = useState<UsbModeLocal>(seed.usbMode);
+  const [localDnsProxy, setLocalDnsProxy] = useState<DnsProxy>(seed.dnsProxy);
 
   // Pre-save confirmation dialog
   const [showConfirmDialog, setShowConfirmDialog] = useState(false);
-
-  // Sync form state when server data arrives
-  useEffect(() => {
-    if (passthroughMode !== null) setLocalMode(passthroughMode);
-    if (ipptNat !== null) setLocalIpptNat(ipptNat === "1" ? "nat-on" : "nat-off");
-    if (usbMode !== null) setLocalUsbMode(USB_MODE_FROM_API[usbMode] ?? "ecm");
-    if (dnsProxy !== null) setLocalDnsProxy(dnsProxy);
-
-    // Initialise MAC source only when mode is active
-    if (
-      passthroughMode !== null &&
-      passthroughMode !== "disabled" &&
-      targetMac !== null
-    ) {
-      if (targetMac === "" || targetMac === "FF:FF:FF:FF:FF:FF") {
-        setLocalMacSource("automatic");
-        setLocalMacInput("");
-      } else {
-        setLocalMacSource("manual");
-        setLocalMacInput(targetMac);
-      }
-    }
-  }, [passthroughMode, targetMac, ipptNat, usbMode, dnsProxy]);
 
   // Resolved MAC to send to backend
   const resolvedMac =
@@ -125,23 +151,12 @@ const IPPassthroughCard = () => {
     /^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$/.test(localMacInput);
 
   const resetToServer = () => {
-    if (passthroughMode !== null) setLocalMode(passthroughMode);
-    if (ipptNat !== null) setLocalIpptNat(ipptNat === "1" ? "nat-on" : "nat-off");
-    if (usbMode !== null) setLocalUsbMode(USB_MODE_FROM_API[usbMode] ?? "ecm");
-    if (dnsProxy !== null) setLocalDnsProxy(dnsProxy);
-
-    if (passthroughMode !== "disabled" && targetMac) {
-      if (targetMac === "" || targetMac === "FF:FF:FF:FF:FF:FF") {
-        setLocalMacSource("automatic");
-        setLocalMacInput("");
-      } else {
-        setLocalMacSource("manual");
-        setLocalMacInput(targetMac);
-      }
-    } else {
-      setLocalMacSource("automatic");
-      setLocalMacInput("");
-    }
+    setLocalMode(seed.mode);
+    setLocalMacSource(seed.macSource);
+    setLocalMacInput(seed.macInput);
+    setLocalIpptNat(seed.ipptNat);
+    setLocalUsbMode(seed.usbMode);
+    setLocalDnsProxy(seed.dnsProxy);
   };
 
   // Step 1: validate → open confirm dialog
@@ -377,14 +392,7 @@ const IPPassthroughCard = () => {
                   <Field>
                     <FieldLabel>NAT Mode (Network Address Translation)</FieldLabel>
                     <Select
-                      value={
-                        localIpptNat ||
-                        (ipptNat !== null
-                          ? ipptNat === "1"
-                            ? "nat-on"
-                            : "nat-off"
-                          : "")
-                      }
+                      value={localIpptNat}
                       onValueChange={(v) => setLocalIpptNat(v as NatMode)}
                       disabled={isSaving}
                     >

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
@@ -19,6 +19,12 @@ const RING_RADIUS = 52;
 const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS;
 const RING_STROKE = 5;
 
+// Client-only marker: `false` while prerendering, `true` once mounted in a
+// browser. The value never changes afterwards, so the subscription is a no-op.
+const subscribeNoop = () => () => {};
+const getHydrated = () => true;
+const getServerHydrated = () => false;
+
 interface Phase {
   label: string;
   segment: number; // 1-indexed active segment
@@ -32,20 +38,38 @@ function getPhase(remaining: number): Phase {
 }
 
 export function RebootCountdown() {
-  const [verified, setVerified] = useState(false);
+  // Snapshot the direct-access flag once, when the state is created. It has to
+  // be a snapshot: the effect below consumes the key, and re-reading it would
+  // flip the guard back off mid-countdown.
+  const [hasRebootFlag] = useState(
+    () =>
+      typeof window !== "undefined" &&
+      sessionStorage.getItem(SESSION_KEY) !== null
+  );
+
+  // sessionStorage doesn't exist during the static-export prerender, so the
+  // server snapshot is `false` and the first paint stays empty — matching the
+  // prerendered HTML. The real guard takes over right after hydration. Same
+  // idiom as the login gate in app-layout.tsx.
+  const hydrated = useSyncExternalStore(
+    subscribeNoop,
+    getHydrated,
+    getServerHydrated
+  );
+  const verified = hydrated && hasRebootFlag;
+
   const [remaining, setRemaining] = useState(TOTAL_SECONDS);
   const pollingRef = useRef(false);
   const remainingRef = useRef(TOTAL_SECONDS);
 
   // Direct-access guard: only show countdown if a reboot was actually triggered
   useEffect(() => {
-    const flag = sessionStorage.getItem(SESSION_KEY);
-    if (!flag) {
+    if (!hydrated) return;
+    if (!hasRebootFlag) {
       window.location.href = "/";
       return;
     }
     sessionStorage.removeItem(SESSION_KEY);
-    setVerified(true);
 
     // Tell the OTA worker (if any) that the static reboot page has loaded
     // so it can stop waiting and fire the reboot syscall. Harmless on
@@ -53,7 +77,7 @@ export function RebootCountdown() {
     fetch("/cgi-bin/quecmanager/system/update.sh?action=reboot_ack", {
       keepalive: true,
     }).catch(() => {});
-  }, []);
+  }, [hydrated, hasRebootFlag]);
 
   // Keep ref in sync so the polling effect can read it without re-subscribing
   useEffect(() => {

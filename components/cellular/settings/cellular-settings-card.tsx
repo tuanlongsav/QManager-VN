@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, type FormEvent } from "react";
+import { useState, type FormEvent } from "react";
 import { toast } from "sonner";
 import { Field, FieldGroup, FieldLabel, FieldSet } from "@/components/ui/field";
 import {
@@ -30,6 +30,15 @@ interface CellularSettingsCardProps {
   onSave: (changes: Partial<CellularSettings>) => Promise<boolean>;
 }
 
+/** Fields the user can override, keyed by form field name. */
+type CellularFormEdits = {
+  simSlot?: string;
+  cfun?: string;
+  modePref?: string;
+  nr5gMode?: string;
+  roamPref?: string;
+};
+
 const CellularSettingsCard = ({
   settings,
   isLoading,
@@ -37,22 +46,17 @@ const CellularSettingsCard = ({
   onSave,
 }: CellularSettingsCardProps) => {
   const { saved, markSaved } = useSaveFlash();
-  const [simSlot, setSimSlot] = useState<string>("");
-  const [cfun, setCfun] = useState<string>("");
-  const [modePref, setModePref] = useState<string>("");
-  const [nr5gMode, setNr5gMode] = useState<string>("");
-  const [roamPref, setRoamPref] = useState<string>("");
 
-  // Sync form state from fetched settings
-  useEffect(() => {
-    if (settings) {
-      setSimSlot(String(settings.sim_slot));
-      setCfun(String(settings.cfun));
-      setModePref(settings.mode_pref);
-      setNr5gMode(String(settings.nr5g_mode));
-      setRoamPref(String(settings.roam_pref));
-    }
-  }, [settings]);
+  // A field stays absent from `edits` until the user picks something, so it
+  // falls back to the fetched settings — derived during render instead of
+  // synced through an effect.
+  const [edits, setEdits] = useState<CellularFormEdits>({});
+
+  const simSlot = edits.simSlot ?? (settings ? String(settings.sim_slot) : "");
+  const cfun = edits.cfun ?? (settings ? String(settings.cfun) : "");
+  const modePref = edits.modePref ?? (settings ? settings.mode_pref : "");
+  const nr5gMode = edits.nr5gMode ?? (settings ? String(settings.nr5g_mode) : "");
+  const roamPref = edits.roamPref ?? (settings ? String(settings.roam_pref) : "");
 
   const handleSave = async (e: FormEvent) => {
     e.preventDefault();
@@ -90,15 +94,8 @@ const CellularSettingsCard = ({
     }
   };
 
-  const handleReset = () => {
-    if (settings) {
-      setSimSlot(String(settings.sim_slot));
-      setCfun(String(settings.cfun));
-      setModePref(settings.mode_pref);
-      setNr5gMode(String(settings.nr5g_mode));
-      setRoamPref(String(settings.roam_pref));
-    }
-  };
+  // Dropping the edits makes every field fall back to the fetched settings.
+  const handleReset = () => setEdits({});
 
   if (isLoading) {
     return (
@@ -164,8 +161,10 @@ const CellularSettingsCard = ({
                   <Field>
                     <FieldLabel>SIM Slot</FieldLabel>
                     <Select
-                      value={simSlot || (settings ? String(settings.sim_slot) : "")}
-                      onValueChange={setSimSlot}
+                      value={simSlot}
+                      onValueChange={(v) =>
+                        setEdits((prev) => ({ ...prev, simSlot: v }))
+                      }
                       disabled={isSaving}
                     >
                       <SelectTrigger>
@@ -181,8 +180,10 @@ const CellularSettingsCard = ({
                   <Field>
                     <FieldLabel>Radio Power</FieldLabel>
                     <Select
-                      value={cfun || (settings ? String(settings.cfun) : "")}
-                      onValueChange={setCfun}
+                      value={cfun}
+                      onValueChange={(v) =>
+                        setEdits((prev) => ({ ...prev, cfun: v }))
+                      }
                       disabled={isSaving}
                     >
                       <SelectTrigger>
@@ -203,8 +204,10 @@ const CellularSettingsCard = ({
                   <Field>
                     <FieldLabel>Preferred Network Type</FieldLabel>
                     <Select
-                      value={modePref || (settings ? settings.mode_pref : "")}
-                      onValueChange={setModePref}
+                      value={modePref}
+                      onValueChange={(v) =>
+                        setEdits((prev) => ({ ...prev, modePref: v }))
+                      }
                       disabled={isSaving}
                     >
                       <SelectTrigger>
@@ -222,8 +225,10 @@ const CellularSettingsCard = ({
                   <Field>
                     <FieldLabel>5G Architecture</FieldLabel>
                     <Select
-                      value={nr5gMode || (settings ? String(settings.nr5g_mode) : "")}
-                      onValueChange={setNr5gMode}
+                      value={nr5gMode}
+                      onValueChange={(v) =>
+                        setEdits((prev) => ({ ...prev, nr5gMode: v }))
+                      }
                       disabled={isSaving}
                     >
                       <SelectTrigger>
@@ -242,8 +247,10 @@ const CellularSettingsCard = ({
                   <Field>
                     <FieldLabel>Roaming Preference</FieldLabel>
                     <Select
-                      value={roamPref || (settings ? String(settings.roam_pref) : "")}
-                      onValueChange={setRoamPref}
+                      value={roamPref}
+                      onValueChange={(v) =>
+                        setEdits((prev) => ({ ...prev, roamPref: v }))
+                      }
                       disabled={isSaving}
                     >
                       <SelectTrigger>

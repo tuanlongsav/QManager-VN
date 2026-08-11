@@ -113,27 +113,21 @@ export default function ConnectivitySensitivityCard() {
   const { data: modemStatus } = useModemStatus();
   const { saved, markSaved } = useSaveFlash();
 
-  const [selected, setSelected] = useState<PingProfile | undefined>(profile);
-  const [target1Input, setTarget1Input] = useState<string>("");
-  const [target2Input, setTarget2Input] = useState<string>("");
+  // Each field holds `null`/`undefined` until the user touches it, so it falls
+  // back to the saved settings as they arrive — derived during render instead
+  // of synced through an effect. Once edited, the field is user-owned; after a
+  // save the hook reports the same values back, so nothing visibly changes.
+  const [selectedEdit, setSelectedEdit] = useState<PingProfile | undefined>(
+    undefined
+  );
+  const [target1Edit, setTarget1Edit] = useState<string | null>(null);
+  const [target2Edit, setTarget2Edit] = useState<string | null>(null);
   const [target1Err, setTarget1Err] = useState<string | null>(null);
   const [target2Err, setTarget2Err] = useState<string | null>(null);
-  const initializedRef = useRef(false);
 
-  // When the saved settings arrive, sync local state once.
-  useEffect(() => {
-    if (
-      profile !== undefined &&
-      target1 !== undefined &&
-      target2 !== undefined &&
-      !initializedRef.current
-    ) {
-      setSelected(profile);
-      setTarget1Input(target1);
-      setTarget2Input(target2);
-      initializedRef.current = true;
-    }
-  }, [profile, target1, target2]);
+  const selected = selectedEdit ?? profile;
+  const target1Input = target1Edit ?? target1 ?? "";
+  const target2Input = target2Edit ?? target2 ?? "";
 
   // After a successful save, sync local selection to whatever was just saved
   // (prevents stale dirty state if user clicks a profile twice)
@@ -299,7 +293,7 @@ export default function ConnectivitySensitivityCard() {
               value={selected ?? ""}
               onValueChange={(v) => {
                 if (v && (PING_PROFILES as readonly string[]).includes(v)) {
-                  setSelected(v as PingProfile);
+                  setSelectedEdit(v as PingProfile);
                 }
               }}
             >
@@ -349,8 +343,8 @@ export default function ConnectivitySensitivityCard() {
                 size="icon"
                 className="shrink-0"
                 onClick={() => {
-                  setTarget1Input(DEFAULT_TARGET_1);
-                  setTarget2Input(DEFAULT_TARGET_2);
+                  setTarget1Edit(DEFAULT_TARGET_1);
+                  setTarget2Edit(DEFAULT_TARGET_2);
                   setTarget1Err(null);
                   setTarget2Err(null);
                 }}
@@ -367,7 +361,7 @@ export default function ConnectivitySensitivityCard() {
                 id="target-primary"
                 value={target1Input}
                 onChange={(e) => {
-                  setTarget1Input(e.target.value);
+                  setTarget1Edit(e.target.value);
                   setTarget1Err(validateTargetClient(e.target.value));
                 }}
                 placeholder="youtube.com or https://example.com/"
@@ -395,7 +389,7 @@ export default function ConnectivitySensitivityCard() {
                 id="target-secondary"
                 value={target2Input}
                 onChange={(e) => {
-                  setTarget2Input(e.target.value);
+                  setTarget2Edit(e.target.value);
                   setTarget2Err(validateTargetClient(e.target.value));
                 }}
                 placeholder="cloudflare.com or http://example.com/generate_204"

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo, useEffect, useRef, type ReactNode } from "react";
+import { useState, useMemo, type ReactNode } from "react";
 import { motion } from "motion/react";
 
 import {
@@ -201,25 +201,14 @@ const NetworkEventsCard = () => {
   const [sortOrder, setSortOrder] = useState<SortOrder>("newest");
   const [maxEvents, setMaxEvents] = useState<number>(50);
   const [monitoringEnabled, setMonitoringEnabled] = useState(true);
-  const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
 
-  const { events, isLoading, isRefreshing, error, refresh } =
+  // `lastUpdate` is stamped by the hook when a fetch succeeds, so it survives a
+  // pause with the right timestamp and doesn't need reconstructing out here.
+  const { events, isLoading, isRefreshing, error, lastUpdate, refresh } =
     useRecentActivities({
       maxEvents: 50,
       enabled: monitoringEnabled,
     });
-
-  // Track last successful fetch completion (falling edge of in-flight, no error).
-  // Catches empty-payload fetches too, so the "paused" timestamp stays accurate
-  // when monitoring is toggled off after a successful but empty refresh.
-  const wasFetchingRef = useRef(false);
-  useEffect(() => {
-    const fetching = isLoading || isRefreshing;
-    if (wasFetchingRef.current && !fetching && !error) {
-      setLastUpdate(new Date());
-    }
-    wasFetchingRef.current = fetching;
-  }, [isLoading, isRefreshing, error]);
 
   // Filter by tab category
   const filteredEvents = useMemo(() => {

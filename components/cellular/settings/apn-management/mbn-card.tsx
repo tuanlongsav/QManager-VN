@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, type FormEvent } from "react";
+import { useState, type FormEvent } from "react";
 import { toast } from "sonner";
 import { prepareForReboot } from "@/lib/session";
 import {
@@ -50,31 +50,27 @@ const MBNCard = ({
   isSaving,
   onSave,
 }: MBNCardProps) => {
-  // Form state
+  // Form state. Each field holds `null` until the user picks something, so it
+  // falls back to the fetched value — derived during render instead of synced
+  // through an effect.
   const { saved, markSaved } = useSaveFlash();
-  const [localAutoSel, setLocalAutoSel] = useState<string>("");
-  const [selectedProfile, setSelectedProfile] = useState<string>("");
+  const [autoSelEdit, setAutoSelEdit] = useState<string | null>(null);
+  const [profileEdit, setProfileEdit] = useState<string | null>(null);
+
+  const savedAutoSel = autoSel !== null ? String(autoSel) : "";
+  const savedProfile = profiles?.find((p) => p.selected)?.name ?? "";
+  const localAutoSel = autoSelEdit ?? savedAutoSel;
+  const selectedProfile = profileEdit ?? savedProfile;
 
   // Reboot dialog
   const [showRebootDialog, setShowRebootDialog] = useState(false);
   const [isRebooting, setIsRebooting] = useState(false);
 
-  // Sync form state from fetched data
-  useEffect(() => {
-    if (autoSel !== null) {
-      setLocalAutoSel(String(autoSel));
-    }
-    if (profiles) {
-      const active = profiles.find((p) => p.selected);
-      setSelectedProfile(active?.name ?? "");
-    }
-  }, [profiles, autoSel]);
-
   const handleSave = async (e: FormEvent) => {
     e.preventDefault();
     if (!profiles) return;
 
-    const currentAutoSel = autoSel !== null ? String(autoSel) : "";
+    const currentAutoSel = savedAutoSel;
     const currentProfile = profiles.find((p) => p.selected);
 
     // Case 1: Auto-select changed to enabled
@@ -122,14 +118,10 @@ const MBNCard = ({
     toast.info("No changes to save");
   };
 
+  // Dropping the edits makes both fields fall back to the fetched values again.
   const handleReset = () => {
-    if (autoSel !== null) {
-      setLocalAutoSel(String(autoSel));
-    }
-    if (profiles) {
-      const active = profiles.find((p) => p.selected);
-      setSelectedProfile(active?.name ?? "");
-    }
+    setAutoSelEdit(null);
+    setProfileEdit(null);
   };
 
   const handleReboot = (e: React.MouseEvent) => {
@@ -196,11 +188,8 @@ const MBNCard = ({
                 <Field>
                   <FieldLabel htmlFor="mbn-auto-select">Auto-Select Profile</FieldLabel>
                   <Select
-                    value={
-                      localAutoSel ||
-                      (autoSel !== null ? String(autoSel) : "")
-                    }
-                    onValueChange={setLocalAutoSel}
+                    value={localAutoSel}
+                    onValueChange={setAutoSelEdit}
                     disabled={isSaving}
                   >
                     <SelectTrigger id="mbn-auto-select" aria-label="Auto-Select Profile">
@@ -216,13 +205,8 @@ const MBNCard = ({
                 <Field>
                   <FieldLabel htmlFor="mbn-carrier-config">Carrier Configuration</FieldLabel>
                   <Select
-                    value={
-                      selectedProfile ||
-                      (profiles
-                        ? profiles.find((p) => p.selected)?.name ?? ""
-                        : "")
-                    }
-                    onValueChange={setSelectedProfile}
+                    value={selectedProfile}
+                    onValueChange={setProfileEdit}
                     disabled={isSaving || localAutoSel === "1"}
                   >
                     <SelectTrigger id="mbn-carrier-config" aria-label="Carrier Configuration">

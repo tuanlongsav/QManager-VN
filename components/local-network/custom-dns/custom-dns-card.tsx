@@ -2,10 +2,7 @@
 
 import {
   useState,
-  useEffect,
   useMemo,
-  useRef,
-  useCallback,
   type FormEvent,
   type ChangeEvent,
   type ClipboardEvent,
@@ -46,7 +43,8 @@ import { MetaPanel, MetaPair } from "@/components/ui/meta-panel";
 import { SaveButton, useSaveFlash } from "@/components/ui/save-button";
 import { Skeleton } from "@/components/ui/skeleton";
 
-import { useCustomDns } from "@/hooks/use-custom-dns";
+import { useCustomDns, type UseCustomDnsReturn } from "@/hooks/use-custom-dns";
+import type { CustomDnsSettingsResponse } from "@/types/custom-dns";
 import { cn } from "@/lib/utils";
 
 // =============================================================================
@@ -78,56 +76,55 @@ const REVEAL_DURATION = 0.2;
 // CustomDnsCard
 // =============================================================================
 
+/**
+ * Resolver rows as the server last reported them. An empty row gives the user
+ * something to type into when the device has no custom resolvers configured.
+ */
+function seedServers(settings: CustomDnsSettingsResponse | null): string[] {
+  return settings && settings.servers.length > 0 ? [...settings.servers] : [""];
+}
+
 const CustomDnsCard = () => {
-  const {
-    settings,
-    isLoading,
-    isSaving,
-    // useCustomDns also exposes fieldError, which pairs the same message with
-    // the resolver index that failed. This card surfaces the message through
-    // `error` and highlights resolvers from its own local validation, so the
-    // per-field variant is left unconsumed rather than destructured unused.
-    error,
-    saveSettings,
-    refresh,
-  } = useCustomDns();
+  const dns = useCustomDns();
+
+  // The form seeds its local state from `settings` at mount and owns it from
+  // then on — a background refresh must not clobber what the user is typing.
+  // Keying on "has a server response landed yet" remounts the form exactly
+  // once, at the moment the first response arrives: the same point where the
+  // old hydrate-once effect fired, minus the cascading render.
+  return <CustomDnsForm key={dns.settings ? "loaded" : "pending"} {...dns} />;
+};
+
+const CustomDnsForm = ({
+  settings,
+  isLoading,
+  isSaving,
+  // useCustomDns also exposes fieldError, which pairs the same message with
+  // the resolver index that failed. This card surfaces the message through
+  // `error` and highlights resolvers from its own local validation, so the
+  // per-field variant is left unconsumed rather than destructured unused.
+  error,
+  saveSettings,
+  refresh,
+}: UseCustomDnsReturn) => {
   const { saved, markSaved } = useSaveFlash();
 
   // ---------------------------------------------------------------------------
   // Local form state — preserved across off/on toggles within a session
   // ---------------------------------------------------------------------------
-  const [localEnabled, setLocalEnabled] = useState(false);
-  const [localIgnoreCarrier, setLocalIgnoreCarrier] = useState(false);
-  // Per-row state. An empty initial row gives the user something to type into.
-  const [localServers, setLocalServers] = useState<string[]>([""]);
+  const [localEnabled, setLocalEnabled] = useState(settings?.enabled ?? false);
+  const [localIgnoreCarrier, setLocalIgnoreCarrier] = useState(
+    settings?.ignoreCarrier ?? false
+  );
+  // Per-row state.
+  const [localServers, setLocalServers] = useState<string[]>(() =>
+    seedServers(settings)
+  );
   // Per-row blur-validated invalid flag — true once the user has left an
   // invalid value. Hidden while the user is still typing.
-  const [rowInvalid, setRowInvalid] = useState<boolean[]>([false]);
-
-  // Track whether we've already hydrated from the server response so the
-  // user's local edits don't get clobbered by background refreshes.
-  const hydratedRef = useRef(false);
-
-  const hydrateFromServer = useCallback(() => {
-    if (!settings) return;
-    setLocalEnabled(settings.enabled);
-    setLocalIgnoreCarrier(settings.ignoreCarrier);
-    const servers =
-      settings.servers.length > 0
-        ? [...settings.servers]
-        : settings.enabled
-          ? [""]
-          : [""];
-    setLocalServers(servers);
-    setRowInvalid(servers.map(() => false));
-  }, [settings]);
-
-  useEffect(() => {
-    if (settings && !hydratedRef.current) {
-      hydrateFromServer();
-      hydratedRef.current = true;
-    }
-  }, [settings, hydrateFromServer]);
+  const [rowInvalid, setRowInvalid] = useState<boolean[]>(() =>
+    seedServers(settings).map(() => false)
+  );
 
   // ---------------------------------------------------------------------------
   // Derived flags
@@ -263,7 +260,12 @@ const CustomDnsCard = () => {
   // Reset to last-known server state
   // ---------------------------------------------------------------------------
   const handleReset = () => {
-    hydrateFromServer();
+    if (!settings) return;
+    setLocalEnabled(settings.enabled);
+    setLocalIgnoreCarrier(settings.ignoreCarrier);
+    const servers = seedServers(settings);
+    setLocalServers(servers);
+    setRowInvalid(servers.map(() => false));
   };
 
   // ---------------------------------------------------------------------------

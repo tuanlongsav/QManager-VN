@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useCallback, useSyncExternalStore } from "react";
 import en from "@/lib/i18n/en.json";
 import vi from "@/lib/i18n/vi.json";
 
@@ -31,8 +31,30 @@ const DEFAULT_LANG: Lang = "vi";
 // Module-level subscribers so a setLang() call in one component re-renders
 // every other component using the hook within the same tab. Cross-tab sync
 // works automatically via the native `storage` event.
-type Listener = (lang: Lang) => void;
+type Listener = () => void;
 const listeners = new Set<Listener>();
+
+function subscribe(onStoreChange: Listener): () => void {
+  // Same tab: setLang() notifies every listener directly.
+  listeners.add(onStoreChange);
+  // Other tabs: the browser fires `storage` on this one.
+  const onStorage = (e: StorageEvent) => {
+    if (e.key === STORAGE_KEY) onStoreChange();
+  };
+  window.addEventListener("storage", onStorage);
+
+  return () => {
+    listeners.delete(onStoreChange);
+    window.removeEventListener("storage", onStorage);
+  };
+}
+
+// The static-export prerender has no localStorage, so it reports the default.
+// That keeps the first client paint identical to the prerendered HTML; React
+// swaps in the stored preference immediately after hydration.
+function getServerSnapshot(): Lang {
+  return DEFAULT_LANG;
+}
 
 function detectBrowserLang(): Lang {
   if (typeof navigator === "undefined") return DEFAULT_LANG;
@@ -78,31 +100,17 @@ export interface UseTReturn {
 }
 
 export function useT(): UseTReturn {
-  const [lang, setLangState] = useState<Lang>(DEFAULT_LANG);
-
-  useEffect(() => {
-    setLangState(readStored());
-
-    const onStorage = (e: StorageEvent) => {
-      if (e.key === STORAGE_KEY) setLangState(readStored());
-    };
-    window.addEventListener("storage", onStorage);
-
-    const onInternal: Listener = (l) => setLangState(l);
-    listeners.add(onInternal);
-
-    return () => {
-      window.removeEventListener("storage", onStorage);
-      listeners.delete(onInternal);
-    };
-  }, []);
+  // The language preference lives in localStorage, not in React — so read it as
+  // an external store rather than mirroring it into state. `readStored` returns
+  // a plain string, so repeat calls compare equal and never loop.
+  const lang = useSyncExternalStore(subscribe, readStored, getServerSnapshot);
 
   const setLang = useCallback((next: Lang) => {
     if (typeof window !== "undefined") {
       window.localStorage.setItem(STORAGE_KEY, next);
     }
-    setLangState(next);
-    listeners.forEach((cb) => cb(next));
+    // Every subscriber re-reads through `readStored` once notified.
+    listeners.forEach((cb) => cb());
   }, []);
 
   const t = useCallback(

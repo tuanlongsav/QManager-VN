@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useId, useMemo, useState } from "react";
+import { useId, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { motion } from "motion/react";
 
@@ -103,13 +103,14 @@ export default function QualityThresholdsCard() {
   const latencyLabelId = useId();
   const lossLabelId = useId();
 
-  const [selected, setSelected] = useState<QualityThresholdsSettings | undefined>(
-    thresholds,
-  );
+  // Holds `undefined` until the user picks a preset, so the card falls back to
+  // the saved thresholds as they arrive — derived during render instead of
+  // synced through an effect.
+  const [selectedEdit, setSelectedEdit] = useState<
+    QualityThresholdsSettings | undefined
+  >(undefined);
 
-  useEffect(() => {
-    if (thresholds && !selected) setSelected(thresholds);
-  }, [thresholds, selected]);
+  const selected = selectedEdit ?? thresholds;
 
   const isDirty = useMemo(() => {
     if (!thresholds || !selected) return false;
@@ -222,7 +223,7 @@ export default function QualityThresholdsCard() {
               value={latPreset}
               onValueChange={(v) => {
                 if (v && (QUALITY_PRESETS as readonly string[]).includes(v)) {
-                  setSelected({
+                  setSelectedEdit({
                     ...selected,
                     latency: { preset: v as QualityPreset },
                   });
@@ -274,7 +275,7 @@ export default function QualityThresholdsCard() {
               value={lossPreset}
               onValueChange={(v) => {
                 if (v && (QUALITY_PRESETS as readonly string[]).includes(v)) {
-                  setSelected({
+                  setSelectedEdit({
                     ...selected,
                     loss: { preset: v as QualityPreset },
                   });

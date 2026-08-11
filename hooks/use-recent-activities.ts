@@ -39,6 +39,8 @@ export interface UseRecentActivitiesReturn {
   isRefreshing: boolean;
   /** Error message if the last fetch failed */
   error: string | null;
+  /** When the last successful fetch completed (null until the first one lands) */
+  lastUpdate: Date | null;
   /** Manually trigger an immediate fetch and reset the poll timer */
   refresh: () => void;
 }
@@ -56,6 +58,7 @@ export function useRecentActivities(
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
 
   const mountedRef = useRef(true);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -81,6 +84,9 @@ export function useRecentActivities(
       const reversed = [...json].reverse().slice(0, maxEvents);
       setEvents(reversed);
       setError(null);
+      // Stamped here rather than derived by the consumer, so an empty payload
+      // still counts as a successful refresh.
+      setLastUpdate(new Date());
       hasLoadedOnce.current = true;
     } catch (err) {
       if (!mountedRef.current) return;
@@ -125,5 +131,5 @@ export function useRecentActivities(
     intervalRef.current = setInterval(fetchEvents, pollInterval);
   }, [fetchEvents, pollInterval]);
 
-  return { events, isLoading, isRefreshing, error, refresh };
+  return { events, isLoading, isRefreshing, error, lastUpdate, refresh };
 }

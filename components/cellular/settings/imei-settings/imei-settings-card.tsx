@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, type FormEvent, type ChangeEvent } from "react";
+import { useState, type FormEvent, type ChangeEvent } from "react";
 import { toast } from "sonner";
 import {
   Card,
@@ -57,16 +57,13 @@ const IMEISettingsCard = ({
   onSave,
   onReboot,
 }: IMEISettingsCardProps) => {
-  const [imei, setImei] = useState<string>("");
+  // Holds `null` until the user types, so the input falls back to the fetched
+  // IMEI — derived during render instead of synced through an effect.
+  const [imeiEdit, setImeiEdit] = useState<string | null>(null);
   const [showRebootDialog, setShowRebootDialog] = useState(false);
   const [isRebooting, setIsRebooting] = useState(false);
 
-  // Sync form state from fetched data
-  useEffect(() => {
-    if (currentImei !== null) {
-      setImei(currentImei);
-    }
-  }, [currentImei]);
+  const imei = imeiEdit ?? currentImei ?? "";
 
   const isValidImei = validateImei(imei);
   const hasChanged = imei !== (currentImei ?? "");
@@ -91,11 +88,8 @@ const IMEISettingsCard = ({
     }
   };
 
-  const handleReset = () => {
-    if (currentImei !== null) {
-      setImei(currentImei);
-    }
-  };
+  // Dropping the edit makes the input fall back to the fetched IMEI again.
+  const handleReset = () => setImeiEdit(null);
 
   const handleReboot = async (e: React.MouseEvent) => {
     e.preventDefault(); // Keep dialog open to show rebooting state
@@ -112,7 +106,7 @@ const IMEISettingsCard = ({
   // Only allow digits in the input
   const handleImeiChange = (e: ChangeEvent<HTMLInputElement>) => {
     const value = e.target.value.replace(/\D/g, "").slice(0, 15);
-    setImei(value);
+    setImeiEdit(value);
   };
 
   if (isLoading) {

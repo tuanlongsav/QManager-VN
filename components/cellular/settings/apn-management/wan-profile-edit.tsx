@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, type FormEvent } from "react";
+import { useState, type FormEvent } from "react";
 import { MNO_PRESETS, suggestPresetFromImsi, type MnoPreset } from "@/constants/mno-presets";
 import { useModemStatus } from "@/hooks/use-modem-status";
 import { toast } from "sonner";
@@ -122,21 +122,76 @@ function WanProfileEditSkeleton() {
 // Component
 // =============================================================================
 
-export default function WanProfileEditCard({
+// When the loaded profile has no APN set, fall back to the MNO preset that
+// matches the inserted SIM's MCC/MNC. Keeps the user one field shorter to fill
+// on first setup — they can still type over it. Carrier-managed profiles bypass
+// this — their APN is dictated by the network and shouldn't be overwritten.
+function seedApn(
+  profile: WanProfile,
+  carrier: boolean,
+  imsi: string | undefined,
+): { apn: string; preset: MnoPreset | null } {
+  if (carrier || profile.apn.trim() || !imsi) {
+    return { apn: profile.apn, preset: null };
+  }
+  const presetId = suggestPresetFromImsi(imsi);
+  const preset = presetId
+    ? MNO_PRESETS.find((p) => p.id === presetId) ?? null
+    : null;
+  return { apn: preset ? preset.apn_name : profile.apn, preset };
+}
+
+export default function WanProfileEditCard(props: WanProfileEditCardProps) {
+  // IMSI from the live modem status — feeds the APN preset suggestion below.
+  const { data: modemData } = useModemStatus();
+  const imsi = modemData?.device?.imsi;
+
+  // The save flash lives out here, above the remount boundary, so the re-seed
+  // that follows a successful save doesn't cut the "Saved!" indicator short.
+  const { saved, markSaved } = useSaveFlash();
+
+  if (!props.profile) return <WanProfileEditSkeleton />;
+
+  // The form seeds every field from `profile` (plus the IMSI-derived APN) once,
+  // at mount. Keying on that seed data remounts the form whenever it changes —
+  // a fresh fetch, the optimistic merge after a save, or a switch to another
+  // slot — which re-seeds the fields without a sync effect.
+  return (
+    <WanProfileEditForm
+      key={`${JSON.stringify(props.profile)}|${imsi ?? ""}`}
+      {...props}
+      imsi={imsi}
+      saved={saved}
+      markSaved={markSaved}
+    />
+  );
+}
+
+interface WanProfileEditFormProps extends WanProfileEditCardProps {
+  imsi: string | undefined;
+  saved: boolean;
+  markSaved: () => void;
+}
+
+function WanProfileEditForm({
   profile,
   isSaving,
   dataSource,
   onSave,
+  imsi,
+  saved,
+  markSaved,
   onCancel,
-}: WanProfileEditCardProps) {
+}: WanProfileEditFormProps) {
   const carrier = isCarrierProfile(profile);
   // wmmd-only controls have no AT equivalent — hide them on AT-only modems.
   const showWmmdControls = dataSource === "rdb";
-  const { saved, markSaved } = useSaveFlash();
+
+  const seed = seedApn(profile, carrier, imsi);
 
   // --- Form state ---
   const [name, setName] = useState(profile.name);
-  const [apn, setApn] = useState(profile.apn);
+  const [apn, setApn] = useState(seed.apn);
   const [pdpType, setPdpType] = useState(profile.pdp_type);
   const [authType, setAuthType] = useState(profile.auth_type);
   const [username, setUsername] = useState(profile.username);
@@ -153,49 +208,9 @@ export default function WanProfileEditCard({
   const [mtuError, setMtuError] = useState("");
   // Track auto-fill source so the UI can hint "Đã tự điền từ {Viettel}" below the input.
   // Cleared when the user edits the APN field (signals an intentional override).
-  const [autoFilledPreset, setAutoFilledPreset] = useState<MnoPreset | null>(null);
-
-  // IMSI from the live modem status — used to auto-suggest an MNO preset when
-  // the profile lands here with a blank APN. Carrier-managed profiles bypass
-  // this — their APN is dictated by the network and shouldn't be overwritten.
-  const { data: modemData } = useModemStatus();
-  const imsi = modemData?.device?.imsi;
-
-  // Sync form when profile changes (e.g. after toggle or external refresh).
-  // When the loaded profile has no APN set, fall back to the MNO preset that
-  // matches the inserted SIM's MCC/MNC. Keeps the user one field shorter to
-  // fill on first setup — they can still type over it.
-  useEffect(() => {
-    setName(profile.name);
-
-    let initialApn = profile.apn;
-    let matchedPreset: MnoPreset | null = null;
-    if (!carrier && !initialApn.trim() && imsi) {
-      const presetId = suggestPresetFromImsi(imsi);
-      if (presetId) {
-        const preset = MNO_PRESETS.find((p) => p.id === presetId);
-        if (preset) {
-          initialApn = preset.apn_name;
-          matchedPreset = preset;
-        }
-      }
-    }
-    setApn(initialApn);
-    setAutoFilledPreset(matchedPreset);
-
-    setPdpType(profile.pdp_type);
-    setAuthType(profile.auth_type);
-    setUsername(profile.username);
-    setPassword("");
-    setMtu(profile.mtu !== null ? String(profile.mtu) : "");
-    setModemProfile(String(profile.modem_profile));
-    setIpPassthrough(profile.ip_passthrough);
-    setDefaultRoute(profile.default_route);
-    setVlanIndex(profile.vlan_index ?? "");
-    setShowPassword(false);
-    setApnError("");
-    setMtuError("");
-  }, [profile, imsi, carrier]);
+  const [autoFilledPreset, setAutoFilledPreset] = useState<MnoPreset | null>(
+    seed.preset,
+  );
 
   // --- Validation ---
   const validateForm = (): boolean => {
@@ -245,8 +260,6 @@ export default function WanProfileEditCard({
       toast.error(`Failed to save profile ${profile.index}`);
     }
   };
-
-  if (!profile) return <WanProfileEditSkeleton />;
 
   const carrierTypeLabel =
     profile.apn_type === "ims"

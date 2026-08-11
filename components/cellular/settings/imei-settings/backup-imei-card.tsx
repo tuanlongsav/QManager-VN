@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, type FormEvent, type ChangeEvent } from "react";
+import { useState, type FormEvent, type ChangeEvent } from "react";
 import { toast } from "sonner";
 import { SaveButton, useSaveFlash } from "@/components/ui/save-button";
 import {
@@ -61,19 +61,15 @@ const BackupIMEICard = ({
   onSave,
 }: BackupIMEICardProps) => {
   const { saved, markSaved } = useSaveFlash();
-  const [localEnabled, setLocalEnabled] = useState(false);
-  const [localImei, setLocalImei] = useState("");
+
+  // Each field holds `null` until the user changes it, so it falls back to the
+  // fetched value — derived during render instead of synced through an effect.
+  const [enabledEdit, setEnabledEdit] = useState<boolean | null>(null);
+  const [imeiEdit, setImeiEdit] = useState<string | null>(null);
   const [showInfoDialog, setShowInfoDialog] = useState(false);
 
-  // Sync form state from fetched data
-  useEffect(() => {
-    if (backupEnabled !== null) {
-      setLocalEnabled(backupEnabled);
-    }
-    if (backupImei !== null) {
-      setLocalImei(backupImei);
-    }
-  }, [backupEnabled, backupImei]);
+  const localEnabled = enabledEdit ?? backupEnabled ?? false;
+  const localImei = imeiEdit ?? backupImei ?? "";
 
   const isValidImei = validateImei(localImei);
 
@@ -82,12 +78,12 @@ const BackupIMEICard = ({
       // Show informational dialog before enabling
       setShowInfoDialog(true);
     } else {
-      setLocalEnabled(false);
+      setEnabledEdit(false);
     }
   };
 
   const handleInfoConfirm = () => {
-    setLocalEnabled(true);
+    setEnabledEdit(true);
     setShowInfoDialog(false);
   };
 
@@ -126,19 +122,16 @@ const BackupIMEICard = ({
     }
   };
 
+  // Dropping the edits makes both fields fall back to the fetched values again.
   const handleReset = () => {
-    if (backupEnabled !== null) {
-      setLocalEnabled(backupEnabled);
-    }
-    if (backupImei !== null) {
-      setLocalImei(backupImei);
-    }
+    setEnabledEdit(null);
+    setImeiEdit(null);
   };
 
   // Only allow digits in the input
   const handleImeiChange = (e: ChangeEvent<HTMLInputElement>) => {
     const value = e.target.value.replace(/\D/g, "").slice(0, 15);
-    setLocalImei(value);
+    setImeiEdit(value);
   };
 
   if (isLoading) {

@@ -59,30 +59,31 @@ export function useHardwareInfo(): UseHardwareInfoReturn {
   const [error, setError] = useState<string | null>(null);
   const isMountedRef = useRef(true);
 
-  const load = useCallback(async () => {
-    // Serve fresh from cache if within TTL
-    if (cachedInfo && Date.now() - cachedAt < CACHE_TTL_MS) {
-      setHardware(cachedInfo);
+  // The fetch is the external system this hook subscribes to: state is only
+  // written from its completion callback, never synchronously while the effect
+  // body runs.
+  const load = useCallback(() => {
+    fetchHardwareInfo().then((data) => {
+      if (!isMountedRef.current) return;
+
+      if (data) {
+        setHardware(data);
+        setError(null);
+      } else {
+        setError("Failed to load hardware info");
+      }
       setIsLoading(false);
-      return;
-    }
-
-    setIsLoading(true);
-    const data = await fetchHardwareInfo();
-    if (!isMountedRef.current) return;
-
-    if (data) {
-      setHardware(data);
-      setError(null);
-    } else {
-      setError("Failed to load hardware info");
-    }
-    setIsLoading(false);
+    });
   }, []);
 
   useEffect(() => {
     isMountedRef.current = true;
-    load();
+    // State is already seeded from the module cache above, so only go to the
+    // network when that cache is empty or past its TTL. A stale-but-present
+    // cache revalidates in the background instead of flashing a loading state.
+    if (!cachedInfo || Date.now() - cachedAt >= CACHE_TTL_MS) {
+      load();
+    }
     return () => {
       isMountedRef.current = false;
     };
@@ -91,6 +92,7 @@ export function useHardwareInfo(): UseHardwareInfoReturn {
   const refresh = useCallback(() => {
     cachedInfo = null;
     cachedAt = 0;
+    setIsLoading(true);
     load();
   }, [load]);
 

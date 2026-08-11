@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo } from "react";
+import { useState, useMemo } from "react";
 import { toast } from "sonner";
 
 import {
@@ -64,25 +64,22 @@ const LteFreqLockingComponent = ({
   onUnlock,
   onRefresh,
 }: LteFreqLockingProps) => {
-  // Local form state for the 2 EARFCN inputs
-  const [earfcn1, setEarfcn1] = useState("");
-  const [earfcn2, setEarfcn2] = useState("");
+  // Local form state for the 2 EARFCN inputs. Each holds `null` until the user
+  // types, so the field falls back to whatever the modem currently reports —
+  // deriving during render instead of syncing through an effect.
+  const [earfcn1Edit, setEarfcn1Edit] = useState<string | null>(null);
+  const [earfcn2Edit, setEarfcn2Edit] = useState<string | null>(null);
+
+  const lockedEarfcn1 = modemState?.lte_entries?.[0]?.earfcn;
+  const lockedEarfcn2 = modemState?.lte_entries?.[1]?.earfcn;
+  const earfcn1 = earfcn1Edit ?? (lockedEarfcn1 != null ? String(lockedEarfcn1) : "");
+  const earfcn2 = earfcn2Edit ?? (lockedEarfcn2 != null ? String(lockedEarfcn2) : "");
 
   // Confirmation dialog state
   const [showLockDialog, setShowLockDialog] = useState(false);
   const [showUnlockDialog, setShowUnlockDialog] = useState(false);
   const [showUnsupportedWarning, setShowUnsupportedWarning] = useState(false);
   const [pendingEarfcns, setPendingEarfcns] = useState<number[]>([]);
-
-  // Sync form from modem state when data loads
-  useEffect(() => {
-    if (modemState?.lte_entries && modemState.lte_entries.length > 0) {
-      setEarfcn1(String(modemState.lte_entries[0].earfcn));
-      if (modemState.lte_entries[1]) {
-        setEarfcn2(String(modemState.lte_entries[1].earfcn));
-      }
-    }
-  }, [modemState?.lte_entries]);
 
   // Derive enabled state from modem state
   const isEnabled = modemState?.lte_locked ?? false;
@@ -174,7 +171,7 @@ const LteFreqLockingComponent = ({
   const handleUseCurrent = () => {
     const earfcn = modemData?.lte?.earfcn;
     if (earfcn != null) {
-      setEarfcn1(String(earfcn));
+      setEarfcn1Edit(String(earfcn));
       toast.info("Filled from current connected tower");
     } else {
       toast.warning("No active LTE connection");
@@ -333,7 +330,7 @@ const LteFreqLockingComponent = ({
                         type="text"
                         placeholder="Enter EARFCN"
                                                 value={earfcn1}
-                        onChange={(e) => setEarfcn1(e.target.value)}
+                        onChange={(e) => setEarfcn1Edit(e.target.value)}
                         disabled={isDisabled}
                       />
                       <BandMatchDisplay
@@ -355,7 +352,7 @@ const LteFreqLockingComponent = ({
                         type="text"
                         placeholder="Enter EARFCN 2"
                                                 value={earfcn2}
-                        onChange={(e) => setEarfcn2(e.target.value)}
+                        onChange={(e) => setEarfcn2Edit(e.target.value)}
                         disabled={isDisabled}
                       />
                       <BandMatchDisplay

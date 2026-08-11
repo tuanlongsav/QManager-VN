@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useMemo, useCallback } from "react";
 import { toast } from "sonner";
 
 import {
@@ -68,9 +68,6 @@ interface SlotState {
 
 const EMPTY_SLOT: SlotState = { arfcn: "", scs: "", scsManual: false };
 const NUM_SLOTS = 4;
-const INITIAL_SLOTS: SlotState[] = Array.from({ length: NUM_SLOTS }, () => ({
-  ...EMPTY_SLOT,
-}));
 
 // =============================================================================
 // NrFreqLockingComponent
@@ -100,7 +97,27 @@ const NrFreqLockingComponent = ({
   onRefresh,
 }: NrFreqLockingProps) => {
   // --- Array-based slot state ------------------------------------------------
-  const [slots, setSlots] = useState<SlotState[]>(INITIAL_SLOTS);
+  // A slot holds `null` until the user edits the form, so it falls back to
+  // whatever the modem currently reports — derived during render rather than
+  // synced through an effect.
+  const [slotEdits, setSlotEdits] = useState<(SlotState | null)[]>(() =>
+    Array.from({ length: NUM_SLOTS }, () => null),
+  );
+
+  const slots = useMemo<SlotState[]>(
+    () =>
+      slotEdits.map((edit, i) => {
+        if (edit) return edit;
+        const entry = modemState?.nr_entries?.[i];
+        if (!entry) return EMPTY_SLOT;
+        return {
+          arfcn: String(entry.arfcn),
+          scs: String(entry.scs),
+          scsManual: true,
+        };
+      }),
+    [slotEdits, modemState?.nr_entries],
+  );
 
   // Confirmation dialog state
   const [showLockDialog, setShowLockDialog] = useState(false);
@@ -108,49 +125,38 @@ const NrFreqLockingComponent = ({
   const [showUnsupportedWarning, setShowUnsupportedWarning] = useState(false);
   const [pendingEntries, setPendingEntries] = useState<NrFreqLockEntry[]>([]);
 
-  // Sync form from modem state when data loads
-  useEffect(() => {
-    if (modemState?.nr_entries && modemState.nr_entries.length > 0) {
-      setSlots((prev) =>
-        prev.map((s, i) => {
-          const entry = modemState.nr_entries[i];
-          if (!entry) return s;
-          return {
-            arfcn: String(entry.arfcn),
-            scs: String(entry.scs),
-            scsManual: true,
-          };
-        }),
-      );
-    }
-  }, [modemState?.nr_entries]);
-
   // --- Slot update helpers ---------------------------------------------------
-  const updateSlotArfcn = useCallback((index: number, arfcn: string) => {
-    setSlots((prev) =>
-      prev.map((s, i) => {
-        if (i !== index) return s;
-        const updated: SlotState = { ...s, arfcn, scsManual: false };
-        // Auto-detect SCS from band match
-        const val = parseInt(arfcn, 10);
-        if (!isNaN(val)) {
-          const bands = findAllMatchingNRBands(val);
-          if (bands.length > 0) {
-            updated.scs = String(suggestNRSCS(bands[0]));
-          }
-        }
-        return updated;
-      }),
-    );
-  }, []);
+  // Writing an edit pins every slot to its currently displayed value; from then
+  // on the form is user-owned rather than modem-owned.
+  const replaceSlot = useCallback(
+    (index: number, next: SlotState) => {
+      setSlotEdits(slots.map((s, i) => (i === index ? next : s)));
+    },
+    [slots],
+  );
 
-  const updateSlotScs = useCallback((index: number, scs: string) => {
-    setSlots((prev) =>
-      prev.map((s, i) =>
-        i === index ? { ...s, scs, scsManual: true } : s,
-      ),
-    );
-  }, []);
+  const updateSlotArfcn = useCallback(
+    (index: number, arfcn: string) => {
+      const updated: SlotState = { ...slots[index], arfcn, scsManual: false };
+      // Auto-detect SCS from band match
+      const val = parseInt(arfcn, 10);
+      if (!isNaN(val)) {
+        const bands = findAllMatchingNRBands(val);
+        if (bands.length > 0) {
+          updated.scs = String(suggestNRSCS(bands[0]));
+        }
+      }
+      replaceSlot(index, updated);
+    },
+    [slots, replaceSlot],
+  );
+
+  const updateSlotScs = useCallback(
+    (index: number, scs: string) => {
+      replaceSlot(index, { ...slots[index], scs, scsManual: true });
+    },
+    [slots, replaceSlot],
+  );
 
   // --- Derived state ---------------------------------------------------------
   const isEnabled = modemState?.nr_locked ?? false;
@@ -263,13 +269,11 @@ const NrFreqLockingComponent = ({
     if (nrArfcn != null) {
       if (nrScs != null) {
         // Use modem's actual SCS — bypass auto-detection
-        setSlots((prev) =>
-          prev.map((s, i) =>
-            i === 0
-              ? { arfcn: String(nrArfcn), scs: String(nrScs), scsManual: true }
-              : s,
-          ),
-        );
+        replaceSlot(0, {
+          arfcn: String(nrArfcn),
+          scs: String(nrScs),
+          scsManual: true,
+        });
       } else {
         updateSlotArfcn(0, String(nrArfcn));
       }
