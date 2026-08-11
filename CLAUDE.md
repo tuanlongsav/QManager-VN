@@ -62,6 +62,12 @@ Bug fixes match the tier of the *fix*, not the bug. Pure refactors with no behav
 
 All agents are defined in `.claude/agents/` and run on Sonnet.
 
+> **Status:** `.claude/agents/` does not exist yet — none of the five agents below
+> are defined, in this project or globally. Until they are written, treat the
+> phases as a checklist to work through directly rather than agents to dispatch;
+> the validators map to `bun run test:harness`, `bash scripts/test/run-all.sh`,
+> `bunx tsc --noEmit` and `bunx eslint .`.
+
 - **Gate (Phase 1, read-only):** `installer-safety-auditor` — audits installer/systemd/sudoers/OTA changes; can halt work before code is written.
 - **Builders (Phase 2):** `ui-builder` (frontend pages/cards), `cgi-endpoint-builder` (backend CGI shell endpoints).
 - **Validators (Phase 5, parallel):** `busybox-portability-checker` (shebang, line endings, BusyBox applet limits, 32-bit arithmetic), `installer-safety-auditor` (verify mode, for installer/systemd/OTA changes).
@@ -115,7 +121,7 @@ All status badges use `variant="outline"` with semantic color classes and `size-
 </Badge>
 ```
 
-- Reusable `ServiceStatusBadge` component at `components/local-network/service-status-badge.tsx` for service running/inactive states
+- There is no shared status-badge component — each card applies the classes above inline. `components/system-settings/system-health-check/health-status-badge.tsx` is the closest existing example to copy from
 - Choose muted for deliberately inactive states (Stopped, Offline peer, Disabled); destructive for failure/error states (Disconnected link, Failed email)
 
 ### Design Principles
@@ -184,8 +190,7 @@ Detailed operational notes for individual features live in `docs/reference/`. Re
 - **Custom DNS** (`/local-network/custom-dns`, dnsmasq upstream override via sentinel block in `/etc/data/dnsmasq.conf`) — `docs/reference/custom-dns.md`
 - **Data Usage Counter** (kernel `/proc/net/dev`-sourced, schema v4 with per-boot dynamic orientation detection via 5 MB probe, `modem_reset_count`, `orientation_state`) — `docs/reference/data-usage-counter.md`
 - **Ethernet Status & Link Speed** (`/local-network/ethernet`, Realtek RTL8125B 2.5GbE on `eth0` via `r8125` driver; reads link state from sysfs, speed/duplex from `ethtool`; speed limit applied via `qmanager_ethernet_apply` root helper; lib at `scripts/usr/lib/qmanager/ethtool_helper.sh`)
-- **Discord Bot** (`discord-bot/`, deployed as `/usr/bin/qmanager_discord`) — `docs/reference/discord-bot.md`
-- **WAN Profile Management** (`cellular/apn.sh`, 6 PDP contexts, AT-only, per-context `AT+CGACT` cycle) — `docs/reference/wan-profile-management.md`
+- **WAN Profile Management** (`scripts/www/cgi-bin/quecmanager/cellular/apn.sh`, 6 PDP contexts, AT-only, per-context `AT+CGACT` cycle) — `docs/reference/wan-profile-management.md`
 - **Custom SIM Profiles** (4-step apply `apn → ttl_hl → scenario → imei`; `settings.scenario_id` binds a Connection Scenario; active profile gates APN / TTL/HL / Scenarios / Band Locking pages; `profile_managed` CGI guard) — `docs/reference/sim-profiles.md`
 
 ## Shared Constants
