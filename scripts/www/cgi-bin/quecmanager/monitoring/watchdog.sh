@@ -127,7 +127,46 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
         qlog_info "Saving watchdog settings"
         qm_config_init
 
-        # Extract fields from POST body
+        # --- Pass 1: validate every numeric field before writing anything ----
+        #
+        # These values drive the recovery ladder directly: a zero or negative
+        # check_interval spins the daemon in a busy loop, and a zero cooldown
+        # lets it escalate through every tier without pause — up to and
+        # including reboots. Previously each field was written the moment it
+        # was parsed, so a bad value late in the body left the earlier ones
+        # already committed and the config half-applied. Validate the whole
+        # payload first, reject as a unit, then write.
+        #
+        # Bounds match the UI inputs in
+        # components/monitoring/watchdog/watchdog-settings-card.tsx where it
+        # constrains them (max_failures 1-20, cooldown 10-300,
+        # max_reboots_per_hour 1-10). check_interval has no UI constraint, so
+        # it gets a deliberately wide range that still excludes the values
+        # that are actively harmful.
+        validate_int() {
+            # validate_int <value> <min> <max> <field-name>
+            case "$1" in
+                ''|*[!0-9]*)
+                    echo "{\"success\":false,\"error\":\"$4 must be a whole number\"}"
+                    exit 0 ;;
+            esac
+            if [ "$1" -lt "$2" ] || [ "$1" -gt "$3" ]; then
+                echo "{\"success\":false,\"error\":\"$4 must be between $2 and $3\"}"
+                exit 0
+            fi
+        }
+
+        v_max_failures=$(printf '%s' "$POST_DATA" | jq -r '.max_failures // empty')
+        v_check_interval=$(printf '%s' "$POST_DATA" | jq -r '.check_interval // empty')
+        v_cooldown=$(printf '%s' "$POST_DATA" | jq -r '.cooldown // empty')
+        v_max_reboots=$(printf '%s' "$POST_DATA" | jq -r '.max_reboots_per_hour // empty')
+
+        [ -n "$v_max_failures" ]   && validate_int "$v_max_failures"   1  20   "max_failures"
+        [ -n "$v_check_interval" ] && validate_int "$v_check_interval" 5  3600 "check_interval"
+        [ -n "$v_cooldown" ]       && validate_int "$v_cooldown"       10 300  "cooldown"
+        [ -n "$v_max_reboots" ]    && validate_int "$v_max_reboots"    1  10   "max_reboots_per_hour"
+
+        # --- Pass 2: everything validated — commit ---------------------------
         val=""
 
         val=$(printf '%s' "$POST_DATA" | jq -r '.enabled | if . == null then empty else tostring end')
@@ -138,14 +177,9 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
             esac
         fi
 
-        val=$(printf '%s' "$POST_DATA" | jq -r '.max_failures // empty')
-        [ -n "$val" ] && qm_config_set watchcat max_failures "$val"
-
-        val=$(printf '%s' "$POST_DATA" | jq -r '.check_interval // empty')
-        [ -n "$val" ] && qm_config_set watchcat check_interval "$val"
-
-        val=$(printf '%s' "$POST_DATA" | jq -r '.cooldown // empty')
-        [ -n "$val" ] && qm_config_set watchcat cooldown "$val"
+        [ -n "$v_max_failures" ]   && qm_config_set watchcat max_failures   "$v_max_failures"
+        [ -n "$v_check_interval" ] && qm_config_set watchcat check_interval "$v_check_interval"
+        [ -n "$v_cooldown" ]       && qm_config_set watchcat cooldown       "$v_cooldown"
 
         val=$(printf '%s' "$POST_DATA" | jq -r '.tier1_enabled | if . == null then empty else tostring end')
         if [ -n "$val" ]; then
@@ -174,8 +208,7 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
             qm_config_set watchcat backup_sim_slot ""
         fi
 
-        val=$(printf '%s' "$POST_DATA" | jq -r '.max_reboots_per_hour // empty')
-        [ -n "$val" ] && qm_config_set watchcat max_reboots_per_hour "$val"
+        [ -n "$v_max_reboots" ] && qm_config_set watchcat max_reboots_per_hour "$v_max_reboots"
 
         # Signal running watchcat daemon to reload config (if it's already running)
         touch "$RELOAD_FLAG"

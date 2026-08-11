@@ -9,9 +9,17 @@ _CONFIG_LOADED=1
 QM_CONFIG="/etc/qmanager/qmanager.conf"
 QM_CONFIG_TMP="/etc/qmanager/qmanager.conf.tmp"
 
-# Create default config if missing or empty
+# Create default config if missing, empty, or unparseable.
+#
+# Non-empty is not a strong enough test: a truncated or malformed file (power
+# loss mid-write, a half-finished manual edit) still passes -s, and from then
+# on every jq call against it fails. Validate the JSON and move a bad file
+# aside rather than deleting it, so the original is still there to inspect.
 qm_config_init() {
-    [ -s "$QM_CONFIG" ] && return 0
+    if [ -s "$QM_CONFIG" ]; then
+        jq -e . "$QM_CONFIG" >/dev/null 2>&1 && return 0
+        mv "$QM_CONFIG" "${QM_CONFIG}.corrupt" 2>/dev/null || rm -f "$QM_CONFIG"
+    fi
     cat > "$QM_CONFIG" << 'DEFAULTS'
 {
   "watchcat": {
@@ -83,6 +91,7 @@ qm_config_get() {
 # Atomic write via temp file + mv.
 qm_config_set() {
     local section="$1" key="$2" value="$3"
+    local rc
     qm_config_init
     # Detect numeric values to store as numbers, not strings
     case "$value" in
@@ -93,6 +102,17 @@ qm_config_set() {
             jq --arg s "$section" --arg k "$key" --argjson v "$value" \
                 '.[$s][$k] = $v' "$QM_CONFIG" > "$QM_CONFIG_TMP" ;;
     esac
+    rc=$?
+    # Commit only when jq both succeeded and produced output. The shell
+    # truncates $QM_CONFIG_TMP to zero bytes before jq even starts, so an
+    # unconditional mv turns any jq failure into an empty live config — every
+    # setting on the device gone at once (band locks, watchdog tuning,
+    # timezone, hostname, scheduled reboot), with no error surfaced and
+    # qm_config_init quietly recreating defaults on the next call.
+    if [ "$rc" -ne 0 ] || [ ! -s "$QM_CONFIG_TMP" ]; then
+        rm -f "$QM_CONFIG_TMP"
+        return 1
+    fi
     mv "$QM_CONFIG_TMP" "$QM_CONFIG"
 }
 

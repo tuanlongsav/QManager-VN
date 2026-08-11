@@ -137,6 +137,11 @@ write_state() {
     local ts
     ts=$(date +%s)
 
+    # sf_active is passed with --arg, not --argjson, on purpose: the shell
+    # variable holds the *strings* "true"/"false" and the filter below compares
+    # it against "true". With --argjson, jq would parse it into a real boolean,
+    # and `true == "true"` is false — leaving sim_failover_active permanently
+    # false in the state file and the failover badge permanently dark.
     jq -n -c \
         --argjson ts "$ts" \
         --argjson enabled "$CFG_ENABLED" \
@@ -147,7 +152,7 @@ write_state() {
         --argjson last_tier "${last_recovery_tier:-null}" \
         --argjson total "$total_recoveries" \
         --argjson cooldown "$cooldown_remaining" \
-        --argjson sf_active "$sim_failover_active" \
+        --arg sf_active "$sim_failover_active" \
         --argjson sf_orig "${original_sim_slot:-null}" \
         --argjson sf_curr "${current_sim_slot:-null}" \
         --argjson reboots "$reboots_this_hour" \
