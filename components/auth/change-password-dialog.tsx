@@ -79,7 +79,9 @@ export function ChangePasswordDialog({
         setIsSubmitting(false);
       }
     },
-    [currentPassword, newPassword, confirmPassword, changePassword]
+    // changePassword is a module-level import, not component scope — it never
+    // changes between renders, so listing it here would be a no-op dependency.
+    [currentPassword, newPassword, confirmPassword]
   );
 
   return (

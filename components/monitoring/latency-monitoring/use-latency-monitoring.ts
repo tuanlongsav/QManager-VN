@@ -206,7 +206,11 @@ export function useLatencyMonitoring() {
       };
     }
     return computeTotals(chartData);
-  }, [viewMode, modemStatus?.connectivity, chartData]);
+    // Depend on `modemStatus`, not `modemStatus?.connectivity`: React Compiler
+    // infers the whole object here, and a narrower manual dep makes it bail out
+    // of optimizing this hook entirely. The poller hands back a fresh object
+    // each cycle anyway, so both spellings recompute at the same rate.
+  }, [viewMode, modemStatus, chartData]);
 
   // Build table entries with uniform PingEntry shape
   const tableData = useMemo<LatencyMonitoringData>(() => {

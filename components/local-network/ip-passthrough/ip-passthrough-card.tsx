@@ -195,8 +195,8 @@ const IPPassthroughCard = () => {
         <CardHeader>
           <CardTitle>IP Passthrough Configuration</CardTitle>
           <CardDescription>
-            Assign the modem's public IP directly to a downstream device,
-            bypassing the router's NAT.
+            Assign the modem&apos;s public IP directly to a downstream device,
+            bypassing the router&apos;s NAT.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -242,8 +242,8 @@ const IPPassthroughCard = () => {
       <CardHeader>
         <CardTitle>IP Passthrough Configuration</CardTitle>
         <CardDescription>
-          Assign the modem's public IP directly to a downstream device,
-          bypassing the router's NAT.
+          Assign the modem&apos;s public IP directly to a downstream device,
+          bypassing the router&apos;s NAT.
         </CardDescription>
       </CardHeader>
       <CardContent>

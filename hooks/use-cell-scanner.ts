@@ -188,7 +188,7 @@ export function useCellScanner(): UseCellScannerReturn {
       setStatus("error");
       setError("Failed to connect to scanner");
     }
-  }, [startTimer, stopPolling]);
+  }, [ensurePolling, startTimer, stopPolling]);
 
   // --- Check for existing results on mount -----------------------------------
   useEffect(() => {

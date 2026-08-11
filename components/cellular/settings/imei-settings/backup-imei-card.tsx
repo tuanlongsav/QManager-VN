@@ -76,8 +76,6 @@ const BackupIMEICard = ({
   }, [backupEnabled, backupImei]);
 
   const isValidImei = validateImei(localImei);
-  const showImeiError =
-    localEnabled && localImei.length > 0 && !isValidImei;
 
   const handleSwitchChange = (checked: boolean) => {
     if (checked) {

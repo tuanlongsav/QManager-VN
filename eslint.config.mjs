@@ -12,6 +12,12 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Tooling scratch dirs — not project source. Without these, throwaway
+    // files the tooling writes (e.g. .remember/tmp/*.ts) show up as lint
+    // findings against the project.
+    ".remember/**",
+    ".codegraph/**",
+    "qmanager-build/**",
   ]),
 ]);
 

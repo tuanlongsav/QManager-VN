@@ -127,7 +127,9 @@ export function useTowerLocking(): UseTowerLockingReturn {
   // ---------------------------------------------------------------------------
   const MAX_RETRIES = 3;
 
-  const fetchStatus = useCallback(async (isRetry = false) => {
+  // Retry depth is tracked through retryCountRef, not an argument — the old
+  // isRetry parameter was never read.
+  const fetchStatus = useCallback(async () => {
     try {
       const resp = await authFetch(`${CGI_BASE}/status.sh`);
       if (!resp.ok) {
@@ -168,7 +170,7 @@ export function useTowerLocking(): UseTowerLockingReturn {
         retryCountRef.current += 1;
         retryTimerRef.current = setTimeout(() => {
           if (mountedRef.current) {
-            fetchStatus(true);
+            fetchStatus();
           }
         }, delay);
       }

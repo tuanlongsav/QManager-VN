@@ -83,8 +83,11 @@ const CustomDnsCard = () => {
     settings,
     isLoading,
     isSaving,
+    // useCustomDns also exposes fieldError, which pairs the same message with
+    // the resolver index that failed. This card surfaces the message through
+    // `error` and highlights resolvers from its own local validation, so the
+    // per-field variant is left unconsumed rather than destructured unused.
     error,
-    fieldError,
     saveSettings,
     refresh,
   } = useCustomDns();
