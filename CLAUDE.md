@@ -138,6 +138,7 @@ All status badges use `variant="outline"` with semantic color classes and `size-
 - **CardHeader**: Always plain `CardTitle` + `CardDescription` without icons. Icons belong in badges or separate action areas, not in the card header itself.
 - **Primary action buttons**: Use default variant (not outline) for main actions like Record, Save, Apply. Use `SaveButton` component for save-specific actions with loading animation.
 - **Step-based progress**: Use `Loader2Icon` spinner + dot indicators for step/sample progress. Reserve fill/progress bars for data visualization (signal strength, quality meters) only.
+- **Never sync fetched data into state with an effect.** `useEffect(() => setLocal(fetched), [fetched])` trips `react-hooks/set-state-in-effect` and costs a second render pass per arrival — measurable on the modem's ARMv7 CPU. Pick by case: hold local edits as `null` and fall back to the fetched value during render (reset = `setEdit(null)`); key the child on the server snapshot to remount it (only against hooks that do **not** poll, or a refresh mid-typing wipes the form); or `useSyncExternalStore` for genuinely external state (localStorage, storage events, wall-clock time).
 
 ## RM520N-GL Platform
 
