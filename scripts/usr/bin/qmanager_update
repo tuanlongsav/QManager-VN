@@ -175,8 +175,26 @@ post_install_check() {
 }
 
 cleanup() {
+    # Step out before removing the tree. cleanup() runs both directly from
+    # die() and from the EXIT/INT/TERM trap, and on any install failure the CWD
+    # is still /tmp/qmanager_install — deleting the directory a process is
+    # sitting in leaves it with an invalid working directory for everything
+    # that follows. This is the load-bearing half of the fix: the inline
+    # rm -rf calls only cover the success paths, cleanup() covers the failures.
+    cd / 2>/dev/null || true
     rm -f "$PID_FILE"
     rm -rf /tmp/qmanager_install
+}
+
+# derive_checksum_url <tarball_url>
+# The build publishes sha256sum.txt beside qmanager.tar.gz (build.sh) and the
+# release workflow uploads both as sibling assets, so the checksum always
+# lives at the same path with the filename swapped. Deriving it from the
+# already-validated tarball URL keeps it origin-agnostic — it cannot drift to
+# another repo the way a hardcoded URL would, and unlike a CLI argument it
+# cannot be pointed at an attacker-controlled file by whoever calls us.
+derive_checksum_url() {
+    printf '%s' "${1%qmanager.tar.gz}sha256sum.txt"
 }
 
 # Wait for the /reboot/ page to confirm it has loaded by writing
@@ -256,6 +274,40 @@ if [ "$MODE" = "install" ]; then
     fi
     log "Archive verified"
 
+    # 2b. Verify SHA-256 — fail closed at every step.
+    #
+    # This is the unattended path: qmanager_auto_update execs us from cron and
+    # we install and reboot with nobody watching. "download" mode can afford to
+    # log-and-continue when the checksum is unreachable because a human still
+    # reviews the staged result before install_staged runs; here there is no
+    # such checkpoint. An attacker able to substitute the tarball can equally
+    # drop the checksum request, so treating "checksum unavailable" as
+    # permission to proceed would defeat the check entirely. sha256sum is a
+    # base-platform tool on this device family, not an Entware optional, so
+    # requiring it does not strand working devices.
+    write_status "verifying" "Verifying SHA-256..." "$VERSION" ""
+    checksum_url=$(derive_checksum_url "$URL")
+    checksum_file="/tmp/qmanager_update_sha256.txt"
+    rm -f "$checksum_file"
+
+    if ! http_download "$checksum_url" "$checksum_file" 15; then
+        rm -f "$download_path" "$checksum_file"
+        die "Checksum file unavailable — refusing to install unverified update"
+    fi
+    expected_sha=$(awk '{print $1}' "$checksum_file" 2>/dev/null)
+    actual_sha=$(sha256sum "$download_path" 2>/dev/null | awk '{print $1}')
+    rm -f "$checksum_file"
+
+    if [ -z "$expected_sha" ] || [ -z "$actual_sha" ]; then
+        rm -f "$download_path"
+        die "SHA-256 could not be computed — refusing to install unverified update"
+    fi
+    if [ "$actual_sha" != "$expected_sha" ]; then
+        rm -f "$download_path"
+        die "SHA-256 mismatch — download may be corrupt or tampered"
+    fi
+    log "SHA-256 verified"
+
     # 3. Save current version for rollback tracking
     write_status "installing" "Installing update..." "$VERSION" ""
     current_ver=$(get_current_version)
@@ -279,6 +331,9 @@ if [ "$MODE" = "install" ]; then
     post_install_check "$VERSION"
 
     # 6. Cleanup and reboot
+    # cd out first — the installer has already finished (run_install_with_progress
+    # waits for it), and the script keeps running for a while after this.
+    cd / 2>/dev/null || true
     rm -rf /tmp/qmanager_install
     write_status "rebooting" "Rebooting device..." "$VERSION" ""
     log "Rebooting"
@@ -396,6 +451,8 @@ if [ "$MODE" = "install_staged" ]; then
     post_install_check "$VERSION"
 
     # 4. Cleanup and reboot
+    # cd out first — see the same step in install mode.
+    cd / 2>/dev/null || true
     rm -rf /tmp/qmanager_install
     write_status "rebooting" "Rebooting device..." "$VERSION" ""
     log "Rebooting"
@@ -463,6 +520,9 @@ if [ "$MODE" = "rollback" ]; then
     post_install_check "$VERSION"
 
     # 6. Cleanup and reboot
+    # cd out first — the installer has already finished (run_install_with_progress
+    # waits for it), and the script keeps running for a while after this.
+    cd / 2>/dev/null || true
     rm -rf /tmp/qmanager_install
     write_status "rebooting" "Rebooting device..." "$VERSION" ""
     log "Rebooting"

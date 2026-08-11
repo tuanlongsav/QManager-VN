@@ -172,7 +172,9 @@ profile_save() {
 
     name=$(printf '%s' "$input" | jq -r '.name // empty')
     mno=$(printf '%s' "$input" | jq -r '.mno // empty')
-    sim_iccid=$(printf '%s' "$input" | jq -r '.sim_iccid // empty')
+    # Canonicalize on the way in so stored ICCIDs are pad-free regardless of
+    # which reader captured them — see iccid_canonicalize() below.
+    sim_iccid=$(iccid_canonicalize "$(printf '%s' "$input" | jq -r '.sim_iccid // empty')")
     existing_id=$(printf '%s' "$input" | jq -r '.id // empty')
 
     # APN settings — frontend sends these as flat keys
@@ -398,17 +400,33 @@ clear_active_profile() {
 # Profile Auto-Apply (ICCID-based)
 # =============================================================================
 
+# iccid_canonicalize <iccid>
+# Strip the trailing BCD pad nibble from an ICCID.
+#
+# A 19-digit ICCID stored in 10 BCD bytes leaves the last nibble unused, and
+# the modem reports it as a literal 'F' — AT+QCCID returns e.g.
+# 8984011234567890123F. Readers in this tree disagree about that character:
+# profiles/current_settings.sh extracts with `grep -o '[0-9]\{19,20\}'`, which
+# drops it, while every comparison site keeps it via `sed 's/+QCCID: //g'`.
+# The saved ICCID therefore never equalled the live one for those SIMs, and
+# auto-apply-on-SIM-insert silently never fired. Canonicalize both sides here.
+iccid_canonicalize() {
+    printf '%s' "$1" | tr -d '\r\n ' | sed 's/[Ff]$//'
+}
+
 # find_profile_by_iccid <iccid>
 # Search profiles for one matching the given ICCID.
 # Outputs the matching profile ID on stdout.
 # Returns 0 if found, 1 otherwise.
 find_profile_by_iccid() {
-    local iccid="$1"
+    local iccid
+    iccid=$(iccid_canonicalize "$1")
     [ -z "$iccid" ] && return 1
     local pf pf_iccid
     for pf in "$PROFILE_DIR"/p_*.json; do
         [ -f "$pf" ] || continue
         pf_iccid=$(jq -r '(.sim_iccid) | if . == null then empty else . end' "$pf" 2>/dev/null)
+        pf_iccid=$(iccid_canonicalize "$pf_iccid")
         if [ "$pf_iccid" = "$iccid" ]; then
             jq -r '(.id) | if . == null then empty else . end' "$pf" 2>/dev/null
             return 0

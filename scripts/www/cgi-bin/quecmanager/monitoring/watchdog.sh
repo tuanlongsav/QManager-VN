@@ -145,8 +145,19 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
         # that are actively harmful.
         validate_int() {
             # validate_int <value> <min> <max> <field-name>
+            #
+            # The length cap is load-bearing, not belt-and-braces. Checking only
+            # that the string is all digits lets through something like
+            # 99999999999999999999, which `[ -lt ]` and `[ -gt ]` cannot parse:
+            # both comparisons then print "integer expression expected" to
+            # stderr and return FALSE, so the || rejection never fires and the
+            # value is accepted. The guard would fail open at exactly the input
+            # it exists to stop. Ten or more digits are rejected outright, which
+            # keeps every accepted value inside signed 32-bit range on this
+            # ARMv7 shell while still leaving room far above the largest bound
+            # here (3600).
             case "$1" in
-                ''|*[!0-9]*)
+                ''|*[!0-9]*|??????????*)
                     echo "{\"success\":false,\"error\":\"$4 must be a whole number\"}"
                     exit 0 ;;
             esac

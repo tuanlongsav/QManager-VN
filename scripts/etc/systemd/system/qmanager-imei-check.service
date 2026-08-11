@@ -5,7 +5,14 @@ After=qmanager-setup.service
 
 [Service]
 Type=oneshot
-ExecStartPre=/bin/sh -c '\
+# ExecCondition, not ExecStartPre: this block exists to say "nothing to do",
+# and a failing ExecStartPre marks the unit failed. ExecCondition treats a
+# 1-254 exit as "skip quietly" instead. It has to stay a script rather than
+# Condition* directives because systemd ORs repeated Condition* lines, and
+# these three checks must all hold. Requires systemd >= 243; this platform
+# ships 244. Note this unit is not in UCI_GATED_SERVICES, so the installer
+# enables it on every device — the false failure fired on every boot, everywhere.
+ExecCondition=/bin/sh -c '\
     [ -f /etc/qmanager/imei_check_pending ] || exit 1; \
     [ -f /etc/qmanager/imei_backup.json ] || exit 1; \
     enabled=$(jq -r "(.enabled) | if . == null then \"false\" else tostring end" /etc/qmanager/imei_backup.json 2>/dev/null); \

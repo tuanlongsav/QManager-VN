@@ -6,7 +6,12 @@ Wants=qmanager-poller.service
 
 [Service]
 Type=simple
-ExecStartPre=/bin/sh -c '[ -f /usr/lib/qmanager/config.sh ] && . /usr/lib/qmanager/config.sh && val=$(qm_config_get watchcat enabled 0) && [ "$val" = "1" ]'
+# ExecCondition, not ExecStartPre — see qmanager-imei-check.service. This unit
+# also sets Restart=on-failure with StartLimitBurst=5, so as an ExecStartPre
+# the "watchdog is disabled" case did not merely mark the unit failed: it was
+# restarted and re-failed up to 5 times an hour. ExecCondition skips instead,
+# which is not a failure and does not trigger Restart=.
+ExecCondition=/bin/sh -c '[ -f /usr/lib/qmanager/config.sh ] && . /usr/lib/qmanager/config.sh && val=$(qm_config_get watchcat enabled 0) && [ "$val" = "1" ]'
 ExecStart=/usr/bin/qmanager_watchcat
 EnvironmentFile=-/etc/qmanager/environment
 ExecStopPost=/bin/sh -c 'rm -f /tmp/qmanager_watchcat.pid /tmp/qmanager_watchcat.lock /tmp/qmanager_recovery_active'

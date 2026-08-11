@@ -6,7 +6,9 @@ Wants=qmanager-poller.service
 
 [Service]
 Type=simple
-ExecStartPre=/bin/sh -c '\
+# ExecCondition, not ExecStartPre — see qmanager-imei-check.service. A failing
+# ExecStartPre marks the unit failed; ExecCondition treats 1-254 as "skip".
+ExecCondition=/bin/sh -c '\
     [ -f /etc/qmanager/tower_lock.json ] || exit 1; \
     fo=$(jq -r "(.failover.enabled) | if . == null then \"false\" else tostring end" /etc/qmanager/tower_lock.json 2>/dev/null); \
     lte=$(jq -r "(.lte.enabled) | if . == null then \"false\" else tostring end" /etc/qmanager/tower_lock.json 2>/dev/null); \
