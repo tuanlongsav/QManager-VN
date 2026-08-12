@@ -1,5 +1,16 @@
 # QManager Architecture
 
+> **⚠️ This document is stale and describes the wrong platform.** It was
+> inherited from the OpenWRT edition and still says uhttpd, procd, `init.d` and
+> UCI throughout. QManager-VN runs **inside the modem on vanilla Linux**:
+> systemd units, lighttpd, `iptables`, and JSON config under `/etc/qmanager/`
+> instead. Treat the data-flow and design-rationale sections as broadly valid
+> and every platform mechanism named here as wrong until this is rewritten.
+>
+> Accurate references meanwhile: `docs/BACKEND.md` for the backend surface,
+> `docs/rm520n-gl-architecture.md` for the platform itself, and CLAUDE.md for
+> the RM551E-vs-RM520N comparison table.
+
 This document describes the overall system architecture, data flow patterns, and key design decisions in QManager.
 
 ---

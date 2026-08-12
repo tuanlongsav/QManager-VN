@@ -455,7 +455,7 @@ www-data ALL = (root) NOPASSWD: /usr/sbin/iptables, /usr/sbin/ip6tables, \
     /usrdata/simplefirewall/ttl-override, /bin/echo, /bin/cat
 ```
 
-QManager installs its own sudoers file at `/etc/sudoers.d/qmanager` (not `/opt/etc/sudoers.d/`) covering systemctl, reboot, crontab, ln, rm, iptables-restore, `qmanager_set_ssh_password`, and — critically for OTA updates — `qmanager_update`. All entries use full absolute paths due to Entware's `secure_path` restriction (see [Web Server: lighttpd](#web-server-lighttpd)).
+QManager installs its own sudoers file at `/etc/sudoers.d/qmanager` (not `/opt/etc/sudoers.d/`) covering systemctl, reboot, crontab, ln, rm, iptables-restore, the root helpers `qmanager_set_ssh_password`, `qmanager_set_timezone`, `qmanager_health_check` and `qmanager_ethernet_apply`, the Custom DNS trio (`mv`/`chown`/`killall -HUP dnsmasq`), and — critically for OTA updates — `qmanager_update`. All entries use full absolute paths due to Entware's `secure_path` restriction (see [Web Server: lighttpd](#web-server-lighttpd)).
 
 The `qmanager_update` rule deserves special mention:
 ```
@@ -1405,7 +1405,21 @@ www-data ALL=(root) NOPASSWD: /usr/sbin/iptables, /usr/sbin/iptables-restore, /u
 www-data ALL=(root) NOPASSWD: /sbin/reboot
 www-data ALL=(root) NOPASSWD: /usr/bin/crontab
 www-data ALL=(root) NOPASSWD: /usr/bin/qmanager_set_ssh_password
+
+# Timezone (repoints /etc/localtime — /etc is root:root 0755)
+www-data ALL=(root) NOPASSWD: /usr/bin/qmanager_set_timezone
+
+# System Health Check runner, Ethernet link speed limit
+www-data ALL=(root) NOPASSWD: /usr/bin/qmanager_health_check
+www-data ALL=(root) NOPASSWD: /usr/bin/qmanager_ethernet_apply
+
+# Custom DNS (dnsmasq config atomic swap + reload)
+www-data ALL=(root) NOPASSWD: /bin/mv /etc/data/qmanager/dnsmasq.conf.new /etc/data/dnsmasq.conf
+www-data ALL=(root) NOPASSWD: /bin/chown radio\:radio /etc/data/dnsmasq.conf
+www-data ALL=(root) NOPASSWD: /usr/bin/killall -HUP dnsmasq
 ```
+
+> This block is abridged. `scripts/etc/sudoers.d/qmanager` is the source of truth — see [BACKEND.md §7](BACKEND.md#7-sudoers-rules) for the full file with per-rule annotations.
 
 > **WARNING: Entware sudo `secure_path` restriction.** Entware's sudo has a restricted `secure_path` that does NOT include `/sbin/` or `/usr/sbin/`. All `$_SUDO` commands in `platform.sh` **must use full absolute paths** — bare command names (`systemctl`, `reboot`, `iptables`) will fail silently from CGI context. Key paths: `systemctl` is at `/bin/systemctl` (not `/usr/bin/systemctl`), `reboot` is at `/sbin/reboot`, `iptables` is at `/usr/sbin/iptables`. The `$_SYSTEMCTL` variable in `platform.sh` centralizes the systemctl path.
 

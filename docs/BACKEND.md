@@ -232,30 +232,17 @@ File-backed key-value config store. Replaces UCI for RM520N-GL. Config file: `/e
 
 **Note on `qm_config_get` and `false`:** Uses `// empty` which treats `false` as absent. All values in this config are strings or integers, never boolean `false`, so this is safe. If a future field needs boolean `false`, use the explicit null-check pattern instead.
 
-### 4.5 `email_alerts.sh`
+### 4.5 — removed
 
-Email alert library. Sourced by `qmanager_poller`. Tracks internet downtime; sends recovery emails via `msmtp` when downtime exceeds the configured threshold.
+`email_alerts.sh` documented an Email Alerts library that this fork cut in
+Phase B. The file no longer exists; SMS Alerts (§4.12) is the remaining
+notification channel. The number is left as a gap so older references to
+§4.6-§4.16 keep pointing at the same sections.
 
-Config: `/etc/qmanager/email_alerts.json`. Log: `/tmp/qmanager_email_log.json` (NDJSON, max 100 entries). msmtp config: `/etc/qmanager/msmtprc`. Reload flag: `/tmp/qmanager_email_reload`.
-
-**Critical:** The generated `msmtprc` must NOT include a `logfile` directive. msmtp returns rc=1 if it cannot write its log, even when the email sends successfully.
-
-msmtp binary is detected at source time from `/opt/bin/msmtp` (Entware) or `/usr/bin/msmtp`.
-
-Recovery emails wait 30 seconds after connectivity returns before the first send attempt (DNS/SMTP stabilisation). Up to 3 send attempts with 15-second retries between them.
-
-| Function | Description |
-|----------|-------------|
-| `email_alerts_init` | Read config; log enabled/disabled state (called once at poller startup) |
-| `check_email_alert` | Main poll hook; check reload flag, track downtime, send recovery email |
-| `_ea_read_config` | Read `email_alerts.json` into `_ea_*` state variables |
-| `_ea_send_recovery_email <start_epoch> <duration_secs>` | Format and send HTML recovery email with retry logic |
-| `_ea_send_test_email` | Send test email (called by CGI) |
-| `_ea_do_send <subject> <html_body>` | Core msmtp send function |
-| `_ea_log_event <trigger> <status> <recipient>` | Append NDJSON entry to email log |
-| `_ea_format_duration <secs>` | Convert seconds to human-readable string (e.g., `1h 2m 3s`) |
-| `_ea_build_recovery_html <start> <duration> <threshold>` | Build recovery notification HTML |
-| `_ea_build_test_html` | Build test notification HTML |
+`qmanager_health_check` still collects `/etc/qmanager/msmtprc` and
+`email_alerts.json` into its diagnostic bundle, and still redacts them — that is
+deliberate, for devices upgraded from a build that had the feature. Both reads
+are guarded, so on a clean install they simply find nothing.
 
 ### 4.6 `events.sh`
 
@@ -275,7 +262,6 @@ Network event detection library. Sourced by `qmanager_poller` and `qmanager_watc
 
 **First-cycle behaviour:** `detect_events` populates `prev_ev_*` on the first call without emitting events. Set `events_initialized=false` at startup.
 
-**Low power suppression:** All event detection is suppressed when `/tmp/qmanager_low_power_active` exists.
 
 **Recovery suppression:** Internet events are suppressed while `$conn_during_recovery = "true"` to prevent spurious events during watchcat recovery actions.
 
@@ -403,7 +389,7 @@ Semantic version comparison. Used by `qmanager_update` and `qmanager_auto_update
 
 ### 4.12 `sms_alerts.sh`
 
-SMS alert library. Sourced by `qmanager_poller`. Mirrors `email_alerts.sh` behaviour for SMS delivery via `sms_tool`. Shares `/tmp/qmanager_at.lock` with `qcmd` and the SMS Center CGI to serialize `/dev/smd11` access.
+SMS alert library. Sourced by `qmanager_poller`. Tracks internet downtime and sends a recovery SMS via `sms_tool` once downtime exceeds the configured threshold. Since Email Alerts was cut in Phase B (§4.5), this is the only notification channel left. Shares `/tmp/qmanager_at.lock` with `qcmd` and the SMS Center CGI to serialize `/dev/smd11` access.
 
 Config: `/etc/qmanager/sms_alerts.json`. Log: `/tmp/qmanager_sms_log.json` (NDJSON, max 100 entries). Reload flag: `/tmp/qmanager_sms_reload`.
 
@@ -692,7 +678,6 @@ Performs a scheduled reboot at the configured time. Crontab entry written by `sy
 
 Checks GitHub for a newer release and spawns `qmanager_update install` if a newer version is available. Crontab entry written by `system/settings.sh` when `auto_update_enabled=1`. Config: `qmanager.conf` section `update`. Uses `semver_compare` from `semver.sh`.
 
-**Note on low-power scheduling:** Low-power mode configuration (start/end times, days) is stored in `qmanager.conf` section `settings` and managed by `system/settings.sh` CGI. The flag file `/tmp/qmanager_low_power_active` is checked by `email_alerts.sh`, `sms_alerts.sh`, and `events.sh` to suppress activity during low-power windows.
 
 ### 5.5 Helper Utilities
 
@@ -717,23 +702,26 @@ qcmd -j "AT+COMMAND"   # Returns JSON-wrapped response
 
 See §11 for the `flock_wait` polling pattern.
 
-#### `qmanager_tailscale_mgr`
-
-**Location:** `/usr/bin/qmanager_tailscale_mgr`
-
-Manages Tailscale VPN install/uninstall/status. Called via `sudo -n` from `vpn/tailscale.sh` CGI. Uses a two-layer execution pattern: outer wrapper stages an inner install script and a temporary systemd oneshot unit, fires the unit, then returns immediately. The inner script runs detached under systemd. Progress: `/tmp/qmanager_tailscale_install.json`. Log: `/tmp/qmanager_tailscale_install.log`. See CLAUDE.md section on Tailscale for detailed behavioral notes.
-
-#### `qmanager_console_mgr`
-
-**Location:** `/usr/bin/qmanager_console_mgr`
-
-Manages the web console (ttyd) service. Called via `sudo -n` from the console CGI. Controls `qmanager-console.service` via `svc_start`/`svc_stop`.
-
 #### `qmanager_set_ssh_password`
 
 **Location:** `/usr/bin/qmanager_set_ssh_password`
 
 Reads a new root password from stdin, hashes it with `openssl passwd -1`, and updates `/etc/shadow`. Called via `sudo -n` from `cgi_auth.sh`'s `qm_set_ssh_password()`. Invoked automatically during onboarding (syncs web UI password to root) and from System Settings.
+
+#### `qmanager_set_timezone`
+
+**Location:** `/usr/bin/qmanager_set_timezone`
+
+Repoints `/etc/localtime` at a zoneinfo file. Called via `sudo -n` from `system_config.sh`'s `sys_set_timezone()` (invoked by `system/settings.sh`). `www-data` cannot do this itself: `/etc` is `root:root` 0755, so replacing a symlink there needs write permission on the directory, and the rootfs is read-only on a stock boot.
+
+Behavior worth knowing:
+- **Zone name validation** rejects `..`, absolute paths, and shell metacharacters by shape (`Area/Location`), since the argument arrives from an HTTP request and is used to build a path as root.
+- **Zoneinfo lookup** tries `/usr/share/zoneinfo` first, then `/opt/usr/share/zoneinfo` (Entware) for devices where the installer's symlink is missing.
+- **Read-only rootfs** is remounted rw only if a write probe fails; a genuine failure returns `etc_readonly` rather than succeeding silently.
+- **Atomic swap** — the symlink is built as `/etc/.localtime.qm` and `mv`'d over `/etc/localtime`, because `ln -sf` is unlink-then-symlink and a crash between the two leaves no `/etc/localtime` at all (glibc then falls back to UTC).
+- `/etc/TZ` is written to keep BusyBox applets in step. lighttpd is deliberately **not** restarted (it is serving the request that asked for the change); only its own log timestamps stay stale until its next restart.
+
+Returns JSON on stdout; exit 0 = success, 1 = failure.
 
 #### `qmanager_reset_password`
 
@@ -753,6 +741,36 @@ Read and format log entries. Called via `sudo -n` from `system/logs.sh` CGI.
 
 OTA update worker. See §12 for full pipeline description. Called via `sudo -n` from `system/update.sh` CGI. Runs as root; manages its own log at `/tmp/qmanager_update.log`.
 
+#### `qmanager_health_check`
+
+**Location:** `/usr/bin/qmanager_health_check`
+**Status file:** `/tmp/qmanager_health_check.json`
+**Lock file:** `/tmp/qmanager_health_check.lock`
+**Log:** `/tmp/qmanager_health_check.log`
+
+Privileged System Health Check runner. Probes binaries, AT transport, services, and sudoers rules — checks that need root, which is why the CGI cannot do them itself. Called via `sudo -n` from the `system/health-check/` CGI scripts (`run.sh`, `status.sh`, `clear.sh`, `download.sh`).
+
+```sh
+qmanager_health_check <job_id>   # Run a diagnostic job
+qmanager_health_check --clear    # Delete previous run artifacts
+```
+
+Writes incremental status to the status file so the UI can poll progress mid-run. Per-test raw output goes to `/tmp/qmanager_health_check_<job_id>/tests/<test_id>.txt`, and on completion the run is bundled into `/tmp/qmanager_health_check_<job_id>.tar.gz` for download. `--clear` refuses to run while a job is still live (checked via the recorded PID).
+
+#### `qmanager_ethernet_apply`
+
+**Location:** `/usr/bin/qmanager_ethernet_apply`
+**State file:** `/etc/qmanager/ethernet_speed`
+**Depends on:** `/usr/sbin/ethtool`, `ethtool_helper.sh`
+
+Applies the Ethernet link-speed limit on `eth0`. Called via `sudo -n` from `network/ethernet.sh` CGI.
+
+```sh
+qmanager_ethernet_apply auto|10|100|1000|2500
+```
+
+The limit is applied as an **advertise mask** with autoneg left on, not as a forced speed — the PHY negotiates the best mode within the mask, so a capped link still comes up cleanly against any partner. `auto` advertises everything the PHY reports as supported. After setting the mask the helper forces renegotiation (`ethtool -r`), then persists the value atomically (write `.tmp` + `mv`) so `qmanager-ethernet.service` can reapply it at boot. Returns JSON; exit 0 = success, 1 = invalid input or `ethtool` failure.
+
 ---
 
 ## 6. Systemd Services
@@ -764,7 +782,8 @@ OTA update worker. See §12 for full pipeline description. Called via `sudo -n` 
 | Service | Type | Binary | Description |
 |---------|------|--------|-------------|
 | `lighttpd.service` | simple | `/opt/sbin/lighttpd` | Entware lighttpd; uses `/usrdata/qmanager/lighttpd.conf`; after `opt.mount` |
-| `qmanager-console.service` | simple | `/usrdata/qmanager/console/ttyd` | Web terminal on `127.0.0.1:8080`, reverse-proxied at `/console` |
+| `qmanager-cfun-fix.service` | oneshot (RemainAfterExit) | `/usr/bin/qmanager_cfun_fix` | Boot-time radio recovery; `ExecStartPre` waits up to 30 s for `/dev/smd11`; after setup, before poller |
+| `qmanager-ethernet.service` | oneshot (RemainAfterExit) | `/usr/bin/qmanager_ethernet_apply` | Reapplies the saved `eth0` speed limit at boot; `ConditionPathExists=/etc/qmanager/ethernet_speed` |
 | `qmanager-firewall.service` | oneshot | `/usr/bin/qmanager_firewall` | Port firewall; runs before setup and lighttpd |
 | `qmanager-imei-check.service` | oneshot | `/usr/bin/qmanager_imei_check` | Post-boot IMEI restore; guarded by `ExecStartPre` condition checks |
 | `qmanager-mtu.service` | simple | `/usr/bin/qmanager_mtu_apply` | MTU persistence; `ConditionPathExists=/etc/firewall.user.mtu` |
@@ -774,9 +793,6 @@ OTA update worker. See §12 for full pipeline description. Called via `sudo -n` 
 | `qmanager-tower-failover.service` | simple | `/usr/bin/qmanager_tower_failover` | Tower lock failover; guarded by config check in `ExecStartPre` |
 | `qmanager-ttl.service` | oneshot (RemainAfterExit) | inline sh | TTL/HL rule persistence; `ConditionPathExists=/etc/qmanager/ttl_state` |
 | `qmanager-watchcat.service` | simple | `/usr/bin/qmanager_watchcat` | Connection watchdog; guarded by `qm_config_get watchcat enabled` |
-| `tailscaled.service` | notify | `/usrdata/tailscale/tailscaled` | Tailscale daemon; staged only -- see note below |
-
-**`tailscaled.service`** is staged in `/usr/lib/qmanager/tailscaled.service` (source: `scripts/etc/systemd/system/tailscaled.service`). It is only copied to `/lib/systemd/system/` when the user installs Tailscale via `qmanager_tailscale_mgr install`. `ExecStartPost=/bin/chmod 755 /usrdata/tailscale` restores directory permissions after tailscaled resets them to 700.
 
 **Service ordering:** `qmanager-firewall` -> `qmanager-setup` -> `qmanager-ping` -> `qmanager-poller` -> `qmanager-watchcat`.
 
@@ -809,20 +825,26 @@ www-data ALL=(root) NOPASSWD: /usr/bin/crontab
 # SSH password management (reads password from stdin, updates /etc/shadow)
 www-data ALL=(root) NOPASSWD: /usr/bin/qmanager_set_ssh_password
 
-# Tailscale VPN management
-www-data ALL=(root) NOPASSWD: /usr/bin/qmanager_tailscale_mgr
-www-data ALL=(root) NOPASSWD: /usrdata/tailscale/tailscale
-www-data ALL=(root) NOPASSWD: /usrdata/tailscale/tailscaled --version
-
-# Tailscale boot persistence (symlink-based)
-www-data ALL=(root) NOPASSWD: /bin/ln -sf /lib/systemd/system/tailscaled.service /lib/systemd/system/multi-user.target.wants/tailscaled.service
-www-data ALL=(root) NOPASSWD: /bin/rm -f /lib/systemd/system/multi-user.target.wants/tailscaled.service
-
-# Web console management
-www-data ALL=(root) NOPASSWD: /usr/bin/qmanager_console_mgr
+# Timezone (repoints /etc/localtime -- /etc is root:root 0755, so www-data
+# cannot replace a symlink there itself). The helper validates the zone name
+# before using it in a path.
+www-data ALL=(root) NOPASSWD: /usr/bin/qmanager_set_timezone
 
 # OTA updater (download/stage/install/rollback -- needs full root for install.sh)
 www-data ALL=(root) NOPASSWD: /usr/bin/qmanager_update
+
+# System Health Check (privileged runner that probes binaries, AT, services, sudoers)
+www-data ALL=(root) NOPASSWD: /usr/bin/qmanager_health_check
+
+# Ethernet link speed limit management
+www-data ALL=(root) NOPASSWD: /usr/bin/qmanager_ethernet_apply
+
+# Custom DNS management (dnsmasq config atomic swap + reload)
+# Note: chown's "radio:radio" argument has the colon backslash-escaped because
+# sudoers treats ':' as the user:group separator in any token unless escaped.
+www-data ALL=(root) NOPASSWD: /bin/mv /etc/data/qmanager/dnsmasq.conf.new /etc/data/dnsmasq.conf
+www-data ALL=(root) NOPASSWD: /bin/chown radio\:radio /etc/data/dnsmasq.conf
+www-data ALL=(root) NOPASSWD: /usr/bin/killall -HUP dnsmasq
 ```
 
 **Rule annotations:**
@@ -833,14 +855,13 @@ www-data ALL=(root) NOPASSWD: /usr/bin/qmanager_update
 | `ln -sf qmanager*.service` / `rm -f qmanager*.service` | `platform.sh` `svc_enable`/`svc_disable`; `tower/settings.sh`, `monitoring/watchdog.sh` |
 | `iptables*`, `ip6tables*`, `*-restore` | `platform.sh` `run_iptables`/`run_ip6tables`; `network/ttl.sh`, `qmanager_firewall` |
 | `/sbin/reboot` | `cgi_base.sh` `cgi_reboot_response`; `system/reboot.sh`; `qmanager_update` |
-| `/usr/bin/crontab` | `system/settings.sh` (scheduled reboot, auto-update, low-power cron entries) |
+| `/usr/bin/crontab` | Crontab management for scheduled reboot and auto-update entries |
 | `qmanager_set_ssh_password` | `cgi_auth.sh` `qm_set_ssh_password`; `auth/ssh_password.sh` |
-| `qmanager_tailscale_mgr` | `vpn/tailscale.sh` |
-| `/usrdata/tailscale/tailscale` | `vpn/tailscale.sh` (status queries, `tailscale up`) |
-| `/usrdata/tailscale/tailscaled --version` | `vpn/tailscale.sh` (installed version check) |
-| `ln/rm tailscaled.service` | `vpn/tailscale.sh` (enable/disable Tailscale at boot) |
-| `qmanager_console_mgr` | Console management via system settings CGI |
+| `qmanager_set_timezone` | `system_config.sh` `sys_set_timezone`; `system/settings.sh` (timezone picker) |
 | `qmanager_update` | `system/update.sh` (OTA update; added in v0.1.5 -- previously required ADB/SSH) |
+| `qmanager_health_check` | `system/health-check/run.sh`, `status.sh`, `clear.sh`, `download.sh` |
+| `qmanager_ethernet_apply` | `network/ethernet.sh` (link speed limit) |
+| `mv .../dnsmasq.conf.new`, `chown radio:radio`, `killall -HUP dnsmasq` | `network/custom_dns.sh` (atomic config swap + dnsmasq reload) |
 
 **Security note:** All rules use full absolute paths. sudo's `secure_path` is overridden by Entware's sudo configuration, but absolute paths in rules are immune to PATH injection regardless.
 
@@ -1034,7 +1055,7 @@ For request/response schemas, see `API-REFERENCE.md`.
 | `system/logs.sh` | GET | Return QManager log file contents |
 | `system/modem-subsys.sh` | GET | Return modem subsystem health (state, crash count, coredump flag) by reshaping the `system_health` block from the poller status cache; thin `jq` extractor — never re-computes live data |
 | `system/reboot.sh` | POST | Initiate system reboot via `cgi_reboot_response` |
-| `system/settings.sh` | GET/POST | Read or write system settings (hostname, timezone, scheduled reboot, low-power schedule, auto-update) |
+| `system/settings.sh` | GET/POST | Read or write system settings (hostname, timezone, temperature/distance units, scheduled reboot) |
 | `system/update.sh` | GET/POST | OTA update: check version, download, install, rollback; spawns `qmanager_update` via sudo |
 
 #### `tower/` (5 scripts)
@@ -1101,10 +1122,6 @@ Cleared on every reboot (tmpfs). Files pre-created by `qmanager_setup` are marke
 | `/tmp/qmanager_install.log` | root | qmanager_update | Step-streaming install log (polled by worker) |
 | `/tmp/qmanager_staged.tar.gz` | root | qmanager_update (download mode) | Staged update tarball |
 | `/tmp/qmanager_staged_version` | root | qmanager_update (download mode) | Staged version string |
-| `/tmp/qmanager_tailscale_install.json` | root | qmanager_tailscale_mgr | Tailscale install progress |
-| `/tmp/qmanager_tailscale_install.log` | root | qmanager_tailscale_mgr | Tailscale install log |
-| `/tmp/qmanager_tailscale_install.pid` | root | qmanager_tailscale_mgr | Tailscale install PID |
-| `/tmp/qmanager_low_power_active` | root | low-power cron | Flag: low-power window active; suppresses events/alerts |
 | `/tmp/qmanager_long_running` | root | qmanager_poller | Flag: long AT command in progress |
 | `/tmp/qmanager_cc_data.tmp` | root | parse_at.sh | Carrier component parse scratch file |
 | `/tmp/qmanager_ca_parse.tmp` | root | parse_at.sh | CA parse scratch file |

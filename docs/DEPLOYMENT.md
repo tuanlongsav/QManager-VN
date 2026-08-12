@@ -485,7 +485,21 @@ www-data ALL=(root) NOPASSWD: /usr/sbin/iptables, /usr/sbin/iptables-restore, /u
 www-data ALL=(root) NOPASSWD: /sbin/reboot
 www-data ALL=(root) NOPASSWD: /usr/bin/crontab
 www-data ALL=(root) NOPASSWD: /usr/bin/qmanager_set_ssh_password
+
+# Timezone (repoints /etc/localtime — /etc is root:root 0755)
+www-data ALL=(root) NOPASSWD: /usr/bin/qmanager_set_timezone
+
+# System Health Check runner, Ethernet link speed limit
+www-data ALL=(root) NOPASSWD: /usr/bin/qmanager_health_check
+www-data ALL=(root) NOPASSWD: /usr/bin/qmanager_ethernet_apply
+
+# Custom DNS (dnsmasq config atomic swap + reload)
+www-data ALL=(root) NOPASSWD: /bin/mv /etc/data/qmanager/dnsmasq.conf.new /etc/data/dnsmasq.conf
+www-data ALL=(root) NOPASSWD: /bin/chown radio\:radio /etc/data/dnsmasq.conf
+www-data ALL=(root) NOPASSWD: /usr/bin/killall -HUP dnsmasq
 ```
+
+> **Note:** The above is abridged. `scripts/etc/sudoers.d/qmanager` is the source of truth — see [BACKEND.md §7](BACKEND.md#7-sudoers-rules) for the full file with per-rule annotations.
 
 > **Note:** All sudoers commands use full absolute paths — Entware's sudo has a restricted `secure_path` that excludes `/sbin/` and `/usr/bin/`. Bare command names will fail silently from CGI context.
 
