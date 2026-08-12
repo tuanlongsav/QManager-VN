@@ -143,6 +143,7 @@
     "toastImageTooLarge": "Ảnh phải nhỏ hơn 500 KB.",
     "toastPhotoUpdated": "Đã cập nhật ảnh đại diện.",
     "toastNameUpdated": "Đã cập nhật tên hiển thị.",
+    "toastNameSystemPending": "Đã lưu tên hiển thị, nhưng chưa cập nhật được tên máy hệ thống. Hãy cập nhật QManager để áp dụng.",
     "toastNameFailed": "Không thể cập nhật tên hiển thị.",
     "toastReconnectStarted": "Đã yêu cầu kết nối lại mạng. Kết nối có thể gián đoạn trong giây lát.",
     "toastReconnectFailed": "Kết nối lại thất bại.",

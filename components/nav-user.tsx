@@ -17,6 +17,7 @@ import { authFetch } from "@/lib/auth-fetch";
 import { fileToAvatarDataUrl } from "@/lib/avatar-image";
 import { prepareForReboot } from "@/lib/session";
 import { useT } from "@/hooks/use-i18n";
+import type { SaveSettingsResponse } from "@/types/system-settings";
 
 import {
   Avatar,
@@ -138,14 +139,23 @@ export function NavUser({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "save_settings", hostname: name }),
       });
-      const json = await resp.json();
+      const json: SaveSettingsResponse = await resp.json();
       if (!json.success) {
         toast.error(t("navUser.toastNameFailed"));
         return;
       }
       setDisplayName(name);
       setNameDialogOpen(false);
-      toast.success(t("navUser.toastNameUpdated"));
+      // The display name is what this dialog edits, and it is saved either way.
+      // The system hostname derived from it can still fail to apply — most
+      // likely on a device that has not yet taken the update carrying the root
+      // helper — so warn about that half rather than reporting the rename as
+      // failed, which would be untrue.
+      if (json.hostname_applied === false) {
+        toast.warning(t("navUser.toastNameSystemPending"));
+      } else {
+        toast.success(t("navUser.toastNameUpdated"));
+      }
     } catch {
       toast.error(t("navUser.toastNameFailed"));
     } finally {

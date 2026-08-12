@@ -143,6 +143,7 @@
     "toastImageTooLarge": "Image must be under 500 KB.",
     "toastPhotoUpdated": "Profile photo updated.",
     "toastNameUpdated": "Display name updated.",
+    "toastNameSystemPending": "Display name saved, but the system hostname could not be updated. Update QManager to apply it.",
     "toastNameFailed": "Failed to update display name.",
     "toastReconnectStarted": "Network reconnect initiated. Connection may drop briefly.",
     "toastReconnectFailed": "Reconnect failed.",

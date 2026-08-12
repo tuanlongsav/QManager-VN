@@ -27,17 +27,46 @@ sys_get_hostname() {
     printf '%s' "$h"
 }
 
-# Set hostname (persists to config + applies live)
+# Reduce a free-form display name to something the kernel will accept as a
+# hostname. settings.hostname carries two things at once: onboarding asks for
+# it as "Your name" and the sidebar renders it verbatim, so values like
+# "Alex Nguyen" or "Modem nha" — with spaces, apostrophes or diacritics — are
+# normal and must keep working. Rejecting them outright to satisfy RFC 1123
+# would break the rename dialog, so derive a label instead and leave the stored
+# name untouched. Multi-byte characters map to one hyphen per byte, which the
+# squeeze then folds back into one.
+sys_hostname_label() {
+    local label
+    label=$(printf '%s' "$1" | tr -c 'A-Za-z0-9-' '-' | tr -s '-' | sed 's/^-*//; s/-*$//')
+    # Truncate after squeezing, then trim again: cutting at 63 can land on a
+    # hyphen, and RFC 1123 does not allow a label to end with one.
+    label=$(printf '%.63s' "$label" | sed 's/-*$//')
+    # A name written entirely in non-ASCII reduces to nothing.
+    [ -z "$label" ] && label="RM520N-GL"
+    printf '%s' "$label"
+}
+
+# Set hostname (persists the display name to config + applies to the system)
+# Returns 0 when the system hostname was applied, 1 when only the preference
+# was stored. Callers must keep the two apart: the stored value is what the UI
+# renders, so a failed apply is a warning, not a failed save.
 sys_set_hostname() {
-    local name="$1"
+    local name="$1" label
     [ -z "$name" ] && return 1
     qm_config_set settings hostname "$name"
-    # Apply to running system
-    echo "$name" > /proc/sys/kernel/hostname 2>/dev/null
-    # Persist to /etc/hostname (requires remount if rootfs is ro)
-    if [ -w /etc/hostname ] || mount -o remount,rw / 2>/dev/null; then
-        echo "$name" > /etc/hostname 2>/dev/null
+    # Applying needs root three times over: /proc/sys/kernel/hostname is
+    # root-only, /etc is root:root 0755 so creating a file there needs write on
+    # the directory, and remounting a read-only rootfs has no sudoers grant at
+    # all. The previous in-process writes therefore all no-opped, and since
+    # every one of them was 2>/dev/null with no return value checked, the
+    # rename dialog reported success while the hostname never moved. Hand the
+    # work to the root helper and report what actually happened.
+    label=$(sys_hostname_label "$name")
+    if $_SUDO /usr/bin/qmanager_set_hostname "$label" >/dev/null 2>&1; then
+        return 0
     fi
+    qlog_warn "sys_set_hostname: helper failed to apply hostname '$label'" 2>/dev/null || true
+    return 1
 }
 
 # --- Timezone ----------------------------------------------------------------

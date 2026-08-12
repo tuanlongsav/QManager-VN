@@ -23,6 +23,22 @@ export interface SystemSettingsResponse {
   scheduled_reboot: ScheduleConfig;
 }
 
+// Response to a `save_settings` POST.
+//
+// `hostname` doubles as the display name and as the source of the system
+// hostname, and those two can disagree: the display name is stored by the CGI
+// and effectively always succeeds, while applying the system hostname goes
+// through a root helper that can fail (most plausibly on a device that has not
+// yet taken the update carrying that helper). Folding both into `success`
+// would make a failed apply read as a failed rename and discard a name that
+// was in fact saved — so the apply result gets its own optional field, present
+// only when there is something to report.
+export interface SaveSettingsResponse {
+  success: boolean;
+  hostname_applied?: boolean;
+  hostname_apply_error?: string;
+}
+
 // --- Day Labels (shared with tower locking) --------------------------------
 
 export const DAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];

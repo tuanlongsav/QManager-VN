@@ -25,6 +25,11 @@ www-data ALL=(root) NOPASSWD: /usr/bin/qmanager_set_ssh_password
 # before using it in a path.
 www-data ALL=(root) NOPASSWD: /usr/bin/qmanager_set_timezone
 
+# Hostname (writes /proc/sys/kernel/hostname and /etc/hostname — both are
+# root-only, and remounting a read-only rootfs has no grant of its own). The
+# helper validates the name against RFC 1123 before writing it anywhere.
+www-data ALL=(root) NOPASSWD: /usr/bin/qmanager_set_hostname
+
 # OTA updater (download/stage/install/rollback — needs full root for install.sh)
 www-data ALL=(root) NOPASSWD: /usr/bin/qmanager_update
 

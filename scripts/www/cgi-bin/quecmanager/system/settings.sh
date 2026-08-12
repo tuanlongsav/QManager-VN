@@ -122,9 +122,25 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
         # val=$(printf '%s' "$POST_DATA" | jq -r 'if has("wan_guard_enabled") then (.wan_guard_enabled | tostring) else "" end')
 
         # --- Hostname (display name) ---
+        # This field carries two things at once. The display name the sidebar
+        # renders is saved by qm_config_set and, from the user's point of view,
+        # simply succeeds. The system hostname derived from it goes through a
+        # root helper and genuinely can fail — most plausibly on a device that
+        # has not yet taken the update carrying the helper and its sudoers rule,
+        # where sudo refuses the call outright.
+        #
+        # Those two must not share one success flag. nav-user.tsx treats
+        # success:false as "the rename failed", discarding the name the user
+        # just typed and leaving the dialog open — even though that name was
+        # stored. So the save stays successful and the apply result travels in
+        # its own field, which older consumers ignore harmlessly.
+        hostname_applied="true"
         val=$(printf '%s' "$POST_DATA" | jq -r '.hostname // empty')
         if [ -n "$val" ]; then
-            sys_set_hostname "$val"
+            if ! sys_set_hostname "$val"; then
+                hostname_applied="false"
+                qlog_warn "Display name saved but system hostname could not be applied"
+            fi
         fi
 
         # --- Temperature unit ---
@@ -172,7 +188,17 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
         # AT device is hardcoded to /dev/smd11 via atcli_smd11 — no override needed
 
         qlog_info "System settings saved"
-        echo '{"success":true}'
+        # Keep the ordinary response byte-identical to what it has always been;
+        # the extra fields appear only when there is something to report.
+        if [ "$hostname_applied" = "false" ]; then
+            jq -n '{
+                success: true,
+                hostname_applied: false,
+                hostname_apply_error: "Saved the display name, but it could not be applied as the system hostname. Updating QManager installs the helper this needs."
+            }'
+        else
+            echo '{"success":true}'
+        fi
         exit 0
     fi
 

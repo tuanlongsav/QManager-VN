@@ -416,15 +416,20 @@ Config: `/etc/qmanager/sms_alerts.json`. Log: `/tmp/qmanager_sms_log.json` (NDJS
 
 ### 4.13 `system_config.sh`
 
-System settings abstraction. Replaces `uci system.@system[0].*` for hostname and timezone. Sources `config.sh`.
+System settings abstraction. Replaces `uci system.@system[0].*` for hostname and timezone. Sources `config.sh` and `platform.sh` (for `$_SUDO`).
+
+Neither hostname nor timezone can be applied in-process: the CGI runs as `www-data`, `/etc` is `root:root 0755`, `/proc/sys/kernel/hostname` is root-only, and no sudoers rule grants `mount` for the read-only-rootfs case. Both therefore hand the privileged half to a root helper (§5) and return a real exit code.
 
 | Function | Description |
 |----------|-------------|
 | `sys_get_hostname` | Read hostname from `qmanager.conf` -> `/etc/hostname` -> default `"RM520N-GL"` |
-| `sys_set_hostname <name>` | Persist to `qmanager.conf`, write `/proc/sys/kernel/hostname`, update `/etc/hostname` |
+| `sys_hostname_label <name>` | Reduce a free-form display name to an RFC 1123 label (non-`[A-Za-z0-9-]` -> `-`, squeeze, trim, 63-char cap, fallback `"RM520N-GL"`) |
+| `sys_set_hostname <name>` | Persist the display name to `qmanager.conf`, then apply `sys_hostname_label` of it via `qmanager_set_hostname`. Returns 0 on apply, 1 when only the preference was stored |
 | `sys_get_timezone` | Read POSIX TZ string from `qmanager.conf` (default `"UTC0"`) |
 | `sys_get_zonename` | Read IANA zone name from `qmanager.conf` (default `"UTC"`) |
-| `sys_set_timezone <tz> [zonename]` | Persist TZ, symlink `/etc/localtime`, export `$TZ`, write `/etc/TZ` |
+| `sys_set_timezone <tz> [zonename]` | Persist TZ, apply the zone via `qmanager_set_timezone`, export `$TZ`. Returns 0 on apply, 1 on failure |
+
+**Why `settings.hostname` is sanitized rather than validated.** The key doubles as the user's display name — onboarding asks for it as "Your name" and the sidebar renders it verbatim — so values with spaces, apostrophes or diacritics are normal. Rejecting them to satisfy RFC 1123 would break the rename dialog, so the stored value stays free-form and only the derived label reaches the kernel. `scripts/test/hostname-helper.sh` asserts that every label the sanitizer can emit is accepted by the helper's validator; if those two drift apart, renaming silently stops applying again.
 
 ### 4.14 `tower_lock_mgr.sh`
 
@@ -723,6 +728,14 @@ Behavior worth knowing:
 
 Returns JSON on stdout; exit 0 = success, 1 = failure.
 
+#### `qmanager_set_hostname`
+
+**Location:** `/usr/bin/qmanager_set_hostname`
+
+Applies a system hostname. Validates the argument as an RFC 1123 label (letters, digits and hyphens; no leading or trailing hyphen; 63 bytes max) before touching anything — the value originates in an HTTP request and is used by a root process, so it is checked by shape rather than escaped. Probes `/etc` for writability, remounts the rootfs rw if needed, writes `/etc/hostname` atomically (temp file + `mv -f`), then writes `/proc/sys/kernel/hostname`. Emits JSON; exits 0 on success, 1 with an `error` code otherwise.
+
+Called via `sudo -n` from `system_config.sh`'s `sys_set_hostname()`. Restarts nothing: no daemon on this device caches the hostname, and restarting lighttpd would kill the CGI request that asked for the change.
+
 #### `qmanager_reset_password`
 
 **Location:** `/usr/bin/qmanager_reset_password`
@@ -830,6 +843,11 @@ www-data ALL=(root) NOPASSWD: /usr/bin/qmanager_set_ssh_password
 # before using it in a path.
 www-data ALL=(root) NOPASSWD: /usr/bin/qmanager_set_timezone
 
+# Hostname (writes /proc/sys/kernel/hostname and /etc/hostname -- both root-only,
+# and remounting a read-only rootfs has no grant of its own). The helper
+# validates the name against RFC 1123 before writing it anywhere.
+www-data ALL=(root) NOPASSWD: /usr/bin/qmanager_set_hostname
+
 # OTA updater (download/stage/install/rollback -- needs full root for install.sh)
 www-data ALL=(root) NOPASSWD: /usr/bin/qmanager_update
 
@@ -858,6 +876,7 @@ www-data ALL=(root) NOPASSWD: /usr/bin/killall -HUP dnsmasq
 | `/usr/bin/crontab` | Crontab management for scheduled reboot and auto-update entries |
 | `qmanager_set_ssh_password` | `cgi_auth.sh` `qm_set_ssh_password`; `auth/ssh_password.sh` |
 | `qmanager_set_timezone` | `system_config.sh` `sys_set_timezone`; `system/settings.sh` (timezone picker) |
+| `qmanager_set_hostname` | `system_config.sh` `sys_set_hostname`; reached from `system/settings.sh` (`save_settings`) |
 | `qmanager_update` | `system/update.sh` (OTA update; added in v0.1.5 -- previously required ADB/SSH) |
 | `qmanager_health_check` | `system/health-check/run.sh`, `status.sh`, `clear.sh`, `download.sh` |
 | `qmanager_ethernet_apply` | `network/ethernet.sh` (link speed limit) |

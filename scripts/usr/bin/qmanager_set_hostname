@@ -1,0 +1,97 @@
+#!/bin/sh
+# =============================================================================
+# qmanager_set_hostname — apply a system hostname (running kernel + /etc)
+# =============================================================================
+# The CGI runs as www-data and cannot do any part of this itself, for three
+# independent reasons: /proc/sys/kernel/hostname is writable only by root, /etc
+# is root:root 0755 so creating a file there needs write on the directory (not
+# on the target), and no sudoers rule grants `mount` for the read-only-rootfs
+# case. The old in-CGI path attempted all three with 2>/dev/null and returned
+# success unconditionally, so the rename dialog looked like it worked while the
+# hostname never moved — the same failure mode the timezone picker had.
+#
+# Called via sudo by scripts/usr/lib/qmanager/system_config.sh.
+# Must be whitelisted in sudoers.
+#
+# Usage:  sudo /usr/bin/qmanager_set_hostname <hostname>
+#         e.g. sudo /usr/bin/qmanager_set_hostname RM520N-GL
+# Exit:   0 = success, 1 = failure (JSON error on stdout)
+#
+# Install location: /usr/bin/qmanager_set_hostname
+# =============================================================================
+
+NAME="$1"
+
+if [ -z "$NAME" ]; then
+    printf '{"success":false,"error":"missing_hostname","detail":"Hostname is required"}\n'
+    exit 1
+fi
+
+# The argument crosses a privilege boundary — it arrives from an HTTP request
+# and is written out by a process running as root. Accept only the shape of an
+# RFC 1123 label (letters, digits and hyphens; no leading or trailing hyphen),
+# which rules out path traversal, absolute paths and shell metacharacters by
+# construction rather than by escaping. RFC 1123 relaxed RFC 952 to permit a
+# leading digit, so a name like "5g-modem" is deliberately accepted.
+case "$NAME" in
+    -*|*-)
+        printf '{"success":false,"error":"invalid_hostname","detail":"Hostname must not start or end with a hyphen"}\n'
+        exit 1 ;;
+    *[!A-Za-z0-9-]*)
+        printf '{"success":false,"error":"invalid_hostname","detail":"Hostname may contain only letters, digits and hyphens"}\n'
+        exit 1 ;;
+esac
+
+# 63 is the RFC 1123 limit for a single label, and also what the kernel accepts
+# before truncating silently — better to refuse than to store a name that comes
+# back different from what was asked for.
+if [ "${#NAME}" -gt 63 ]; then
+    printf '{"success":false,"error":"hostname_too_long","detail":"Hostname must be 63 characters or fewer"}\n'
+    exit 1
+fi
+
+# Rootfs is UBIFS and mounted read-only on a stock boot. qmanager_setup
+# remounts it rw at every boot and nothing remounts it back, but do not depend
+# on that having happened — remount here if the write would fail, and say so
+# rather than failing silently the way the old CGI path did.
+trap 'rm -f /etc/.qm_hn_probe /etc/.hostname.qm' EXIT INT TERM
+if ! touch /etc/.qm_hn_probe 2>/dev/null; then
+    mount -o remount,rw / 2>/dev/null || true
+    if ! touch /etc/.qm_hn_probe 2>/dev/null; then
+        printf '{"success":false,"error":"etc_readonly","detail":"/etc is not writable and could not be remounted rw"}\n'
+        exit 1
+    fi
+fi
+rm -f /etc/.qm_hn_probe
+
+# Write beside the target and rename over it rather than truncating it in
+# place: rename(2) is atomic, so a reader — or a power cut — either sees the
+# old hostname or the new one, never a half-written file or an empty
+# /etc/hostname that would leave the device nameless at the next boot.
+if ! printf '%s\n' "$NAME" > /etc/.hostname.qm 2>/dev/null; then
+    printf '{"success":false,"error":"write_failed","detail":"Could not write temporary hostname file in /etc"}\n'
+    exit 1
+fi
+
+if ! mv -f /etc/.hostname.qm /etc/hostname 2>/dev/null; then
+    rm -f /etc/.hostname.qm
+    printf '{"success":false,"error":"install_failed","detail":"Could not move hostname file into place"}\n'
+    exit 1
+fi
+
+# /etc/hostname alone only takes effect at the next boot. This is the half that
+# makes `hostname`, gethostname(2) and every log line using it report the new
+# name immediately. No trailing newline — the kernel stores the value verbatim.
+if ! printf '%s' "$NAME" > /proc/sys/kernel/hostname 2>/dev/null; then
+    printf '{"success":false,"error":"kernel_apply_failed","detail":"Persisted to /etc/hostname but could not set the running kernel hostname"}\n'
+    exit 1
+fi
+
+# Deliberately NOT restarting any service. Nothing on this device caches the
+# hostname — device/about.sh re-reads /proc/sys/kernel/hostname on every
+# request, and no poller or daemon references it at all. Restarting lighttpd
+# in particular would kill the CGI request that asked for this change, showing
+# the user a network error for an operation that actually succeeded.
+
+printf '{"success":true,"hostname":"%s"}\n' "$NAME"
+exit 0
