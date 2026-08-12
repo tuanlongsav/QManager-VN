@@ -21,7 +21,8 @@ cgi_handle_options
 
 WATCHCAT_STATE="/tmp/qmanager_watchcat.json"
 SIM_SWAP_FLAG="/tmp/qmanager_sim_swap_detected"
-SIM_FAILOVER_FILE="/tmp/qmanager_sim_failover"
+# Must match qmanager_watchcat — persistent, readable by www-data.
+SIM_FAILOVER_FILE="/etc/qmanager/sim_failover.json"
 RELOAD_FLAG="/tmp/qmanager_watchcat_reload"
 REVERT_FLAG="/tmp/qmanager_watchcat_revert_sim"
 DISABLED_FLAG="/tmp/qmanager_watchcat_disabled"
