@@ -85,5 +85,32 @@ else
     printf '  OK   no CRLF detected\n'
 fi
 
+# --- 3. iCloud/Finder conflict copies (warn-only) ------------------------
+# "use-i18n 2.ts" sitting beside "use-i18n.ts". These are stale snapshots the
+# sync layer leaves behind, and they are actively misleading: one sync event
+# resurrected all 16 react-hooks/set-state-in-effect errors that had already
+# been fixed, because ESLint was reading the copies. ESLint now ignores the
+# pattern, so without this warning they would accumulate completely unseen.
+printf '\n== conflict-copy check (warn-only) ==\n'
+conflict_copies=$(
+    find . -path ./node_modules -prune -o -path ./.git -prune -o \
+           -path ./out -prune -o -path ./.claude -prune -o \
+           -regex '.*/[^/]* [0-9]\.[A-Za-z0-9]+$' -print 2>/dev/null | sort
+)
+if [ -n "$conflict_copies" ]; then
+    count=$(printf '%s\n' "$conflict_copies" | wc -l | tr -d ' ')
+    printf '  WARN %d conflict copy/copies found:\n' "$count"
+    printf '%s\n' "$conflict_copies" | sed 's/^/       /'
+    printf '       These are stale duplicates — delete them; the real files are in git.\n'
+else
+    printf '  OK   no conflict copies\n'
+fi
+
+# --- 4. i18n dictionary parity -------------------------------------------
+printf '\n== i18n parity ==\n'
+if ! bash "$REPO_ROOT/scripts/test/i18n-parity.sh"; then
+    fail "en.json / vi.json are out of parity"
+fi
+
 printf '\n[run-all] PASS: %d scripts (%ds)\n\n' \
     "$syntax_total" "$(($(date +%s) - START))"

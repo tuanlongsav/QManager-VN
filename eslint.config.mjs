@@ -21,6 +21,15 @@ const eslintConfig = defineConfig([
     ".remember/**",
     ".codegraph/**",
     "qmanager-build/**",
+    // iCloud/Finder conflict copies — "use-i18n 2.ts" beside "use-i18n.ts".
+    // They are stale snapshots, so linting them re-reports every issue that was
+    // already fixed in the real file: a sync event once resurrected all 16
+    // react-hooks/set-state-in-effect errors this way, pointing at files whose
+    // committed versions were clean. Ignoring them here keeps lint honest;
+    // they are deliberately NOT git-ignored, so `git status` still shows them
+    // and scripts/test/run-all.sh still warns, or they would pile up unseen.
+    "**/* [0-9].*",
+    "**/* [0-9] copy.*",
   ]),
 ]);
 
