@@ -429,6 +429,60 @@ remove_conflicts() {
     done
 }
 
+# --- Timezone Database -------------------------------------------------------
+
+# The timezone picker writes settings, but the clock never moved: the device
+# ships without any zoneinfo database, so sys_set_timezone's symlink step found
+# nothing to link and every log line, event and SMS alert stayed on the default
+# zone — a 7-hour skew for a Vietnam deployment.
+#
+# Deliberately NOT inside install_dependencies(): that is gated on DO_PACKAGES,
+# and qmanager_update always invokes this installer with --skip-packages, so an
+# upgrading device would never receive the fix. This follows remove_conflicts()
+# instead — called unconditionally, guarded, and non-fatal.
+#
+# zoneinfo-all rather than zoneinfo-asia: TIMEZONES in types/system-settings.ts
+# is a global picker spanning every continent, so a region-only package would
+# leave most of its own entries broken. ~1.29 MB installed, ~204 KB to download,
+# onto a dedicated /opt volume.
+ensure_zoneinfo() {
+    # Skip silently before the Entware bootstrap — same contract as
+    # remove_conflicts(). A fresh install reaches this again later.
+    if [ ! -x "$OPKG" ]; then
+        _log_raw "ensure_zoneinfo: opkg not available — skipping (pre-Entware)"
+        return 0
+    fi
+
+    if [ ! -f /opt/usr/share/zoneinfo/UTC ]; then
+        info "Installing timezone database (zoneinfo-all)"
+        # Non-fatal by design. This runs on the OTA path, where a network
+        # hiccup must degrade to "timezone still stale, retried next update"
+        # rather than aborting an update that is otherwise fine.
+        if ! "$OPKG" install zoneinfo-all >/dev/null 2>&1; then
+            "$OPKG" update >/dev/null 2>&1 || true
+            if ! "$OPKG" install zoneinfo-all >/dev/null 2>&1; then
+                warn "Could not install zoneinfo-all — timezone selection will not take effect"
+                warn "  Retry later with: opkg update && opkg install zoneinfo-all"
+                return 0
+            fi
+        fi
+        info "Timezone database installed"
+    fi
+
+    # Entware puts the database under /opt, but everything that reads it looks
+    # in /usr/share/zoneinfo. Bridge the two the same way the Entware bootstrap
+    # already does for opkg and jq. Guarded so a future base image shipping a
+    # real /usr/share/zoneinfo directory is never clobbered.
+    if [ -d /opt/usr/share/zoneinfo ] && [ ! -e /usr/share/zoneinfo ]; then
+        mkdir -p /usr/share 2>/dev/null || true
+        if ln -sf /opt/usr/share/zoneinfo /usr/share/zoneinfo 2>/dev/null; then
+            info "Linked /usr/share/zoneinfo -> /opt/usr/share/zoneinfo"
+        else
+            warn "Could not link /usr/share/zoneinfo — qmanager_set_timezone will fall back to the /opt path"
+        fi
+    fi
+}
+
 # --- Install Dependencies ----------------------------------------------------
 
 install_dependencies() {
@@ -1804,6 +1858,11 @@ main() {
     remove_conflicts
 
     [ "$DO_PACKAGES" = "1" ] && install_dependencies
+
+    # After install_dependencies, so a fresh install has Entware bootstrapped
+    # by now; but outside the DO_PACKAGES gate, so OTA updates (which always
+    # pass --skip-packages) still get the timezone database.
+    ensure_zoneinfo
 
     # SSH bootstrap runs after install_dependencies so Entware + bundled
     # dropbear .ipk are available, and before stop_services so it never has

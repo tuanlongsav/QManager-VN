@@ -1,0 +1,100 @@
+#!/bin/sh
+# =============================================================================
+# qmanager_set_timezone — point /etc/localtime at a zoneinfo file
+# =============================================================================
+# The CGI runs as www-data and cannot do this itself, for two independent
+# reasons: /etc is root:root 0755, so replacing a symlink there needs write on
+# the directory (not the target), and no sudoers rule grants `mount`, which the
+# old in-CGI path needed to remount a read-only rootfs. Previously `ln -sf`
+# simply no-opped and the picker looked like it worked.
+#
+# Called via sudo by scripts/www/cgi-bin/quecmanager/system/settings.sh.
+# Must be whitelisted in sudoers.
+#
+# Usage:  sudo /usr/bin/qmanager_set_timezone <zonename>
+#         e.g. sudo /usr/bin/qmanager_set_timezone Asia/Bangkok
+# Exit:   0 = success, 1 = failure (JSON error on stdout)
+#
+# Install location: /usr/bin/qmanager_set_timezone
+# =============================================================================
+
+ZONE="$1"
+
+if [ -z "$ZONE" ]; then
+    printf '{"success":false,"error":"missing_zone","detail":"Zone name is required"}\n'
+    exit 1
+fi
+
+# The argument crosses a privilege boundary — it arrives from an HTTP request
+# and is used to build a path this runs as root. Accept only the shape a real
+# zone name has (Area/Location, plus a few single-word zones like UTC), which
+# rules out "..", absolute paths and shell metacharacters by construction
+# rather than by escaping.
+case "$ZONE" in
+    *..*|/*|*[!A-Za-z0-9/_+-]*)
+        printf '{"success":false,"error":"invalid_zone","detail":"Zone name contains illegal characters"}\n'
+        exit 1 ;;
+esac
+
+# Entware installs the database under /opt; the installer symlinks
+# /usr/share/zoneinfo to it, so try the system path first and fall back to the
+# Entware path for devices where that symlink has not been created yet.
+ZONE_FILE=""
+for base in /usr/share/zoneinfo /opt/usr/share/zoneinfo; do
+    if [ -f "$base/$ZONE" ]; then
+        ZONE_FILE="$base/$ZONE"
+        break
+    fi
+done
+
+if [ -z "$ZONE_FILE" ]; then
+    printf '{"success":false,"error":"zone_not_found","detail":"No zoneinfo file for %s — is the zoneinfo package installed?"}\n' "$ZONE"
+    exit 1
+fi
+
+# Rootfs is UBIFS and mounted read-only on a stock boot. qmanager_setup
+# remounts it rw at every boot and nothing remounts it back, but do not depend
+# on that having happened — remount here if the write would fail, and say so
+# rather than failing silently the way the old CGI path did.
+trap 'rm -f /etc/.qm_tz_probe /etc/.localtime.qm' EXIT INT TERM
+if ! touch /etc/.qm_tz_probe 2>/dev/null; then
+    mount -o remount,rw / 2>/dev/null || true
+    if ! touch /etc/.qm_tz_probe 2>/dev/null; then
+        printf '{"success":false,"error":"etc_readonly","detail":"/etc is not writable and could not be remounted rw"}\n'
+        exit 1
+    fi
+fi
+rm -f /etc/.qm_tz_probe
+
+# ln -sf is unlink-then-symlink, so a crash between the two leaves no
+# /etc/localtime at all and glibc silently falls back to UTC. Build the link
+# beside the target and rename over it instead: rename(2) is atomic, so a
+# reader either sees the old zone or the new one, never nothing.
+if ! ln -sf "$ZONE_FILE" /etc/.localtime.qm 2>/dev/null; then
+    printf '{"success":false,"error":"symlink_failed","detail":"Could not create temporary symlink in /etc"}\n'
+    exit 1
+fi
+
+if ! mv -f /etc/.localtime.qm /etc/localtime 2>/dev/null; then
+    rm -f /etc/.localtime.qm
+    printf '{"success":false,"error":"install_failed","detail":"Could not move symlink into place"}\n'
+    exit 1
+fi
+
+# glibc ignores /etc/TZ — it is a BusyBox/musl mechanism — but BusyBox applets
+# on this device do read it, so keep the two in step now that something with
+# permission to write it is doing the work.
+printf '%s\n' "$ZONE" > /etc/TZ 2>/dev/null || true
+
+# Deliberately NOT restarting lighttpd here. It is compiled C and does cache
+# tzset() for its own access/error log, so its log lines keep the old zone until
+# it next restarts — but this helper is invoked by a CGI script that lighttpd is
+# currently serving, so restarting it would kill the very request that asked for
+# the change. The user would see a network error for an operation that actually
+# succeeded. The staleness is confined to lighttpd's own log timestamps and
+# self-heals on the next natural restart; every QManager timestamp the user
+# sees comes from date(1) in a shell daemon, which re-reads /etc/localtime on
+# each call and is already correct.
+
+printf '{"success":true,"zone":"%s","file":"%s"}\n' "$ZONE" "$ZONE_FILE"
+exit 0

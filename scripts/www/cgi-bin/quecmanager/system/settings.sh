@@ -155,7 +155,18 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
         val=$(printf '%s' "$POST_DATA" | jq -r '.timezone // empty')
         zn=$(printf '%s' "$POST_DATA" | jq -r '.zonename // empty')
         if [ -n "$val" ]; then
-            sys_set_timezone "$val" "$zn"
+            # Check the result. sys_set_timezone now reports a real failure
+            # (missing zoneinfo database, unwritable /etc, helper not
+            # installed), and swallowing it here would reproduce the exact bug
+            # this endpoint was fixed for: the picker answering {"success":true}
+            # while the clock never moved. The preference is already persisted
+            # at this point, so the message says the value was saved but not
+            # applied rather than implying nothing happened.
+            if ! sys_set_timezone "$val" "$zn"; then
+                cgi_error "timezone_apply_failed" \
+                    "Saved the preference but could not apply the timezone — the zoneinfo database may be missing. Retry after: opkg update && opkg install zoneinfo-all"
+                exit 0
+            fi
         fi
 
         # AT device is hardcoded to /dev/smd11 via atcli_smd11 — no override needed

@@ -8,6 +8,10 @@
 _SYSTEM_CONFIG_LOADED=1
 
 . /usr/lib/qmanager/config.sh
+# For $_SUDO. platform.sh guards against double-sourcing, and depending on the
+# caller to have loaded it first would make sys_set_timezone silently run
+# without sudo in any script that ordered its sources differently.
+. /usr/lib/qmanager/platform.sh
 
 # --- Hostname ----------------------------------------------------------------
 
@@ -59,11 +63,21 @@ sys_set_timezone() {
     [ -z "$tz" ] && return 1
     qm_config_set settings timezone "$tz"
     [ -n "$zn" ] && qm_config_set settings zonename "$zn"
-    # Apply to running system: symlink /etc/localtime (standard Linux)
-    if [ -n "$zn" ] && [ -f "/usr/share/zoneinfo/$zn" ]; then
-        ln -sf "/usr/share/zoneinfo/$zn" /etc/localtime 2>/dev/null
+    # Applying the zone needs root: /etc is root:root 0755, so replacing the
+    # /etc/localtime symlink requires write on the directory, which www-data
+    # does not have. The previous in-process `ln -sf` therefore no-opped, and
+    # because its failure was discarded the picker appeared to work while every
+    # timestamp stayed on the old zone. Hand it to the root helper instead and
+    # report what actually happened.
+    if [ -n "$zn" ]; then
+        if $_SUDO /usr/bin/qmanager_set_timezone "$zn" >/dev/null 2>&1; then
+            export TZ="$tz"
+            return 0
+        fi
+        qlog_warn "sys_set_timezone: helper failed to apply zone '$zn'" 2>/dev/null || true
+        return 1
     fi
-    # Also export TZ for the current process and /etc/TZ as fallback
+
     export TZ="$tz"
-    echo "$tz" > /etc/TZ 2>/dev/null
+    return 0
 }

@@ -20,6 +20,11 @@ www-data ALL=(root) NOPASSWD: /usr/bin/crontab
 # SSH password management (reads password from stdin, updates /etc/shadow)
 www-data ALL=(root) NOPASSWD: /usr/bin/qmanager_set_ssh_password
 
+# Timezone (repoints /etc/localtime — /etc is root:root 0755, so www-data
+# cannot replace a symlink there itself). The helper validates the zone name
+# before using it in a path.
+www-data ALL=(root) NOPASSWD: /usr/bin/qmanager_set_timezone
+
 # OTA updater (download/stage/install/rollback — needs full root for install.sh)
 www-data ALL=(root) NOPASSWD: /usr/bin/qmanager_update
 

@@ -70,6 +70,14 @@ export const TIMEZONES: TimezoneEntry[] = [
 
   // Asia
   { zonename: "Asia/Bangkok", timezone: "ICT-7", label: "Asia/Bangkok (ICT)" },
+  // Same offset as Bangkok and no DST, but a Vietnamese user searching this
+  // list looks for their own city. tzdata has carried Asia/Ho_Chi_Minh for
+  // years; it was simply missing from the picker.
+  {
+    zonename: "Asia/Ho_Chi_Minh",
+    timezone: "ICT-7",
+    label: "Asia/Ho Chi Minh (ICT)",
+  },
   { zonename: "Asia/Colombo", timezone: "IST-5:30", label: "Asia/Colombo (IST)" },
   { zonename: "Asia/Dhaka", timezone: "BDT-6", label: "Asia/Dhaka (BDT)" },
   { zonename: "Asia/Dubai", timezone: "GST-4", label: "Asia/Dubai (GST)" },
