@@ -1,4 +1,20 @@
 {
+  "login": {
+    "welcome": "Welcome to QManager",
+    "subtitle": "Enter your QManager password to continue.",
+    "logoAlt": "QManager Logo",
+    "passwordLabel": "Password",
+    "passwordPlaceholder": "Enter your password",
+    "showPassword": "Show password",
+    "hidePassword": "Hide password",
+    "submit": "Login",
+    "submitting": "Logging in...",
+    "locked": "Locked ({{seconds}}s)",
+    "invalidPassword": "Invalid password.",
+    "rateLimited": "Too many failed attempts. Try again in {{seconds}} seconds.",
+    "sessionEnded": "Your session ended because the device was unreachable for too long.",
+    "footer": "QManager — Quectel Modem Management"
+  },
   "common": {
     "save": "Save",
     "cancel": "Cancel",

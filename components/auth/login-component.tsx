@@ -4,6 +4,8 @@ import { useCallback, useEffect, useState } from "react";
 import { motion } from "motion/react";
 import { EyeIcon, EyeOffIcon } from "lucide-react";
 import { useLogin } from "@/hooks/use-auth";
+import { useT } from "@/hooks/use-i18n";
+import { LanguageToggle } from "@/components/language-toggle";
 import { Button } from "@/components/ui/button";
 import {
   Field,
@@ -20,6 +22,7 @@ import { Spinner } from "@/components/ui/spinner";
 
 export default function LoginComponent() {
   const { status, login } = useLogin();
+  const { t } = useT();
 
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
@@ -58,17 +61,19 @@ export default function LoginComponent() {
           if (result.retry_after) {
             setRetryAfter(result.retry_after);
             setError(
-              `Too many failed attempts. Try again in ${result.retry_after} seconds.`
+              t("login.rateLimited", { seconds: result.retry_after })
             );
           } else {
-            setError(result.error || "Invalid password.");
+            // result.error comes from the CGI and is not translated — prefer
+            // the localized generic message over an English backend string.
+            setError(result.error || t("login.invalidPassword"));
           }
         }
       } finally {
         setIsSubmitting(false);
       }
     },
-    [password, login]
+    [password, login, t]
   );
 
   // Show spinner while detecting setup status or during redirect to /setup/
@@ -87,10 +92,16 @@ export default function LoginComponent() {
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.3, ease: "easeOut" }}
     >
+      {/* Language picker — this is the first screen a user meets, and the only
+          other switch lives in the sidebar, i.e. behind authentication. */}
+      <div className="flex justify-end">
+        <LanguageToggle compact />
+      </div>
+
       {/* Offline session-loss banner */}
       {wasOffline && (
         <div className="rounded-lg border border-warning/30 bg-warning/10 px-4 py-3 text-sm text-warning">
-          Your session ended because the device was unreachable for too long.
+          {t("login.sessionEnded")}
         </div>
       )}
 
@@ -100,23 +111,21 @@ export default function LoginComponent() {
             <div className="flex size-16 p-1 items-center justify-center rounded-md">
               <img
                 src="/qmanager-logo.svg"
-                alt="QManager Logo"
+                alt={t("login.logoAlt")}
                 className="size-full"
               />
             </div>
-            <h1 className="text-xl font-bold">Welcome to QManager</h1>
-            <FieldDescription>
-              Enter your QManager password to continue.
-            </FieldDescription>
+            <h1 className="text-xl font-bold">{t("login.welcome")}</h1>
+            <FieldDescription>{t("login.subtitle")}</FieldDescription>
           </div>
 
           <Field>
-            <FieldLabel htmlFor="password">Password</FieldLabel>
+            <FieldLabel htmlFor="password">{t("login.passwordLabel")}</FieldLabel>
             <div className="relative">
               <Input
                 id="password"
                 type={showPassword ? "text" : "password"}
-                placeholder="Enter your password"
+                placeholder={t("login.passwordPlaceholder")}
                 autoComplete="current-password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
@@ -131,7 +140,9 @@ export default function LoginComponent() {
                 className="absolute right-1 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
                 onClick={() => setShowPassword((v) => !v)}
                 tabIndex={-1}
-                aria-label={showPassword ? "Hide password" : "Show password"}
+                aria-label={
+                  showPassword ? t("login.hidePassword") : t("login.showPassword")
+                }
               >
                 {showPassword ? <EyeOffIcon className="size-4" /> : <EyeIcon className="size-4" />}
               </Button>
@@ -153,19 +164,19 @@ export default function LoginComponent() {
               {isSubmitting ? (
                 <>
                   <Spinner className="mr-2" />
-                  Logging in...
+                  {t("login.submitting")}
                 </>
               ) : retryAfter > 0 ? (
-                `Locked (${retryAfter}s)`
+                t("login.locked", { seconds: retryAfter })
               ) : (
-                "Login"
+                t("login.submit")
               )}
             </Button>
           </Field>
         </FieldGroup>
       </form>
       <FieldDescription className="px-6 text-center">
-        QManager — Quectel Modem Management
+        {t("login.footer")}
       </FieldDescription>
     </motion.div>
   );
