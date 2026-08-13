@@ -12,6 +12,10 @@
     "locked": "Locked ({{seconds}}s)",
     "invalidPassword": "Invalid password.",
     "rateLimited": "Too many failed attempts. Try again in {{seconds}} seconds.",
+    "rateLimitedUnknown": "Too many failed attempts. Wait a moment and try again.",
+    "missingPassword": "Please enter your password.",
+    "requestFailed": "Could not send the login request. Please try again.",
+    "connectionFailed": "Cannot reach the modem. Check the connection and try again.",
     "sessionEnded": "Your session ended because the device was unreachable for too long.",
     "footer": "QManager — Quectel Modem Management"
   },
@@ -338,5 +342,10 @@
     "composeCancel": "Cancel",
     "composeToastSent": "Message sent",
     "composeToastFailed": "Failed to send message"
+  },
+  "systemSettings": {
+    "toastSaved": "Settings saved",
+    "toastSaveFailed": "Failed to save settings",
+    "toastTimezonePending": "Settings saved, but the timezone could not be applied — the device clock has not changed. The zoneinfo database may be missing."
   }
 }

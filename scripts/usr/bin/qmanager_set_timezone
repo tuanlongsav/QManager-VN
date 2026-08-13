@@ -11,14 +11,26 @@
 # Called via sudo by scripts/www/cgi-bin/quecmanager/system/settings.sh.
 # Must be whitelisted in sudoers.
 #
-# Usage:  sudo /usr/bin/qmanager_set_timezone <zonename>
-#         e.g. sudo /usr/bin/qmanager_set_timezone Asia/Bangkok
+# Usage:  sudo /usr/bin/qmanager_set_timezone <zonename> [posix_tz]
+#         e.g. sudo /usr/bin/qmanager_set_timezone Asia/Ho_Chi_Minh ICT-7
+#
+#   <zonename>  IANA identifier. Selects the zoneinfo file /etc/localtime is
+#               repointed at — the half glibc (and therefore date(1) and every
+#               QManager timestamp) actually reads. Required.
+#   [posix_tz]  The POSIX TZ spec for that same zone, written to /etc/TZ for
+#               the BusyBox applets, which cannot read zoneinfo (see the note
+#               at that write). Optional: callers that pass only the zone name
+#               keep working and /etc/TZ falls back to the zone name as before.
+#
 # Exit:   0 = success, 1 = failure (JSON error on stdout)
 #
 # Install location: /usr/bin/qmanager_set_timezone
 # =============================================================================
 
 ZONE="$1"
+TZ_POSIX="${2:-}"
+# Non-empty only when the caller supplied a POSIX string this refused to write.
+TZ_WARN=""
 
 if [ -z "$ZONE" ]; then
     printf '{"success":false,"error":"missing_zone","detail":"Zone name is required"}\n'
@@ -36,6 +48,30 @@ case "$ZONE" in
         exit 1 ;;
 esac
 
+# The POSIX string crosses the same privilege boundary and lands in a file root
+# owns, so it gets the same treatment: an allowlist of exactly the characters a
+# POSIX TZ spec is built from — letters and digits for the abbreviation, digits
+# plus `+ - :` for the offset, and `, . /` for the DST transition rules
+# ("CST6CDT,M3.2.0,M11.1.0", "NST3:30NDT,...", "CLT4CLST,M8.2.6/24,..."). That
+# covers every entry in TIMEZONES (types/system-settings.ts), which is the only
+# source these values come from. Whitespace, newlines and every shell
+# metacharacter — `< >` included, even though POSIX allows them in the quoted
+# <+07> abbreviation form no zone in that table uses — are refused.
+#
+# A malformed string is reported but NOT fatal, and does not stop the zone
+# change: /etc/localtime is the load-bearing half, so refusing the whole request
+# over the advisory one would break the path that works in order to protect the
+# path that only affects BusyBox timestamps. Surfacing it in the response
+# instead means a caller passing junk finds out, rather than the write vanishing
+# silently the way the old CGI's discarded failures did.
+if [ -n "$TZ_POSIX" ]; then
+    case "$TZ_POSIX" in
+        *[!A-Za-z0-9+,.:/-]*)
+            TZ_WARN="invalid_posix_tz"
+            TZ_POSIX="" ;;
+    esac
+fi
+
 # Entware installs the database under /opt; the installer symlinks
 # /usr/share/zoneinfo to it, so try the system path first and fall back to the
 # Entware path for devices where that symlink has not been created yet.
@@ -52,39 +88,79 @@ if [ -z "$ZONE_FILE" ]; then
     exit 1
 fi
 
+# Scratch paths are suffixed with $$ (this process's PID) so that two settings
+# POSTs overlapping in time — a retry after a slow request, onboarding racing a
+# manual zone change — cannot share a scratch file. Without the suffix, B
+# overwrites A's temp symlink, A renames B's zone into place, and whichever
+# finishes first fires its EXIT trap and unlinks the link the other is about to
+# rename, reporting install_failed for a zone that may nonetheless have landed.
+# $$ makes the name predictable to an attacker who can write to /etc — but /etc
+# is root:root 0755 and this helper itself runs as root, so anyone able to
+# pre-create a file there has already won; there is nothing left to defend.
+# Do not "harden" this into mktemp either: the link must stay in /etc for the
+# rename below to be atomic (see the note there).
+TMP_LINK="/etc/.localtime.qm.$$"
+TMP_PROBE="/etc/.qm_tz_probe.$$"
+
 # Rootfs is UBIFS and mounted read-only on a stock boot. qmanager_setup
 # remounts it rw at every boot and nothing remounts it back, but do not depend
 # on that having happened — remount here if the write would fail, and say so
 # rather than failing silently the way the old CGI path did.
-trap 'rm -f /etc/.qm_tz_probe /etc/.localtime.qm' EXIT INT TERM
-if ! touch /etc/.qm_tz_probe 2>/dev/null; then
+# The trap body is single-quoted on purpose: the variables are expanded when it
+# fires, in this process, so it can only ever remove this invocation's own files.
+trap 'rm -f "$TMP_PROBE" "$TMP_LINK"' EXIT INT TERM
+if ! touch "$TMP_PROBE" 2>/dev/null; then
     mount -o remount,rw / 2>/dev/null || true
-    if ! touch /etc/.qm_tz_probe 2>/dev/null; then
+    if ! touch "$TMP_PROBE" 2>/dev/null; then
         printf '{"success":false,"error":"etc_readonly","detail":"/etc is not writable and could not be remounted rw"}\n'
         exit 1
     fi
 fi
-rm -f /etc/.qm_tz_probe
+rm -f "$TMP_PROBE"
 
 # ln -sf is unlink-then-symlink, so a crash between the two leaves no
 # /etc/localtime at all and glibc silently falls back to UTC. Build the link
 # beside the target and rename over it instead: rename(2) is atomic, so a
-# reader either sees the old zone or the new one, never nothing.
-if ! ln -sf "$ZONE_FILE" /etc/.localtime.qm 2>/dev/null; then
+# reader either sees the old zone or the new one, never nothing. "Beside" is
+# load-bearing and not just tidiness: rename(2) is only atomic within one
+# filesystem, and /etc lives on the UBIFS rootfs while /tmp is a separate tmpfs,
+# so staging in /tmp would silently degrade this into an unlink-then-create.
+if ! ln -sf "$ZONE_FILE" "$TMP_LINK" 2>/dev/null; then
     printf '{"success":false,"error":"symlink_failed","detail":"Could not create temporary symlink in /etc"}\n'
     exit 1
 fi
 
-if ! mv -f /etc/.localtime.qm /etc/localtime 2>/dev/null; then
-    rm -f /etc/.localtime.qm
+if ! mv -f "$TMP_LINK" /etc/localtime 2>/dev/null; then
+    rm -f "$TMP_LINK"
     printf '{"success":false,"error":"install_failed","detail":"Could not move symlink into place"}\n'
     exit 1
 fi
 
 # glibc ignores /etc/TZ — it is a BusyBox/musl mechanism — but BusyBox applets
 # on this device do read it, so keep the two in step now that something with
-# permission to write it is doing the work.
-printf '%s\n' "$ZONE" > /etc/TZ 2>/dev/null || true
+# permission to write it is doing the work. That mechanism wants a POSIX TZ
+# *spec* ("ICT-7"), not an IANA name: BusyBox has no zoneinfo lookup of its own,
+# so an "Asia/Ho_Chi_Minh" here parses as a bare abbreviation with no offset and
+# every BusyBox timestamp quietly reads as UTC — precisely the failure the file
+# exists to prevent. Hence the optional second argument.
+if [ -n "$TZ_POSIX" ]; then
+    TZ_WRITTEN="$TZ_POSIX"
+else
+    # No POSIX string supplied, or it failed the shape check above. Fall back to
+    # the zone name, which is what this wrote before the argument existed: still
+    # the wrong shape for BusyBox, but no worse than leaving the *previous*
+    # zone's /etc/TZ in place, and it keeps pre-update callers working.
+    TZ_WRITTEN="$ZONE"
+fi
+# Best-effort by design: /etc/localtime is the load-bearing half and is already
+# installed by this point, so a failure to write /etc/TZ must not fail the
+# operation. Report it instead of discarding it — but never over a rejected
+# argument, which is the more actionable of the two.
+if ! printf '%s\n' "$TZ_WRITTEN" > /etc/TZ 2>/dev/null; then
+    if [ -z "$TZ_WARN" ]; then
+        TZ_WARN="tz_write_failed"
+    fi
+fi
 
 # Deliberately NOT restarting lighttpd here. It is compiled C and does cache
 # tzset() for its own access/error log, so its log lines keep the old zone until
@@ -96,5 +172,10 @@ printf '%s\n' "$ZONE" > /etc/TZ 2>/dev/null || true
 # sees comes from date(1) in a shell daemon, which re-reads /etc/localtime on
 # each call and is already correct.
 
-printf '{"success":true,"zone":"%s","file":"%s"}\n' "$ZONE" "$ZONE_FILE"
+# Every interpolated value is either allowlisted above to a character set with
+# no `"` or `\` in it, or a fixed literal, so none of them can break the JSON.
+# tz_warning is always present (empty when nothing went wrong) so consumers get
+# one stable shape rather than an optional key.
+printf '{"success":true,"zone":"%s","file":"%s","tz":"%s","tz_warning":"%s"}\n' \
+    "$ZONE" "$ZONE_FILE" "$TZ_WRITTEN" "$TZ_WARN"
 exit 0

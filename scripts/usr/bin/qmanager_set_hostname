@@ -50,31 +50,50 @@ if [ "${#NAME}" -gt 63 ]; then
     exit 1
 fi
 
+# Scratch paths are suffixed with $$ (this process's PID) so that two settings
+# POSTs overlapping in time — a retry after a slow request, onboarding racing a
+# manual rename — cannot share a scratch file. Without the suffix, B overwrites
+# A's temp file, A renames B's value into place, and whichever finishes first
+# fires its EXIT trap and unlinks the file the other is about to rename,
+# reporting install_failed for a name that may nonetheless have landed.
+# $$ makes the name predictable to an attacker who can write to /etc — but /etc
+# is root:root 0755 and this helper itself runs as root, so anyone able to
+# pre-create a file there has already won; there is nothing left to defend.
+# Do not "harden" this into mktemp either: the file must stay in /etc for the
+# rename below to be atomic (see the note there).
+TMP_FILE="/etc/.hostname.qm.$$"
+TMP_PROBE="/etc/.qm_hn_probe.$$"
+
 # Rootfs is UBIFS and mounted read-only on a stock boot. qmanager_setup
 # remounts it rw at every boot and nothing remounts it back, but do not depend
 # on that having happened — remount here if the write would fail, and say so
 # rather than failing silently the way the old CGI path did.
-trap 'rm -f /etc/.qm_hn_probe /etc/.hostname.qm' EXIT INT TERM
-if ! touch /etc/.qm_hn_probe 2>/dev/null; then
+# The trap body is single-quoted on purpose: the variables are expanded when it
+# fires, in this process, so it can only ever remove this invocation's own files.
+trap 'rm -f "$TMP_PROBE" "$TMP_FILE"' EXIT INT TERM
+if ! touch "$TMP_PROBE" 2>/dev/null; then
     mount -o remount,rw / 2>/dev/null || true
-    if ! touch /etc/.qm_hn_probe 2>/dev/null; then
+    if ! touch "$TMP_PROBE" 2>/dev/null; then
         printf '{"success":false,"error":"etc_readonly","detail":"/etc is not writable and could not be remounted rw"}\n'
         exit 1
     fi
 fi
-rm -f /etc/.qm_hn_probe
+rm -f "$TMP_PROBE"
 
 # Write beside the target and rename over it rather than truncating it in
 # place: rename(2) is atomic, so a reader — or a power cut — either sees the
 # old hostname or the new one, never a half-written file or an empty
-# /etc/hostname that would leave the device nameless at the next boot.
-if ! printf '%s\n' "$NAME" > /etc/.hostname.qm 2>/dev/null; then
+# /etc/hostname that would leave the device nameless at the next boot. "Beside"
+# is load-bearing and not just tidiness: rename(2) is only atomic within one
+# filesystem, and /etc lives on the UBIFS rootfs while /tmp is a separate tmpfs,
+# so staging in /tmp would silently degrade this into a copy.
+if ! printf '%s\n' "$NAME" > "$TMP_FILE" 2>/dev/null; then
     printf '{"success":false,"error":"write_failed","detail":"Could not write temporary hostname file in /etc"}\n'
     exit 1
 fi
 
-if ! mv -f /etc/.hostname.qm /etc/hostname 2>/dev/null; then
-    rm -f /etc/.hostname.qm
+if ! mv -f "$TMP_FILE" /etc/hostname 2>/dev/null; then
+    rm -f "$TMP_FILE"
     printf '{"success":false,"error":"install_failed","detail":"Could not move hostname file into place"}\n'
     exit 1
 fi

@@ -28,6 +28,111 @@ REVERT_FLAG="/tmp/qmanager_watchcat_revert_sim"
 DISABLED_FLAG="/tmp/qmanager_watchcat_disabled"
 
 # =============================================================================
+# Accepted ranges for the numeric watchcat settings
+# =============================================================================
+# One definition, two consumers: GET clamps stored values into these bounds on
+# the way out, POST rejects submitted values outside them. They must never
+# drift apart — the moment GET can hand back a value POST refuses, the user is
+# locked out of saving anything on this page, which is exactly the bug a second
+# hardcoded copy of "5 3600" would reintroduce.
+#
+# Bounds match the UI inputs in
+# components/monitoring/watchdog/watchdog-settings-card.tsx where it constrains
+# them (max_failures 1-20, cooldown 10-300, max_reboots_per_hour 1-10).
+# check_interval is a fixed Select there (5/10/15/30) with no numeric
+# validation of its own — an off-list stored value is submitted back verbatim —
+# so it gets a deliberately wide range that still excludes the values that are
+# actively harmful.
+#
+# These are the *policy* bounds and the only place they are defined. The
+# qmanager_watchcat daemon separately refuses to sleep on a value it cannot
+# parse, or below a hardware floor, because it can be started from a config
+# this endpoint never saw. Those are floors only, strictly weaker than the
+# range here, and never ceilings — see the block above read_config there before
+# changing anything below.
+MAX_FAILURES_MIN=1
+MAX_FAILURES_MAX=20
+CHECK_INTERVAL_MIN=5
+CHECK_INTERVAL_MAX=3600
+COOLDOWN_MIN=10
+COOLDOWN_MAX=300
+MAX_REBOOTS_MIN=1
+MAX_REBOOTS_MAX=10
+
+# validate_int <value> <min> <max> <field-name>
+#
+# Rejects the whole request with a JSON error unless <value> is a whole number
+# inside [min,max].
+#
+# The length cap is load-bearing, not belt-and-braces. Checking only that the
+# string is all digits lets through something like 99999999999999999999, which
+# `[ -lt ]` and `[ -gt ]` cannot parse: both comparisons then print "integer
+# expression expected" to stderr and return FALSE, so the || rejection never
+# fires and the value is accepted. The guard would fail open at exactly the
+# input it exists to stop. Ten or more digits are rejected outright, which
+# keeps every accepted value inside signed 32-bit range on this ARMv7 shell
+# while still leaving room far above the largest bound here (3600).
+validate_int() {
+    case "$1" in
+        ''|*[!0-9]*|??????????*)
+            echo "{\"success\":false,\"error\":\"$4 must be a whole number\"}"
+            exit 0 ;;
+    esac
+    if [ "$1" -lt "$2" ] || [ "$1" -gt "$3" ]; then
+        echo "{\"success\":false,\"error\":\"$4 must be between $2 and $3\"}"
+        exit 0
+    fi
+}
+
+# clamp_int <value> <min> <max> <field-name>
+#
+# Echoes <value> forced into [min,max] — the read-side counterpart of
+# validate_int, over the same bounds.
+#
+# Nothing validated these settings before, so a config hand-edited over SSH or
+# written by an older build can still hold an out-of-range value, and that is a
+# live hazard rather than a cosmetic one: the watchcat daemon feeds
+# check_interval straight into its sleep, so a stored 0 or 1 spins the recovery
+# loop, and a cooldown under 10 lets it escalate through every tier — up to and
+# including reboots — with no real pause between them.
+#
+# Reporting the clamped value is what actually repairs it. Handed the raw
+# value, the settings card round-trips it back unchanged on the next save and
+# validate_int refuses it, so every save of every watchdog field fails until
+# the user SSHes in — and check_interval in particular has no UI control that
+# would show them why. Reporting the clamped value instead means their next
+# save writes something in range.
+#
+# Non-numeric and missing values are echoed untouched: qm_config_get already
+# substitutes the documented default for an absent or empty key, and anything
+# else is a corruption this helper has no honest repair for.
+#
+# The warnings are redirected to stderr because the only caller reads this
+# function through a command substitution: with QLOG_TO_STDOUT=1 the log line
+# would otherwise be captured *as* the setting's value, and jq --argjson would
+# then reject the whole response.
+clamp_int() {
+    case "$1" in
+        ''|*[!0-9]*)
+            echo "$1"; return ;;
+        ??????????*)
+            # Ten or more digits: certainly above any bound used here, and too
+            # wide for [ -gt ] to compare — see validate_int.
+            qlog_warn "Stored $4=$1 exceeds maximum $3 — reporting $3" >&2
+            echo "$3"; return ;;
+    esac
+    if [ "$1" -lt "$2" ]; then
+        qlog_warn "Stored $4=$1 below minimum $2 — reporting $2" >&2
+        echo "$2"
+    elif [ "$1" -gt "$3" ]; then
+        qlog_warn "Stored $4=$1 above maximum $3 — reporting $3" >&2
+        echo "$3"
+    else
+        echo "$1"
+    fi
+}
+
+# =============================================================================
 # GET — Fetch settings + live status
 # =============================================================================
 if [ "$REQUEST_METHOD" = "GET" ]; then
@@ -38,15 +143,21 @@ if [ "$REQUEST_METHOD" = "GET" ]; then
     tier1="" tier2="" tier3="" tier4="" backup_sim="" max_reboots=""
 
     enabled=$(qm_config_get watchcat enabled 0)
-    max_failures=$(qm_config_get watchcat max_failures 5)
-    check_interval=$(qm_config_get watchcat check_interval 10)
-    cooldown=$(qm_config_get watchcat cooldown 60)
+    # Clamped on the way out — see clamp_int for why a stored out-of-range
+    # value has to be repaired here rather than passed through.
+    max_failures=$(clamp_int "$(qm_config_get watchcat max_failures 5)" \
+        "$MAX_FAILURES_MIN" "$MAX_FAILURES_MAX" max_failures)
+    check_interval=$(clamp_int "$(qm_config_get watchcat check_interval 10)" \
+        "$CHECK_INTERVAL_MIN" "$CHECK_INTERVAL_MAX" check_interval)
+    cooldown=$(clamp_int "$(qm_config_get watchcat cooldown 60)" \
+        "$COOLDOWN_MIN" "$COOLDOWN_MAX" cooldown)
     tier1=$(qm_config_get watchcat tier1_enabled 1)
     tier2=$(qm_config_get watchcat tier2_enabled 1)
     tier3=$(qm_config_get watchcat tier3_enabled 0)
     tier4=$(qm_config_get watchcat tier4_enabled 1)
     backup_sim=$(qm_config_get watchcat backup_sim_slot "")
-    max_reboots=$(qm_config_get watchcat max_reboots_per_hour 3)
+    max_reboots=$(clamp_int "$(qm_config_get watchcat max_reboots_per_hour 3)" \
+        "$MAX_REBOOTS_MIN" "$MAX_REBOOTS_MAX" max_reboots_per_hour)
 
     # Read live status from watchcat daemon state file
     status_json='{}'
@@ -138,89 +249,97 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
         # already committed and the config half-applied. Validate the whole
         # payload first, reject as a unit, then write.
         #
-        # Bounds match the UI inputs in
-        # components/monitoring/watchdog/watchdog-settings-card.tsx where it
-        # constrains them (max_failures 1-20, cooldown 10-300,
-        # max_reboots_per_hour 1-10). check_interval has no UI constraint, so
-        # it gets a deliberately wide range that still excludes the values
-        # that are actively harmful.
-        validate_int() {
-            # validate_int <value> <min> <max> <field-name>
-            #
-            # The length cap is load-bearing, not belt-and-braces. Checking only
-            # that the string is all digits lets through something like
-            # 99999999999999999999, which `[ -lt ]` and `[ -gt ]` cannot parse:
-            # both comparisons then print "integer expression expected" to
-            # stderr and return FALSE, so the || rejection never fires and the
-            # value is accepted. The guard would fail open at exactly the input
-            # it exists to stop. Ten or more digits are rejected outright, which
-            # keeps every accepted value inside signed 32-bit range on this
-            # ARMv7 shell while still leaving room far above the largest bound
-            # here (3600).
-            case "$1" in
-                ''|*[!0-9]*|??????????*)
-                    echo "{\"success\":false,\"error\":\"$4 must be a whole number\"}"
-                    exit 0 ;;
-            esac
-            if [ "$1" -lt "$2" ] || [ "$1" -gt "$3" ]; then
-                echo "{\"success\":false,\"error\":\"$4 must be between $2 and $3\"}"
-                exit 0
-            fi
-        }
-
+        # validate_int and the bounds it is given are defined at the top of
+        # this file, shared with the GET handler's clamp.
         v_max_failures=$(printf '%s' "$POST_DATA" | jq -r '.max_failures // empty')
         v_check_interval=$(printf '%s' "$POST_DATA" | jq -r '.check_interval // empty')
         v_cooldown=$(printf '%s' "$POST_DATA" | jq -r '.cooldown // empty')
         v_max_reboots=$(printf '%s' "$POST_DATA" | jq -r '.max_reboots_per_hour // empty')
 
-        [ -n "$v_max_failures" ]   && validate_int "$v_max_failures"   1  20   "max_failures"
-        [ -n "$v_check_interval" ] && validate_int "$v_check_interval" 5  3600 "check_interval"
-        [ -n "$v_cooldown" ]       && validate_int "$v_cooldown"       10 300  "cooldown"
-        [ -n "$v_max_reboots" ]    && validate_int "$v_max_reboots"    1  10   "max_reboots_per_hour"
+        [ -n "$v_max_failures" ]   && validate_int "$v_max_failures" \
+            "$MAX_FAILURES_MIN"   "$MAX_FAILURES_MAX"   "max_failures"
+        [ -n "$v_check_interval" ] && validate_int "$v_check_interval" \
+            "$CHECK_INTERVAL_MIN" "$CHECK_INTERVAL_MAX" "check_interval"
+        [ -n "$v_cooldown" ]       && validate_int "$v_cooldown" \
+            "$COOLDOWN_MIN"       "$COOLDOWN_MAX"       "cooldown"
+        [ -n "$v_max_reboots" ]    && validate_int "$v_max_reboots" \
+            "$MAX_REBOOTS_MIN"    "$MAX_REBOOTS_MAX"    "max_reboots_per_hour"
 
         # --- Pass 2: everything validated — commit ---------------------------
+        #
+        # commit_or_abort <section> <key> <value>
+        #
+        # qm_config_set returns 1 when jq failed or when it produced an empty
+        # temp file, and leaves the live config untouched in that case — so a
+        # refusal here means the config store is unwritable right now, not that
+        # the file is already damaged. Answering {"success":true} regardless
+        # (which is what this handler used to do for all ten writes) tells the
+        # user their settings are in force when they are not.
+        #
+        # Bail on the first refusal rather than pushing on: validation is done,
+        # so anything still unwritten stays at its previous value, and because
+        # we never reach the reload flag or the service restart below, the
+        # running daemon keeps the coherent config it started with instead of
+        # reloading a half-updated one.
+        #
+        # The response admits the partial write. Claiming nothing happened
+        # would be a lie the user could act on — they would reopen the page,
+        # find settings they never confirmed, and have no idea where they came
+        # from. The config key doubles as the field name in the message; every
+        # key written here is one the settings card also shows.
+        commit_or_abort() {
+            qm_config_set "$1" "$2" "$3" && return 0
+            qlog_error "Failed to write $1.$2 — aborting save"
+            jq -n --arg field "$2" \
+                '{success:false,
+                  error:("Could not save " + $field + ": writing the configuration file failed. Settings saved before it in this request were already applied — reload the page to see the current values."),
+                  failed_field:$field,
+                  partial:true}'
+            exit 0
+        }
+
         val=""
 
         val=$(printf '%s' "$POST_DATA" | jq -r '.enabled | if . == null then empty else tostring end')
         if [ -n "$val" ]; then
             case "$val" in
-                true)  qm_config_set watchcat enabled 1 ;;
-                false) qm_config_set watchcat enabled 0 ;;
+                true)  commit_or_abort watchcat enabled 1 ;;
+                false) commit_or_abort watchcat enabled 0 ;;
             esac
         fi
 
-        [ -n "$v_max_failures" ]   && qm_config_set watchcat max_failures   "$v_max_failures"
-        [ -n "$v_check_interval" ] && qm_config_set watchcat check_interval "$v_check_interval"
-        [ -n "$v_cooldown" ]       && qm_config_set watchcat cooldown       "$v_cooldown"
+        [ -n "$v_max_failures" ]   && commit_or_abort watchcat max_failures   "$v_max_failures"
+        [ -n "$v_check_interval" ] && commit_or_abort watchcat check_interval "$v_check_interval"
+        [ -n "$v_cooldown" ]       && commit_or_abort watchcat cooldown       "$v_cooldown"
 
         val=$(printf '%s' "$POST_DATA" | jq -r '.tier1_enabled | if . == null then empty else tostring end')
         if [ -n "$val" ]; then
-            case "$val" in true) qm_config_set watchcat tier1_enabled 1 ;; false) qm_config_set watchcat tier1_enabled 0 ;; esac
+            case "$val" in true) commit_or_abort watchcat tier1_enabled 1 ;; false) commit_or_abort watchcat tier1_enabled 0 ;; esac
         fi
 
         val=$(printf '%s' "$POST_DATA" | jq -r '.tier2_enabled | if . == null then empty else tostring end')
         if [ -n "$val" ]; then
-            case "$val" in true) qm_config_set watchcat tier2_enabled 1 ;; false) qm_config_set watchcat tier2_enabled 0 ;; esac
+            case "$val" in true) commit_or_abort watchcat tier2_enabled 1 ;; false) commit_or_abort watchcat tier2_enabled 0 ;; esac
         fi
 
         val=$(printf '%s' "$POST_DATA" | jq -r '.tier3_enabled | if . == null then empty else tostring end')
         if [ -n "$val" ]; then
-            case "$val" in true) qm_config_set watchcat tier3_enabled 1 ;; false) qm_config_set watchcat tier3_enabled 0 ;; esac
+            case "$val" in true) commit_or_abort watchcat tier3_enabled 1 ;; false) commit_or_abort watchcat tier3_enabled 0 ;; esac
         fi
 
         val=$(printf '%s' "$POST_DATA" | jq -r '.tier4_enabled | if . == null then empty else tostring end')
         if [ -n "$val" ]; then
-            case "$val" in true) qm_config_set watchcat tier4_enabled 1 ;; false) qm_config_set watchcat tier4_enabled 0 ;; esac
+            case "$val" in true) commit_or_abort watchcat tier4_enabled 1 ;; false) commit_or_abort watchcat tier4_enabled 0 ;; esac
         fi
 
         val=$(printf '%s' "$POST_DATA" | jq -r '.backup_sim_slot // empty')
         if [ -n "$val" ] && [ "$val" != "null" ]; then
-            qm_config_set watchcat backup_sim_slot "$val"
+            commit_or_abort watchcat backup_sim_slot "$val"
         else
-            qm_config_set watchcat backup_sim_slot ""
+            commit_or_abort watchcat backup_sim_slot ""
         fi
 
-        [ -n "$v_max_reboots" ] && qm_config_set watchcat max_reboots_per_hour "$v_max_reboots"
+        [ -n "$v_max_reboots" ] && commit_or_abort watchcat max_reboots_per_hour "$v_max_reboots"
 
         # Signal running watchcat daemon to reload config (if it's already running)
         touch "$RELOAD_FLAG"

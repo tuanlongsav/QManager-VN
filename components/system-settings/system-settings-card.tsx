@@ -40,11 +40,13 @@ import {
 } from "lucide-react";
 import { SaveButton, useSaveFlash } from "@/components/ui/save-button";
 import { motion, type Variants } from "motion/react";
+import { useT } from "@/hooks/use-i18n";
 
 import type {
   UseSystemSettingsReturn,
   SaveSettingsPayload,
 } from "@/hooks/use-system-settings";
+import type { SaveActionResponse } from "@/types/system-settings";
 import { TIMEZONES } from "@/types/system-settings";
 import { cn } from "@/lib/utils";
 
@@ -159,7 +161,9 @@ interface SystemSettingsFormProps {
   settings: UseSystemSettingsReturn["settings"];
   isSaving: boolean;
   error: string | null;
-  saveSettings: (payload: SaveSettingsPayload) => Promise<boolean>;
+  saveSettings: (
+    payload: SaveSettingsPayload,
+  ) => Promise<SaveActionResponse | false>;
 }
 
 function SystemSettingsForm({
@@ -169,6 +173,7 @@ function SystemSettingsForm({
   saveSettings,
 }: SystemSettingsFormProps) {
   const { saved, markSaved } = useSaveFlash();
+  const { t } = useT();
 
   // --- Local form state (initialized from settings prop) ---
   const [tempUnit, setTempUnit] = useState<"celsius" | "fahrenheit">(
@@ -206,7 +211,7 @@ function SystemSettingsForm({
   const handleSave = useCallback(async () => {
     if (!canSave) return;
 
-    const success = await saveSettings({
+    const result = await saveSettings({
       action: "save_settings",
       temp_unit: tempUnit,
       distance_unit: distanceUnit,
@@ -214,11 +219,23 @@ function SystemSettingsForm({
       zonename,
     });
 
-    if (success) {
-      markSaved();
-      toast.success("Settings saved");
+    if (!result) {
+      toast.error(error || t("systemSettings.toastSaveFailed"));
+      return;
+    }
+
+    markSaved();
+
+    // The units and the zone preference are stored either way — only the
+    // privileged half of the timezone (pointing /etc/localtime at the zone)
+    // can fail on its own. Reporting that as a failed save would be untrue,
+    // and reporting it as a plain success is what let the clock stay wrong
+    // under a green toast. This card edits no other field with an apply
+    // half, so the timezone is the only warning it can honestly raise.
+    if (result.timezone_applied === false) {
+      toast.warning(t("systemSettings.toastTimezonePending"));
     } else {
-      toast.error(error || "Failed to save settings");
+      toast.success(t("systemSettings.toastSaved"));
     }
   }, [
     canSave,
@@ -229,6 +246,7 @@ function SystemSettingsForm({
     zonename,
     error,
     markSaved,
+    t,
   ]);
 
   return (

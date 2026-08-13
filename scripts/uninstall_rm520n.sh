@@ -469,20 +469,35 @@ if [ "$PURGE" = "1" ]; then
     # User data, deliberately gated behind --purge exactly like $CONF_DIR:
     # friendly APN names, the accumulated data counter and sent-SMS history are
     # the user's, not ours. Removing them on a plain uninstall would be data
-    # loss nobody asked for. Without this the directory below never empties, so
-    # /usrdata/qmanager survived every purge.
-    rm -f "$QMANAGER_ROOT/apn_names.json" \
-          "$QMANAGER_ROOT/data_used.json" \
-          "$QMANAGER_ROOT/data_used.json.tmp" \
-          "$QMANAGER_ROOT/sent_sms.json"
-    info "Purged APN names, usage counter and sent-SMS history"
+    # loss nobody asked for.
+    #
+    # Taken as a tree rather than file by file. Everything of ours that is not
+    # user data left in steps 5 and 7 (www, certs, lighttpd conf, console), and
+    # the directory is 0777 so www-data can write into it — an enumeration only
+    # empties it for as long as nobody ever adds a filename, which is precisely
+    # how /usrdata/qmanager came to survive an earlier --purge. Nothing nests
+    # under here that isn't ours: /usrdata/opt and /usrdata/tailscale are
+    # siblings, not children, so this cannot walk into the Entware bind mount.
+    #
+    # The literal-path test guards a future refactor, not today's code:
+    # QMANAGER_ROOT is a hardcoded constant now, but if it ever became derived
+    # and came back empty, rm -rf "" would take the root filesystem with it.
+    if [ "$QMANAGER_ROOT" = "/usrdata/qmanager" ]; then
+        rm -rf "$QMANAGER_ROOT"
+        info "Purged $QMANAGER_ROOT (APN names, usage counter, sent-SMS history)"
+    else
+        warn "QMANAGER_ROOT is '$QMANAGER_ROOT', not the expected /usrdata/qmanager — not removed"
+        warn "Remove it by hand if it holds APN names, usage counter or sent-SMS history"
+    fi
 elif [ -d "$CONF_DIR" ]; then
     warn "Config preserved at $CONF_DIR (use --purge to remove)"
     warn "Also preserved: APN names, usage counter, sent-SMS history in $QMANAGER_ROOT"
 fi
 
-# Remove qmanager root only when empty (console + certs already gone;
-# Tailscale teardown under --purge removes nothing here)
+# Non-purge path only — --purge already removed the whole tree above. This
+# clears the root on a device that never wrote any user data into it (no APN
+# names, no usage counter, no SMS history), and fails harmlessly by design when
+# that data is present, which is the case the warnings above cover.
 rmdir "$QMANAGER_ROOT" 2>/dev/null || true
 
 # =============================================================================

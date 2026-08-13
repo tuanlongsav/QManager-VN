@@ -44,7 +44,28 @@ MAX_EVENTS=50
 # --- Config helper (RM520N-GL: replaces UCI) ---------------------------------
 [ -f /usr/lib/qmanager/config.sh ] && . /usr/lib/qmanager/config.sh
 [ -f /usr/lib/qmanager/platform.sh ] && . /usr/lib/qmanager/platform.sh
-[ -f /usr/lib/qmanager/profile_mgr.sh ] && . /usr/lib/qmanager/profile_mgr.sh
+# profile_mgr.sh is optional the same way it is in qmanager_poller: the
+# recovery ladder has to keep working on a tree where the profile feature was
+# never installed. Both functions this daemon borrows from it need a stand-in,
+# because an undefined function in `sh` is not an error the caller notices — it
+# writes "not found" to stderr and yields an empty string, which every call
+# site here then reads as a real answer.
+. /usr/lib/qmanager/profile_mgr.sh 2>/dev/null || {
+    # Tier 3 and its fallback lose the ICCID-matched profile re-apply after a
+    # SIM swap. Acceptable: the swap itself is the part that restores
+    # connectivity, and there are no profiles to apply on such a tree anyway.
+    auto_apply_profile() { :; }
+    # Identity fallback, not a no-op — same reasoning as the poller, different
+    # damage. The resume cross-check below canonicalizes both the stored and
+    # the live ICCID; undefined, both come back empty, both -n guards fail, and
+    # the check quietly does nothing while the log still reports the state as
+    # "verified by slot". The blind spot that check exists to close — a
+    # different SIM pushed into the same slot — silently reopens. Passing the
+    # value through keeps the comparison alive and degrades only to the old
+    # pad-blind matching, whose worst case is discarding good state on an
+    # F-padded SIM.
+    iccid_canonicalize() { printf '%s' "$1"; }
+}
 
 # --- File Paths --------------------------------------------------------------
 PING_CACHE="/tmp/qmanager_ping.json"
@@ -67,17 +88,27 @@ PROFILE_APPLY_PID="/tmp/qmanager_profile_apply.pid"
 TOWER_LOCK_CONFIG="/etc/qmanager/tower_lock.json"
 CRASH_LOG="/etc/qmanager/crash.log"
 
+# --- Documented defaults -----------------------------------------------------
+# These mirror the DEFAULTS heredoc in /usr/lib/qmanager/config.sh. They are
+# their own constants rather than only the initial CFG_* values because
+# read_config falls back to them when a stored value is unusable, and after a
+# config reload the CFG_* variables hold the last loaded value, not the default.
+DEF_CHECK_INTERVAL=10
+DEF_MAX_FAILURES=5
+DEF_COOLDOWN=60
+DEF_MAX_REBOOTS_PER_HOUR=3
+
 # --- Configuration (defaults, overridden by UCI) -----------------------------
 CFG_ENABLED=1
-CFG_CHECK_INTERVAL=10
-CFG_MAX_FAILURES=5
-CFG_COOLDOWN=60
+CFG_CHECK_INTERVAL=$DEF_CHECK_INTERVAL
+CFG_MAX_FAILURES=$DEF_MAX_FAILURES
+CFG_COOLDOWN=$DEF_COOLDOWN
 CFG_TIER1_ENABLED=1
 CFG_TIER2_ENABLED=1
 CFG_TIER3_ENABLED=0
 CFG_TIER4_ENABLED=1
 CFG_BACKUP_SIM_SLOT=""
-CFG_MAX_REBOOTS_PER_HOUR=3
+CFG_MAX_REBOOTS_PER_HOUR=$DEF_MAX_REBOOTS_PER_HOUR
 BOOT_SETTLE=30
 PING_STALE_THRESHOLD=15
 MODEM_WAIT_TIMEOUT=60
@@ -100,18 +131,104 @@ reboots_this_hour=0
 # CONFIGURATION
 # =============================================================================
 
+# --- Defensive floor for the numeric settings --------------------------------
+#
+# The accepted range for these settings — the policy — is defined once, in
+# scripts/www/cgi-bin/quecmanager/monitoring/watchdog.sh, where MAX_FAILURES_MIN
+# and friends both clamp on GET and reject on POST. What follows is deliberately
+# NOT a second copy of those numbers.
+#
+# Why the daemon checks at all: it can be started from a qmanager.conf no UI
+# ever wrote — hand-edited over SSH, or left by a build that predates that
+# validation. check_interval is the sleep of the main loop *and* the decrement
+# step of the cooldown, so a stored 0, 1 or "fast" spins the recovery daemon on
+# the ARMv7 core until somebody happens to save the settings page once. A
+# daemon must not take a sleep value on trust from a file, whatever the UI in
+# front of that file enforces.
+#
+# A shared bounds library sourced by both was the alternative, and it does not
+# actually collapse the duplication: it would have to ship into
+# /usr/lib/qmanager (an installer change), and the daemon would still need a
+# fallback for the case where it is missing — exactly as with profile_mgr.sh
+# above — so the defensive numbers would survive anyway and the library would
+# be a third place rather than one place.
+#
+# What keeps these from drifting into the CGI's bounds is that they are not the
+# same rule: the daemon enforces floors only, never ceilings. A floor is safety
+# (a busy loop; an escalation with no pause between tiers); a ceiling is policy
+# and belongs to the UI. Every value the CGI accepts already sits above these
+# floors, so the daemon's rule is strictly weaker and cannot contradict it —
+# and where a floor is derivable from something the daemon already holds, it is
+# derived rather than written down. Only WATCHCAT_MIN_INTERVAL is a bare
+# number, and it describes the hardware (one loop iteration costs a jq state
+# write, a date, and a parse of the ping cache), not a preference. If the
+# CGI's minimum is ever lowered below it, this floor wins, and says so in the
+# log rather than silently.
+WATCHCAT_MIN_INTERVAL=5
+
+# cfg_int <value> <default> <floor> <name>
+#
+# Echo <value> when it is a plain whole number at or above <floor>, otherwise
+# echo the replacement and log why — a config the daemon corrected in silence
+# is one the next reader still believes.
+#
+# Non-numeric falls back to the documented default rather than the floor:
+# "fast" expresses no intent to sit near the floor, so the default is the only
+# honest guess. Ten or more digits are folded into the same case — a value that
+# `[ -lt ]` cannot parse is garbage for this purpose, and comparing it would
+# fail open (the test errors, reports false, and the value sails through).
+#
+# Warnings go to stderr because every caller reads this through a command
+# substitution: with QLOG_TO_STDOUT=1 the log line would otherwise be captured
+# *as* the setting's value.
+cfg_int() {
+    case "$1" in
+        ''|*[!0-9]*|??????????*)
+            qlog_warn "Config $4='$1' is not a usable number — using default $2" >&2
+            printf '%s' "$2"
+            return ;;
+    esac
+
+    # All digits is not yet safe to hand to $(( )), which reads a leading zero
+    # as octal: a hand-written "010" would quietly mean 8, and "08" is a hard
+    # syntax error that would take out the cooldown decrement in the main loop.
+    # Strip the zeros here, once, rather than leaving each arithmetic site to
+    # discover the problem.
+    local v="$1"
+    while :; do
+        case "$v" in 0[0-9]*) v="${v#0}" ;; *) break ;; esac
+    done
+
+    if [ "$v" -lt "$3" ]; then
+        qlog_warn "Config $4=$v below the daemon's floor of $3 — using $3" >&2
+        printf '%s' "$3"
+        return
+    fi
+    printf '%s' "$v"
+}
+
 read_config() {
     CFG_ENABLED=$(qm_config_get watchcat enabled 1)
 
     local val
     val=$(qm_config_get watchcat check_interval "")
-    [ -n "$val" ] && CFG_CHECK_INTERVAL="$val"
+    [ -n "$val" ] && CFG_CHECK_INTERVAL=$(cfg_int "$val" \
+        "$DEF_CHECK_INTERVAL" "$WATCHCAT_MIN_INTERVAL" check_interval)
 
+    # Floor of 1: at 0 the `-ge` in the suspect branch is satisfied on the very
+    # first tick, firing the recovery ladder before a single failure has been
+    # confirmed.
     val=$(qm_config_get watchcat max_failures "")
-    [ -n "$val" ] && CFG_MAX_FAILURES="$val"
+    [ -n "$val" ] && CFG_MAX_FAILURES=$(cfg_int "$val" "$DEF_MAX_FAILURES" 1 max_failures)
 
+    # Floor derived, not chosen: cooldown_remaining is decremented by
+    # CFG_CHECK_INTERVAL, so anything shorter than one tick is indistinguishable
+    # from zero — and zero means the ladder walks tier to tier, up to and
+    # including a reboot, without ever pausing for the network to come back.
+    # Read after check_interval on purpose, so the floor is the sanitized one.
     val=$(qm_config_get watchcat cooldown "")
-    [ -n "$val" ] && CFG_COOLDOWN="$val"
+    [ -n "$val" ] && CFG_COOLDOWN=$(cfg_int "$val" \
+        "$DEF_COOLDOWN" "$CFG_CHECK_INTERVAL" cooldown)
 
     val=$(qm_config_get watchcat tier1_enabled "")
     [ -n "$val" ] && CFG_TIER1_ENABLED="$val"
@@ -127,8 +244,15 @@ read_config() {
 
     CFG_BACKUP_SIM_SLOT=$(qm_config_get watchcat backup_sim_slot "")
 
+    # Floor of 0, i.e. shape only. Zero is already the safe side — the token
+    # bucket reads as spent, so Tier 4 auto-disables the watchcat instead of
+    # rebooting. What must not survive is a non-numeric value: the token-bucket
+    # test compares it with `-ge`, which on garbage errors out and reports
+    # false, and false there reads as "budget available" — the one input that
+    # would let this daemon reboot the device without limit.
     val=$(qm_config_get watchcat max_reboots_per_hour "")
-    [ -n "$val" ] && CFG_MAX_REBOOTS_PER_HOUR="$val"
+    [ -n "$val" ] && CFG_MAX_REBOOTS_PER_HOUR=$(cfg_int "$val" \
+        "$DEF_MAX_REBOOTS_PER_HOUR" 0 max_reboots_per_hour)
 
     qlog_info "Config loaded: interval=${CFG_CHECK_INTERVAL}s max_fail=${CFG_MAX_FAILURES} cooldown=${CFG_COOLDOWN}s"
     qlog_info "  Tiers: T1=${CFG_TIER1_ENABLED} T2=${CFG_TIER2_ENABLED} T3=${CFG_TIER3_ENABLED} T4=${CFG_TIER4_ENABLED} backup_sim=${CFG_BACKUP_SIM_SLOT:-none}"
@@ -440,6 +564,13 @@ sim_failover_fallback() {
     current_sim_slot="$original_sim_slot"
     sim_failover_active="false"
     original_sim_slot="null"
+
+    # The state file lives in /etc now, not /tmp, so a reboot no longer clears
+    # it for us. Leaving it behind would outlive the failover it describes: the
+    # CGI serves this file verbatim as `sim_failover` while `status` comes from
+    # write_state, so a stale active:true makes one response contradict itself
+    # and keeps the failover badge lit on a SIM we already reverted away from.
+    rm -f "$SIM_FAILOVER_FILE"
 }
 
 execute_tier4() {
@@ -680,6 +811,7 @@ main() {
         sf_active_val=$(jq -r '(.active) | if . == null then "false" else tostring end' "$SIM_FAILOVER_FILE" 2>/dev/null)
         if [ "$sf_active_val" = "true" ]; then
             local _sf_stored_slot _sf_live_raw _sf_live_slot
+            local _sf_stored_iccid _sf_live_iccid _sf_discard _sf_verified
             _sf_stored_slot=$(jq -r '(.current_slot) | if . == null then "null" else tostring end' "$SIM_FAILOVER_FILE" 2>/dev/null)
 
             # Now that this state outlives a reboot, it can also outlive the
@@ -688,26 +820,66 @@ main() {
             # failover that is no longer in effect would leave the daemon
             # believing it owes the user a revert to a slot they already left.
             #
-            # Only DISCARD on a positive contradiction. An unreadable slot here
-            # means the modem has not finished coming up (this runs before the
-            # boot-settle sleep), not that the state is wrong — treating that as
-            # a mismatch would throw away good state on every slow boot.
+            # Two independent cross-checks, because either alone has a blind
+            # spot: the slot catches a manual slot change, the ICCID catches a
+            # different SIM pushed into the *same* slot (AT+QUIMSLOT? still says
+            # 2, so the slot check waves it through).
+            #
+            # Only DISCARD on a positive contradiction — both sides of a
+            # comparison must be readable before a difference means anything.
+            # An unreadable slot or ICCID here means the modem has not finished
+            # coming up (this runs before the boot-settle sleep), not that the
+            # state is wrong; so does an absent stored ICCID, which older state
+            # files and any failover where AT+QCCID came back empty will have.
+            # Treating either as a mismatch would throw away good state on every
+            # slow boot.
             _sf_live_raw=$(qcmd 'AT+QUIMSLOT?' 2>/dev/null)
             _sf_live_slot=$(printf '%s' "$_sf_live_raw" | grep '+QUIMSLOT:' | sed 's/.*: *//' | tr -d '\r ')
 
+            _sf_discard=""
+            _sf_verified=""
             if [ -n "$_sf_live_slot" ] && [ -n "$_sf_stored_slot" ] \
-               && [ "$_sf_stored_slot" != "null" ] \
-               && [ "$_sf_live_slot" != "$_sf_stored_slot" ]; then
-                qlog_warn "Discarding SIM failover state: recorded slot $_sf_stored_slot, modem reports $_sf_live_slot (SIM changed while daemon was down)"
+               && [ "$_sf_stored_slot" != "null" ]; then
+                if [ "$_sf_live_slot" != "$_sf_stored_slot" ]; then
+                    _sf_discard="recorded slot $_sf_stored_slot, modem reports $_sf_live_slot (slot changed while daemon was down)"
+                else
+                    _sf_verified="slot"
+                fi
+            fi
+
+            # Skipped once the slot already contradicted: the state is going
+            # away regardless, and this spares a second AT read on a modem that
+            # may still be booting.
+            if [ -z "$_sf_discard" ]; then
+                # iccid_canonicalize() comes from profile_mgr.sh (sourced above,
+                # same place auto_apply_profile does; identity fallback there if
+                # that library is absent) and strips the trailing
+                # BCD pad 'F' the modem reports, which only some readers in this
+                # tree keep — comparing raw would flag a false mismatch.
+                _sf_stored_iccid=$(jq -r '(.current_iccid) | if . == null then "" else tostring end' "$SIM_FAILOVER_FILE" 2>/dev/null)
+                _sf_stored_iccid=$(iccid_canonicalize "$_sf_stored_iccid")
+                _sf_live_iccid=$(qcmd 'AT+QCCID' 2>/dev/null | grep '+QCCID:' | sed 's/+QCCID: //g' | tr -d '\r ')
+                _sf_live_iccid=$(iccid_canonicalize "$_sf_live_iccid")
+
+                if [ -n "$_sf_live_iccid" ] && [ -n "$_sf_stored_iccid" ] \
+                   && [ "$_sf_live_iccid" != "$_sf_stored_iccid" ]; then
+                    _sf_discard="recorded ICCID ...$(printf '%s' "$_sf_stored_iccid" | tail -c 4), modem reports ...$(printf '%s' "$_sf_live_iccid" | tail -c 4) (different SIM in slot $_sf_stored_slot while daemon was down)"
+                elif [ -n "$_sf_live_iccid" ] && [ -n "$_sf_stored_iccid" ]; then
+                    _sf_verified="${_sf_verified:+$_sf_verified+}iccid"
+                fi
+            fi
+
+            if [ -n "$_sf_discard" ]; then
+                qlog_warn "Discarding SIM failover state: $_sf_discard"
                 rm -f "$SIM_FAILOVER_FILE"
             else
                 sim_failover_active="true"
                 original_sim_slot=$(jq -r '(.original_slot) | if . == null then "null" else tostring end' "$SIM_FAILOVER_FILE" 2>/dev/null)
                 current_sim_slot="$_sf_stored_slot"
-                if [ -z "$_sf_live_slot" ]; then
-                    qlog_info "Resuming SIM failover state: slot $original_sim_slot → $current_sim_slot (slot unverified — modem not ready yet)"
+                if [ -z "$_sf_verified" ]; then
+                    qlog_info "Resuming SIM failover state: slot $original_sim_slot → $current_sim_slot (unverified — modem not ready yet)"
                 else
-                    qlog_info "Resuming SIM failover state: slot $original_sim_slot → $current_sim_slot"
+                    qlog_info "Resuming SIM failover state: slot $original_sim_slot → $current_sim_slot (verified by $_sf_verified)"
                 fi
             fi
         fi

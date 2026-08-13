@@ -25,18 +25,37 @@ export interface SystemSettingsResponse {
 
 // Response to a `save_settings` POST.
 //
-// `hostname` doubles as the display name and as the source of the system
-// hostname, and those two can disagree: the display name is stored by the CGI
-// and effectively always succeeds, while applying the system hostname goes
-// through a root helper that can fail (most plausibly on a device that has not
-// yet taken the update carrying that helper). Folding both into `success`
-// would make a failed apply read as a failed rename and discard a name that
-// was in fact saved — so the apply result gets its own optional field, present
-// only when there is something to report.
+// Two of the fields this action saves have two halves that can disagree: the
+// value the CGI stores, and a privileged side effect derived from it.
+// `hostname` is both the display name and the system hostname; `timezone` is
+// both the stored preference and /etc/localtime. In both cases the store
+// effectively always succeeds, while the apply goes through a root helper that
+// genuinely can fail — a device that has not yet taken the update carrying
+// that helper, or one without the zoneinfo database installed.
+//
+// Folding an apply failure into `success` would make it read as a failed save
+// and have the client discard a value the device does in fact hold. So each
+// apply reports through its own pair of optional fields, present only when
+// that half failed; a consumer that does not know a field ignores it
+// harmlessly.
 export interface SaveSettingsResponse {
   success: boolean;
   hostname_applied?: boolean;
   hostname_apply_error?: string;
+  timezone_applied?: boolean;
+  timezone_apply_error?: string;
+}
+
+// Body of any successful settings POST, as `useSystemSettings` hands it back.
+// The two actions answer with different halves of this shape —
+// `save_settings` with the apply results above, `save_scheduled_reboot` with
+// the schedule it just wrote — and neither promises the other's fields, so
+// every action-specific field stays optional. `error`/`detail` come from
+// cgi_error() on the failure path.
+export interface SaveActionResponse extends SaveSettingsResponse {
+  scheduled_reboot?: ScheduleConfig;
+  error?: string;
+  detail?: string;
 }
 
 // --- Day Labels (shared with tower locking) --------------------------------

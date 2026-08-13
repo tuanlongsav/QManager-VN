@@ -5,6 +5,7 @@ import { authFetch } from "@/lib/auth-fetch";
 import type {
   SystemSettings,
   ScheduleConfig,
+  SaveActionResponse,
   SystemSettingsResponse,
 } from "@/types/system-settings";
 
@@ -44,8 +45,15 @@ export interface UseSystemSettingsReturn {
   isLoading: boolean;
   isSaving: boolean;
   error: string | null;
-  saveSettings: (payload: SaveSettingsPayload) => Promise<boolean>;
-  saveScheduledReboot: (payload: SaveScheduledRebootPayload) => Promise<boolean>;
+  // The response body on success, `false` on failure — not a plain boolean,
+  // because a save can succeed while a privileged apply inside it did not
+  // (see SaveSettingsResponse), and the caller is the only one that can word
+  // that warning. `false` rather than null keeps the falsy branch of every
+  // existing `if (result)` caller behaving exactly as it did.
+  saveSettings: (payload: SaveSettingsPayload) => Promise<SaveActionResponse | false>;
+  saveScheduledReboot: (
+    payload: SaveScheduledRebootPayload,
+  ) => Promise<SaveActionResponse | false>;
   refresh: () => void;
 }
 
@@ -115,7 +123,7 @@ export function useSystemSettings(): UseSystemSettingsReturn {
       payload:
         | SaveSettingsPayload
         | SaveScheduledRebootPayload,
-    ): Promise<boolean> => {
+    ): Promise<SaveActionResponse | false> => {
       setError(null);
       setIsSaving(true);
 
@@ -130,7 +138,7 @@ export function useSystemSettings(): UseSystemSettingsReturn {
           throw new Error(`HTTP ${resp.status}: ${resp.statusText}`);
         }
 
-        const json = await resp.json();
+        const json: SaveActionResponse = await resp.json();
         if (!mountedRef.current) return false;
 
         if (!json.success) {
@@ -150,7 +158,10 @@ export function useSystemSettings(): UseSystemSettingsReturn {
           await fetchSettings(true);
         }
 
-        return true;
+        // Hand the body back rather than a bare `true`: the apply-result
+        // fields only exist here, and dropping them is how a timezone that
+        // saved but never reached the clock ended up under a green toast.
+        return json;
       } catch (err) {
         if (!mountedRef.current) return false;
         setError(

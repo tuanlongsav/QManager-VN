@@ -1,9 +1,19 @@
 #!/usr/bin/env bash
-# Fast pre-build gate for QManager. Two checks only:
+# Pre-build gate for QManager. Four checks:
 #   1. bash -n syntax check across daemons, libraries, CGI handlers, harnesses
 #   2. CRLF detector (warn-only — installer normalizes on-device)
+#   3. iCloud/Finder conflict-copy detector (warn-only)
+#   4. i18n dictionary parity (en.json vs vi.json) — fatal
 #
-# Exits non-zero on first syntax failure. CRLF section never fails.
+# Fatal: a syntax failure (every bad file is reported, then the run aborts) or
+# an i18n parity failure. The two warn-only sections never fail the build.
+#
+# Cost: ~3 s wall on a dev machine, of which step 4 alone is ~2 s — it spawns
+# two jq processes per shared dictionary key (~600 at the current ~310 keys),
+# each behind a grep/sort/tr pipeline. So this gate now scales with the
+# dictionary, not with the shell tree. Still cheap enough to sit in front of
+# every `bun run package`, but it is no longer instant; if it ever stops
+# feeling free, step 4 is the one to look at.
 # Run from repo root via `bash scripts/test/run-all.sh` or `bun run package`.
 #
 # Functional harnesses (jq-dependent) live in scripts/test/*.sh and run via

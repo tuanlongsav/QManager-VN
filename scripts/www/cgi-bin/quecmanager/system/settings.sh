@@ -115,39 +115,35 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
         qlog_info "Saving system settings"
         qm_config_init
 
-        val=""
+        # --- Pass 1: parse the whole payload and validate it as a unit -------
+        #
+        # Each field used to be written the instant it was parsed, so a
+        # rejection later in the body left the earlier fields already committed
+        # while the client got success:false and re-rendered from its old
+        # state — the device and the UI silently disagreeing about three
+        # settings. Parse everything, reject the payload as a whole, and only
+        # then write. Same two-pass shape as
+        # scripts/www/cgi-bin/quecmanager/monitoring/watchdog.sh.
+        #
+        # Only temp_unit and distance_unit have a domain to validate. A display
+        # name is free-form by design (sys_hostname_label derives the kernel
+        # label from it) and the timezone table lives in the frontend, so
+        # neither can be rejected here. What those two have instead is a
+        # privileged apply step that can fail for environmental reasons — not a
+        # validation failure, and handled in pass 2.
+        p_hostname=$(printf '%s' "$POST_DATA" | jq -r '.hostname // empty')
+        p_temp_unit=$(printf '%s' "$POST_DATA" | jq -r '.temp_unit // empty')
+        p_distance_unit=$(printf '%s' "$POST_DATA" | jq -r '.distance_unit // empty')
+        p_timezone=$(printf '%s' "$POST_DATA" | jq -r '.timezone // empty')
+        p_zonename=$(printf '%s' "$POST_DATA" | jq -r '.zonename // empty')
 
         # --- WAN Guard toggle ---
         # Not ported to RM520N-GL; silently ignore
-        # val=$(printf '%s' "$POST_DATA" | jq -r 'if has("wan_guard_enabled") then (.wan_guard_enabled | tostring) else "" end')
+        # p_wan_guard=$(printf '%s' "$POST_DATA" | jq -r 'if has("wan_guard_enabled") then (.wan_guard_enabled | tostring) else "" end')
 
-        # --- Hostname (display name) ---
-        # This field carries two things at once. The display name the sidebar
-        # renders is saved by qm_config_set and, from the user's point of view,
-        # simply succeeds. The system hostname derived from it goes through a
-        # root helper and genuinely can fail — most plausibly on a device that
-        # has not yet taken the update carrying the helper and its sudoers rule,
-        # where sudo refuses the call outright.
-        #
-        # Those two must not share one success flag. nav-user.tsx treats
-        # success:false as "the rename failed", discarding the name the user
-        # just typed and leaving the dialog open — even though that name was
-        # stored. So the save stays successful and the apply result travels in
-        # its own field, which older consumers ignore harmlessly.
-        hostname_applied="true"
-        val=$(printf '%s' "$POST_DATA" | jq -r '.hostname // empty')
-        if [ -n "$val" ]; then
-            if ! sys_set_hostname "$val"; then
-                hostname_applied="false"
-                qlog_warn "Display name saved but system hostname could not be applied"
-            fi
-        fi
-
-        # --- Temperature unit ---
-        val=$(printf '%s' "$POST_DATA" | jq -r '.temp_unit // empty')
-        if [ -n "$val" ]; then
-            case "$val" in
-                celsius|fahrenheit) qm_config_set settings temp_unit "$val" ;;
+        if [ -n "$p_temp_unit" ]; then
+            case "$p_temp_unit" in
+                celsius|fahrenheit) ;;
                 *)
                     cgi_error "invalid_temp_unit" "temp_unit must be 'celsius' or 'fahrenheit'"
                     exit 0
@@ -155,11 +151,9 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
             esac
         fi
 
-        # --- Distance unit ---
-        val=$(printf '%s' "$POST_DATA" | jq -r '.distance_unit // empty')
-        if [ -n "$val" ]; then
-            case "$val" in
-                km|miles) qm_config_set settings distance_unit "$val" ;;
+        if [ -n "$p_distance_unit" ]; then
+            case "$p_distance_unit" in
+                km|miles) ;;
                 *)
                     cgi_error "invalid_distance_unit" "distance_unit must be 'km' or 'miles'"
                     exit 0
@@ -167,35 +161,111 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
             esac
         fi
 
-        # --- Timezone ---
-        val=$(printf '%s' "$POST_DATA" | jq -r '.timezone // empty')
-        zn=$(printf '%s' "$POST_DATA" | jq -r '.zonename // empty')
-        if [ -n "$val" ]; then
-            # Check the result. sys_set_timezone now reports a real failure
-            # (missing zoneinfo database, unwritable /etc, helper not
-            # installed), and swallowing it here would reproduce the exact bug
-            # this endpoint was fixed for: the picker answering {"success":true}
-            # while the clock never moved. The preference is already persisted
-            # at this point, so the message says the value was saved but not
-            # applied rather than implying nothing happened.
-            if ! sys_set_timezone "$val" "$zn"; then
-                cgi_error "timezone_apply_failed" \
-                    "Saved the preference but could not apply the timezone — the zoneinfo database may be missing. Retry after: opkg update && opkg install zoneinfo-all"
+        # --- Pass 2: everything validated — commit ---------------------------
+        #
+        # Two different failures live in this pass and the response must keep
+        # them apart:
+        #
+        #   a failed WRITE — qm_config_set returns non-zero when jq errors or
+        #     when the write would leave an empty config. Nothing was stored,
+        #     so the only honest answer is success:false; anything else shows
+        #     the user a value the device does not hold.
+        #
+        #   a failed APPLY — the value IS stored, only the privileged side
+        #     effect (system hostname, /etc/localtime) did not land. Folding
+        #     that into success:false makes the client discard a value that was
+        #     in fact saved: nav-user.tsx reads success:false as "the rename
+        #     failed" and drops the name the user just typed. So the save stays
+        #     successful and the apply result travels in its own field, which
+        #     consumers that do not know the field ignore harmlessly.
+        hostname_applied="true"
+        hostname_apply_error=""
+        timezone_applied="true"
+        timezone_apply_error=""
+
+        # --- Hostname (display name) ---
+        # This field carries two things at once: the display name the sidebar
+        # renders, and the system hostname derived from it. The apply half goes
+        # through a root helper and genuinely can fail — most plausibly on a
+        # device that has not yet taken the update carrying the helper and its
+        # sudoers rule, where sudo refuses the call outright.
+        if [ -n "$p_hostname" ]; then
+            sys_set_hostname "$p_hostname"
+            case "$?" in
+                0) ;;
+                1)
+                    hostname_applied="false"
+                    hostname_apply_error="Saved the display name, but it could not be applied as the system hostname. Updating QManager installs the helper this needs."
+                    qlog_warn "Display name saved but system hostname could not be applied"
+                    ;;
+                *)
+                    cgi_error "hostname_save_failed" \
+                        "Could not save the display name — writing the configuration file failed."
+                    exit 0
+                    ;;
+            esac
+        fi
+
+        # --- Temperature unit ---
+        if [ -n "$p_temp_unit" ]; then
+            if ! qm_config_set settings temp_unit "$p_temp_unit"; then
+                cgi_error "temp_unit_save_failed" \
+                    "Could not save the temperature unit — writing the configuration file failed."
                 exit 0
             fi
+        fi
+
+        # --- Distance unit ---
+        if [ -n "$p_distance_unit" ]; then
+            if ! qm_config_set settings distance_unit "$p_distance_unit"; then
+                cgi_error "distance_unit_save_failed" \
+                    "Could not save the distance unit — writing the configuration file failed."
+                exit 0
+            fi
+        fi
+
+        # --- Timezone ---
+        # sys_set_timezone reports a real apply failure (missing zoneinfo
+        # database, unwritable /etc, helper not installed), and swallowing it
+        # would reproduce the exact bug this endpoint was fixed for: the picker
+        # answering {"success":true} while the clock never moved. But an APPLY
+        # failure must not abort either — aborting here discarded
+        # hostname_applied, so a request that renamed the device AND changed
+        # the zone lost the hostname warning entirely. Report it the way the
+        # hostname is. A STORE failure (rc 2) is a different thing and does
+        # still abort: nothing was written, so success:false is the truth, and
+        # a "saved but not applied" warning alongside it would contradict it.
+        if [ -n "$p_timezone" ]; then
+            sys_set_timezone "$p_timezone" "$p_zonename"
+            case "$?" in
+                0) ;;
+                1)
+                    timezone_applied="false"
+                    timezone_apply_error="Saved the timezone preference, but it could not be applied — the zoneinfo database may be missing. Retry after: opkg update && opkg install zoneinfo-all"
+                    qlog_warn "Timezone saved but could not be applied to the running system"
+                    ;;
+                *)
+                    cgi_error "timezone_save_failed" \
+                        "Could not save the timezone — writing the configuration file failed."
+                    exit 0
+                    ;;
+            esac
         fi
 
         # AT device is hardcoded to /dev/smd11 via atcli_smd11 — no override needed
 
         qlog_info "System settings saved"
         # Keep the ordinary response byte-identical to what it has always been;
-        # the extra fields appear only when there is something to report.
-        if [ "$hostname_applied" = "false" ]; then
-            jq -n '{
-                success: true,
-                hostname_applied: false,
-                hostname_apply_error: "Saved the display name, but it could not be applied as the system hostname. Updating QManager installs the helper this needs."
-            }'
+        # each warning field appears only when that half actually failed.
+        if [ "$hostname_applied" = "false" ] || [ "$timezone_applied" = "false" ]; then
+            jq -n \
+                --argjson hn_applied "$hostname_applied" \
+                --arg hn_error "$hostname_apply_error" \
+                --argjson tz_applied "$timezone_applied" \
+                --arg tz_error "$timezone_apply_error" \
+                '{success: true}
+                 + (if $hn_applied then {} else {hostname_applied: false, hostname_apply_error: $hn_error} end)
+                 + (if $tz_applied then {} else {timezone_applied: false, timezone_apply_error: $tz_error} end)'
         else
             echo '{"success":true}'
         fi
@@ -253,13 +323,24 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
         [ -z "$SCHED_TIME" ] && SCHED_TIME="04:00"
         [ -z "$DAYS_RAW" ] && DAYS_RAW="0,1,2,3,4,5,6"
 
-        # Write to config
+        # Write to config.
+        #
+        # Bail on the first failed write and leave the crontab alone. The cron
+        # entry is what actually reboots the device; the config is what the UI
+        # reads back. Installing a cron line for a schedule the config does not
+        # hold would give the user a device that reboots at a time no page ever
+        # shows — the worst of the two possible mismatches.
+        sched_write_failed() {
+            cgi_error "sched_save_failed" \
+                "Could not save the reboot schedule — writing the configuration file failed. The existing cron entry was left untouched."
+            exit 0
+        }
         case "$ENABLED" in
-            true)  qm_config_set settings sched_reboot_enabled 1 ;;
-            false) qm_config_set settings sched_reboot_enabled 0 ;;
+            true)  qm_config_set settings sched_reboot_enabled 1 || sched_write_failed ;;
+            false) qm_config_set settings sched_reboot_enabled 0 || sched_write_failed ;;
         esac
-        qm_config_set settings sched_reboot_time "$SCHED_TIME"
-        qm_config_set settings sched_reboot_days "$DAYS_RAW"
+        qm_config_set settings sched_reboot_time "$SCHED_TIME" || sched_write_failed
+        qm_config_set settings sched_reboot_days "$DAYS_RAW" || sched_write_failed
 
         # --- Manage crontab (write directly to root's crontab file) ---
         # CGI runs as www-data but scheduled scripts need root.

@@ -91,10 +91,42 @@ run_helper() {
     HELPER_OUT=$(sh "$HELPER" "$@" 2>/dev/null) && HELPER_RC=0 || HELPER_RC=$?
 }
 
+# The trap must remove both the probe and the temp hostname file on every exit
+# path, success or failure. Matching is by shape, not by name: the helper
+# suffixes its scratch paths with $$, so their names are not knowable from here
+# — and this check previously spelled out the two pre-$$ literals, which meant
+# that from the moment the suffix was added no path it tested could exist any
+# more. It went vacuously true and kept 13 assertions green while checking
+# nothing, which is worse than a red suite because it hides the next leak.
+#
+# The discriminator that survives a rename: every scratch path these helpers
+# use is a dotfile, while everything they legitimately install is not
+# (hostname here, localtime/TZ in the timezone helper). So the invariant is
+# simply "no dotfile survives in /etc", and it keeps holding if the scratch
+# names change again.
+#
+# Two shell quirks the loop below has to absorb, because this harness runs
+# under whatever bash the dev box has and the same logic has to hold for
+# BusyBox ash on the device:
+#   - `.` and `..`. Bash 5.2 enables `globskipdots` by default and omits them;
+#     older bash and BusyBox ash both return them. Skip them explicitly.
+#   - An unmatched glob stays literal in POSIX sh, so with globskipdots and a
+#     clean /etc the loop sees the pattern itself and nothing else — hence the
+#     existence test, without which every run would report `.*` as debris.
+# `-L` alongside `-e` because `-e` is false on a *broken* symlink, and a
+# symlink whose target went away is exactly the debris a half-finished rename
+# leaves behind (the timezone helper stages one).
 debris_free() {
-    # The trap must remove both the probe and the temp hostname file on every
-    # exit path, success or failure.
-    [ ! -e "$ETC/.hostname.qm" ] && [ ! -e "$ETC/.qm_hn_probe" ]
+    debris_found=""
+    for debris_item in "$ETC"/.*; do
+        case "${debris_item##*/}" in
+            .|..) continue ;;
+        esac
+        if [ -e "$debris_item" ] || [ -L "$debris_item" ]; then
+            debris_found="$debris_found ${debris_item##*/}"
+        fi
+    done
+    [ -z "$debris_found" ]
 }
 
 json_field() {
@@ -136,7 +168,7 @@ fi
 if debris_free; then
     pass "no temp files left after success"
 else
-    fail "no temp files left after success"
+    fail "no temp files left after success — left behind:$debris_found"
 fi
 
 f=$(json_field '.success')
@@ -188,7 +220,7 @@ reject_case() {
     if debris_free; then
         pass "rejected: $desc leaves no debris"
     else
-        fail "rejected: $desc leaves no debris"
+        fail "rejected: $desc leaves no debris — left behind:$debris_found"
     fi
 }
 

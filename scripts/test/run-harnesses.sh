@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
 # Functional harness runner. Discovers and runs every scripts/test/*.sh
-# (excluding self and run-all.sh). Most assertions depend on jq.
+# (excluding self, run-all.sh and i18n-parity.sh — see the skip list below).
+# Most assertions depend on jq.
 #
 # Run from repo root via `bash scripts/test/run-harnesses.sh` or
 # `bun run test:harness`.
 #
-# This is the deeper test pass — run-all.sh only does syntax + CRLF and
-# stays cheap enough to gate every `bun run package`.
+# This is the deeper, slower pass: it executes the shipped shell against
+# fixtures. run-all.sh is the cheap pre-build gate in front of every
+# `bun run package` — four checks (bash -n syntax, CRLF, conflict copies, i18n
+# parity), ~3 s wall of which the parity step alone is ~2 s.
 set -euo pipefail
 
 # When invoked from bun on Windows (e.g. `bun run test:harness` from
@@ -46,7 +49,15 @@ harness_count=0
 for h in scripts/test/*.sh; do
     [ -f "$h" ] || continue
     name=$(basename "$h")
-    case "$name" in run-all.sh|run-harnesses.sh) continue ;; esac
+    # i18n-parity.sh is skipped here rather than run twice. It is not a
+    # functional harness — it diffs the two frontend dictionaries and puts no
+    # shell under test — and run-all.sh already runs it as a fatal step, so
+    # nothing can be packaged past a parity break whether or not this runner
+    # touches it. Discovering it here as well bought a second ~2 s pass (about
+    # a tenth of this runner's wall time) of a read-only, idempotent check:
+    # cost without signal. To check parity on its own, run it directly:
+    # `bash scripts/test/i18n-parity.sh`.
+    case "$name" in run-all.sh|run-harnesses.sh|i18n-parity.sh) continue ;; esac
     harness_count=$((harness_count + 1))
     printf '\n-- %s --\n' "$name"
     "$BASH" "$h" || fail "harness $name failed"

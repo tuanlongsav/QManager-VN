@@ -350,6 +350,11 @@ log_error() { qlog_error "$1"; }
 # Profile manager (for boot-time profile auto-apply)
 . /usr/lib/qmanager/profile_mgr.sh 2>/dev/null || {
     auto_apply_profile() { :; }
+    # Identity fallback, not a no-op: an undefined iccid_canonicalize would
+    # expand to nothing and make every ICCID compare equal to every other.
+    # Passing the value through degrades to the old (pad-blind) matching
+    # instead of matching the wrong profile.
+    iccid_canonicalize() { printf '%s' "$1"; }
 }
 
 # Hardware detection (QManager-VN: one-shot at boot — writes hardware.json
@@ -933,6 +938,17 @@ collect_boot_data() {
     LAST_ICCID_FILE="/etc/qmanager/last_iccid"
     SIM_SWAP_FLAG="/tmp/qmanager_sim_swap_detected"
     if [ -n "$boot_iccid" ]; then
+        # Profile JSONs store the ICCID with the trailing BCD pad nibble 'F'
+        # stripped (see iccid_canonicalize in profile_mgr.sh); AT+QCCID reports
+        # it. So for any 19-digit ICCID the live value and the saved one never
+        # compare equal. Canonicalize into a separate variable instead of
+        # rewriting $boot_iccid: $LAST_ICCID_FILE has been written in the raw
+        # form by every previous boot, so normalizing at the source would make
+        # the first boot after this change look like a SIM swap on every
+        # affected device. Only comparisons against profile data are switched.
+        local boot_iccid_canon
+        boot_iccid_canon=$(iccid_canonicalize "$boot_iccid")
+
         if [ -f "$LAST_ICCID_FILE" ]; then
             local stored_iccid
             stored_iccid=$(cat "$LAST_ICCID_FILE" 2>/dev/null | tr -d ' \r\n')
@@ -943,8 +959,10 @@ collect_boot_data() {
                 for pf in /etc/qmanager/profiles/*.json; do
                     [ -f "$pf" ] || continue
                     local pf_iccid
-                    pf_iccid=$(jq -r '(.sim_iccid) | if . == null then empty else . end' "$pf" 2>/dev/null)
-                    if [ "$pf_iccid" = "$boot_iccid" ]; then
+                    # Canonicalize the saved side too — profiles written before
+                    # iccid_canonicalize existed still carry the pad nibble.
+                    pf_iccid=$(iccid_canonicalize "$(jq -r '(.sim_iccid) | if . == null then empty else . end' "$pf" 2>/dev/null)")
+                    if [ -n "$pf_iccid" ] && [ "$pf_iccid" = "$boot_iccid_canon" ]; then
                         match_name=$(jq -r '(.name) | if . == null then empty else . end' "$pf" 2>/dev/null)
                         match_id=$(jq -r '(.id) | if . == null then empty else . end' "$pf" 2>/dev/null)
                         break
@@ -971,11 +989,14 @@ collect_boot_data() {
             local _ap_id _ap_iccid _ap_name
             _ap_id=$(cat "$_ap_file" 2>/dev/null | tr -d ' \r\n')
             if [ -n "$_ap_id" ] && [ -f "/etc/qmanager/profiles/${_ap_id}.json" ]; then
-                _ap_iccid=$(jq -r '(.sim_iccid) | if . == null then empty else . end' "/etc/qmanager/profiles/${_ap_id}.json" 2>/dev/null)
-                if [ -n "$_ap_iccid" ] && [ "$_ap_iccid" != "$boot_iccid" ]; then
+                # Same pad-nibble skew as the swap check above, but here it
+                # inverts into a false *mismatch*: an un-canonicalized compare
+                # deactivates a perfectly valid profile on every boot.
+                _ap_iccid=$(iccid_canonicalize "$(jq -r '(.sim_iccid) | if . == null then empty else . end' "/etc/qmanager/profiles/${_ap_id}.json" 2>/dev/null)")
+                if [ -n "$_ap_iccid" ] && [ "$_ap_iccid" != "$boot_iccid_canon" ]; then
                     _ap_name=$(jq -r '(.name) | if . == null then empty else . end' "/etc/qmanager/profiles/${_ap_id}.json" 2>/dev/null)
                     rm -f "$_ap_file"
-                    qlog_warn "Auto-deactivated profile '$_ap_name' — SIM ICCID mismatch (profile: ...$(printf '%s' "$_ap_iccid" | tail -c 4), current: ...$(printf '%s' "$boot_iccid" | tail -c 4))"
+                    qlog_warn "Auto-deactivated profile '$_ap_name' — SIM ICCID mismatch (profile: ...$(printf '%s' "$_ap_iccid" | tail -c 4), current: ...$(printf '%s' "$boot_iccid_canon" | tail -c 4))"
                     append_event "profile_deactivated" "Profile '$_ap_name' auto-deactivated (SIM mismatch)" "warning"
                 fi
             fi

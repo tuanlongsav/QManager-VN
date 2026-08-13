@@ -659,7 +659,7 @@ Manages iptables rules restricting web UI access (ports 80/443) to trusted inter
 
 **Location:** `/usr/bin/qmanager_imei_check`
 
-One-shot check that runs after boot if `/etc/qmanager/imei_check_pending` exists. Reads `/etc/qmanager/imei_backup.json` and verifies/restores IMEI settings. The systemd unit's `ExecStartPre` guards skip the service if the pending marker or backup file is absent.
+One-shot check that runs after boot if `/etc/qmanager/imei_check_pending` exists. Reads `/etc/qmanager/imei_backup.json` and verifies/restores IMEI settings. The systemd unit's `ExecCondition` guard skips the service if the pending marker or backup file is absent, or if the backup has `enabled != true` -- skipping is not a failure, so the (majority) devices that never enabled IMEI persistence do not boot with a failed unit. See the start-gating note in §6 for why this is `ExecCondition` and not `ExecStartPre`.
 
 #### `qmanager_mtu_apply`
 
@@ -798,16 +798,22 @@ The limit is applied as an **advertise mask** with autoneg left on, not as a for
 | `qmanager-cfun-fix.service` | oneshot (RemainAfterExit) | `/usr/bin/qmanager_cfun_fix` | Boot-time radio recovery; `ExecStartPre` waits up to 30 s for `/dev/smd11`; after setup, before poller |
 | `qmanager-ethernet.service` | oneshot (RemainAfterExit) | `/usr/bin/qmanager_ethernet_apply` | Reapplies the saved `eth0` speed limit at boot; `ConditionPathExists=/etc/qmanager/ethernet_speed` |
 | `qmanager-firewall.service` | oneshot | `/usr/bin/qmanager_firewall` | Port firewall; runs before setup and lighttpd |
-| `qmanager-imei-check.service` | oneshot | `/usr/bin/qmanager_imei_check` | Post-boot IMEI restore; guarded by `ExecStartPre` condition checks |
+| `qmanager-imei-check.service` | oneshot | `/usr/bin/qmanager_imei_check` | Post-boot IMEI restore; skipped via `ExecCondition` unless the pending marker and backup both exist and the backup is `enabled` |
 | `qmanager-mtu.service` | simple | `/usr/bin/qmanager_mtu_apply` | MTU persistence; `ConditionPathExists=/etc/firewall.user.mtu` |
 | `qmanager-ping.service` | simple | `/usr/bin/qmanager_ping` | Ping daemon; required by poller |
 | `qmanager-poller.service` | simple | `/usr/bin/qmanager_poller` | Main data poller; guards `/dev/smd11` in `ExecStartPre`; sources Data Used (schema v4, with per-boot orientation detection) from `/proc/net/dev` at the 2 s Tier 1 cadence |
 | `qmanager-setup.service` | oneshot (RemainAfterExit) | `/usr/bin/qmanager_setup` | Permission setup; before ping and poller |
-| `qmanager-tower-failover.service` | simple | `/usr/bin/qmanager_tower_failover` | Tower lock failover; guarded by config check in `ExecStartPre` |
+| `qmanager-tower-failover.service` | simple | `/usr/bin/qmanager_tower_failover` | Tower lock failover; skipped via `ExecCondition` unless `tower_lock.json` has failover plus an LTE or NR-SA lock enabled |
 | `qmanager-ttl.service` | oneshot (RemainAfterExit) | inline sh | TTL/HL rule persistence; `ConditionPathExists=/etc/qmanager/ttl_state` |
-| `qmanager-watchcat.service` | simple | `/usr/bin/qmanager_watchcat` | Connection watchdog; guarded by `qm_config_get watchcat enabled` |
+| `qmanager-watchcat.service` | simple | `/usr/bin/qmanager_watchcat` | Connection watchdog; skipped via `ExecCondition` unless `qm_config_get watchcat enabled` is `1` |
 
 **Service ordering:** `qmanager-firewall` -> `qmanager-setup` -> `qmanager-ping` -> `qmanager-poller` -> `qmanager-watchcat`.
+
+**Start gating -- `Condition*` vs `ExecCondition` vs `ExecStartPre`:** Most QManager units are for optional features, so on a given device they should frequently do *nothing*. Doing nothing must mean **skip**, not **fail**: a failing `ExecStartPre` marks the unit `failed`, so an entirely healthy boot ends with red entries in `systemctl --failed`, and on a unit that also sets `Restart=on-failure` (watchcat) systemd retries the guaranteed-to-fail start until `StartLimitBurst` is exhausted. Pick the gate in this order:
+
+- **`Condition*` in `[Unit]`** -- a plain file or executable test (`qmanager-ethernet`, `qmanager-mtu`, `qmanager-ttl`). These directives are only honoured in the `[Unit]` section; put them under `[Service]` and systemd silently ignores them, so the unit runs unconditionally and `ExecStart` fails on every device where the feature is off.
+- **`ExecCondition`** -- when the test needs real logic: several checks that must *all* hold, or a `jq`/config lookup (`qmanager-imei-check`, `qmanager-tower-failover`, `qmanager-watchcat`). systemd reads an `ExecCondition` exit of 1-254 as "skip this unit quietly" and only 255-or-signal as an error. Repeated `Condition*` lines of the same type are ORed together, which is exactly why the multi-check units cannot express their guard with `Condition*` and need a script. Needs systemd >= 243; this platform ships 244.
+- **`ExecStartPre`** -- only for work that genuinely has to run before `ExecStart` and where failing *is* the correct outcome: the `/dev/smd11` wait loops in `qmanager-cfun-fix` and `qmanager-poller` (no AT device means the daemon truly cannot run) and the `sleep 5` settle delay in `qmanager-ttl`.
 
 ---
 

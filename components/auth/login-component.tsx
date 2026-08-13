@@ -17,6 +17,37 @@ import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 
 // =============================================================================
+// Backend error code -> translation key
+// =============================================================================
+// The login CGI's `error` field is a machine-readable code, not prose
+// ("invalid_password", "rate_limited" — see auth/login.sh); its `detail` field
+// is an English sentence. useLogin keeps them apart, so `result.code` is what
+// this map keys on. Matching the sentence instead would break silently the day
+// someone reworded a string in login.sh; an unrecognized code merely degrades
+// to the generic localized message and logs the backend's own words for a
+// maintainer.
+//
+// A Map rather than an object literal: the key comes off the wire, and `Map`
+// has no prototype chain for a value like "constructor" to fall through into.
+//
+// Two codes login.sh can emit are deliberately absent — `password_too_short`
+// and `password_mismatch` are setup-mode only, and useLogin's `login()` never
+// sends `confirm`, so the CGI answers `setup_required` instead of reaching
+// them. `setup_required` itself is handled before this lookup.
+const LOGIN_ERROR_KEYS = new Map<string, string>([
+  ["invalid_password", "login.invalidPassword"],
+  ["missing_password", "login.missingPassword"],
+  ["no_body", "login.requestFailed"],
+  // The 429 normally arrives with retry_after and drives the countdown below;
+  // this covers the malformed case where that field is missing, leaving no
+  // number to count down from.
+  ["rate_limited", "login.rateLimitedUnknown"],
+  // Not a backend code — useLogin's own sentinel for a request that never
+  // came back as parseable JSON.
+  ["connection_failed", "login.connectionFailed"],
+]);
+
+// =============================================================================
 // LoginComponent
 // =============================================================================
 
@@ -57,18 +88,32 @@ export default function LoginComponent() {
       setIsSubmitting(true);
       try {
         const result = await login(password);
-        if (!result.success) {
-          if (result.retry_after) {
-            setRetryAfter(result.retry_after);
-            setError(
-              t("login.rateLimited", { seconds: result.retry_after })
-            );
-          } else {
-            // result.error comes from the CGI and is not translated — prefer
-            // the localized generic message over an English backend string.
-            setError(result.error || t("login.invalidPassword"));
-          }
+        if (result.success) return;
+
+        // useLogin already flipped status to "setup_required", so the redirect
+        // effect above takes over and this component renders the spinner
+        // instead of the form — there is no error left to show.
+        if (result.code === "setup_required") return;
+
+        if (result.retry_after) {
+          setRetryAfter(result.retry_after);
+          setError(t("login.rateLimited", { seconds: result.retry_after }));
+          return;
         }
+
+        const mapped = result.code
+          ? LOGIN_ERROR_KEYS.get(result.code)
+          : undefined;
+        if (!mapped) {
+          // Neither the code nor the backend's English sentence is fit for the
+          // UI, but a maintainer with the console open should still see both.
+          console.warn(
+            "[login] unmapped backend error:",
+            result.code ?? "(no code)",
+            result.detail ?? ""
+          );
+        }
+        setError(t(mapped ?? "login.invalidPassword"));
       } finally {
         setIsSubmitting(false);
       }

@@ -12,6 +12,10 @@
     "locked": "Đã khoá ({{seconds}}s)",
     "invalidPassword": "Mật khẩu không đúng.",
     "rateLimited": "Sai quá nhiều lần. Thử lại sau {{seconds}} giây.",
+    "rateLimitedUnknown": "Sai quá nhiều lần. Đợi một lát rồi thử lại.",
+    "missingPassword": "Vui lòng nhập mật khẩu.",
+    "requestFailed": "Không gửi được yêu cầu đăng nhập. Vui lòng thử lại.",
+    "connectionFailed": "Không kết nối được tới modem. Kiểm tra kết nối rồi thử lại.",
     "sessionEnded": "Phiên đăng nhập đã kết thúc vì thiết bị mất liên lạc quá lâu.",
     "footer": "QManager — Quản lý modem Quectel"
   },
@@ -338,5 +342,10 @@
     "composeCancel": "Huỷ",
     "composeToastSent": "Đã gửi tin nhắn",
     "composeToastFailed": "Không gửi được tin nhắn"
+  },
+  "systemSettings": {
+    "toastSaved": "Đã lưu cài đặt",
+    "toastSaveFailed": "Không lưu được cài đặt",
+    "toastTimezonePending": "Đã lưu cài đặt, nhưng chưa áp dụng được múi giờ — đồng hồ thiết bị vẫn giữ nguyên. Có thể thiếu dữ liệu múi giờ (zoneinfo)."
   }
 }

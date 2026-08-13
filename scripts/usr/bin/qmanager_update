@@ -497,6 +497,46 @@ if [ "$MODE" = "rollback" ]; then
     fi
     log "Rollback archive verified"
 
+    # 2b. Verify SHA-256 — fail closed at every step, same as install mode.
+    #
+    # verify_archive() only proves the tar opens and carries install_rm520n.sh;
+    # it says nothing about authenticity, and what follows runs that installer
+    # as root. Rollback is the UI's recovery action after a bad update, so it is
+    # the moment a user is least likely to notice that what came down the wire
+    # is not what they asked for — the weakest verification belongs anywhere but
+    # here. Fail-closed cannot strand a half-broken device either: every abort
+    # below goes through die() before run_install_with_progress() touches the
+    # installed system, so the worst case is the device keeps running the
+    # version it already booted.
+    #
+    # Ordering is load-bearing: this must run before the previous_version save
+    # in step 3, otherwise a rejected rollback still clobbers the rollback
+    # marker with the version the user was trying to roll away from.
+    write_status "verifying" "Verifying SHA-256..." "$VERSION" ""
+    checksum_url=$(derive_checksum_url "$URL")
+    checksum_file="/tmp/qmanager_rollback_sha256.txt"
+    rm -f "$checksum_file"
+
+    # cleanup() (the EXIT trap) only sweeps /tmp/qmanager_install and the PID
+    # file, so each failure path below has to drop these two itself.
+    if ! http_download "$checksum_url" "$checksum_file" 15; then
+        rm -f "$download_path" "$checksum_file"
+        die "Checksum file unavailable — refusing to install unverified update"
+    fi
+    expected_sha=$(awk '{print $1}' "$checksum_file" 2>/dev/null)
+    actual_sha=$(sha256sum "$download_path" 2>/dev/null | awk '{print $1}')
+    rm -f "$checksum_file"
+
+    if [ -z "$expected_sha" ] || [ -z "$actual_sha" ]; then
+        rm -f "$download_path"
+        die "SHA-256 could not be computed — refusing to install unverified update"
+    fi
+    if [ "$actual_sha" != "$expected_sha" ]; then
+        rm -f "$download_path"
+        die "SHA-256 mismatch — download may be corrupt or tampered"
+    fi
+    log "SHA-256 verified"
+
     # 3. Save current version so the next rollback can swap back
     write_status "installing" "Restoring previous version..." "$VERSION" ""
     current_ver=$(get_current_version)

@@ -17,6 +17,34 @@ export { isLoggedIn, clearIndicatorCookie };
 
 export type LoginStatus = "loading" | "ready" | "setup_required";
 
+/**
+ * Result of a login-page action.
+ *
+ * The auth CGI answers failures with two separate fields: `error` is a stable
+ * machine code ("invalid_password", "rate_limited" — see auth/login.sh) and
+ * `detail` is an English sentence meant for a human reading a curl dump. They
+ * are kept apart here instead of collapsed into one string, because the UI
+ * layer has to translate, and only the code is safe to match on — the sentence
+ * would silently stop matching the day someone reworded it in login.sh.
+ *
+ * `detail` is carried through anyway rather than dropped: it never reaches the
+ * screen, but it is what a maintainer wants in the browser console when a code
+ * shows up that the UI has no translation for.
+ *
+ * The standalone helpers further down (setupPassword, changePassword,
+ * changeSSHPassword) keep the older flattened `{ error }` shape — their callers
+ * render that string directly and have no translation table to key a code into.
+ */
+export interface LoginResult {
+  success: boolean;
+  /** Backend `error` code, or a client-side sentinel such as "connection_failed". */
+  code?: string;
+  /** Backend `detail` sentence, English. Diagnostics only — never render it. */
+  detail?: string;
+  /** Seconds to wait, present only on a 429. Drives the login countdown. */
+  retry_after?: number;
+}
+
 export function useLogin() {
   const [status, setStatus] = useState<LoginStatus>("loading");
 
@@ -42,9 +70,7 @@ export function useLogin() {
   }, []);
 
   const login = useCallback(
-    async (
-      password: string
-    ): Promise<{ success: boolean; error?: string; retry_after?: number }> => {
+    async (password: string): Promise<LoginResult> => {
       try {
         const resp = await fetch(LOGIN_ENDPOINT, {
           method: "POST",
@@ -61,26 +87,29 @@ export function useLogin() {
 
         if (data.error === "setup_required") {
           setStatus("setup_required");
-          return { success: false, error: "setup_required" };
+          return { success: false, code: "setup_required" };
         }
 
         return {
           success: false,
-          error: data.detail || data.error || "Invalid password",
+          code: data.error,
+          detail: data.detail,
           retry_after: data.retry_after,
         };
       } catch {
-        return { success: false, error: "Connection failed" };
+        // Not a backend code: the request never produced parseable JSON.
+        return {
+          success: false,
+          code: "connection_failed",
+          detail: "Connection failed",
+        };
       }
     },
     []
   );
 
   const setup = useCallback(
-    async (
-      password: string,
-      confirm: string
-    ): Promise<{ success: boolean; error?: string }> => {
+    async (password: string, confirm: string): Promise<LoginResult> => {
       try {
         const resp = await fetch(LOGIN_ENDPOINT, {
           method: "POST",
@@ -96,10 +125,15 @@ export function useLogin() {
 
         return {
           success: false,
-          error: data.detail || data.error || "Setup failed",
+          code: data.error,
+          detail: data.detail,
         };
       } catch {
-        return { success: false, error: "Connection failed" };
+        return {
+          success: false,
+          code: "connection_failed",
+          detail: "Connection failed",
+        };
       }
     },
     []

@@ -14,7 +14,7 @@
 #   3. a leaf that is an object on one side and a string on the other
 #
 # Run standalone:  bash scripts/test/i18n-parity.sh
-# Also runs as step 3 of scripts/test/run-all.sh.
+# Also runs as step 4 (the last) of scripts/test/run-all.sh.
 set -eu
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
