@@ -282,6 +282,125 @@ find scripts -name "*.sh" -exec sed -i 's/\r$//' {} \;
 
 ---
 
+## iCloud Conflict Copies
+
+**Critical:** the maintainer's checkout lives under `~/Desktop`, which iCloud Drive
+syncs. That placement is a settled decision — do not propose moving the repo.
+
+When iCloud cannot decide between two versions of a file it keeps both, naming
+the loser `<name> 2.<ext>`. The copy is a stale snapshot, but nothing about it
+looks stale to a tool that globs the tree, so it gets read as if it were source.
+This has cost real work three times: ESLint re-reported all 16 already-fixed
+`react-hooks/set-state-in-effect` errors out of pre-refactor copies under
+`components/` and `hooks/`; a `.next/types/routes.d 2.ts` failed
+`bunx tsc --noEmit` with `TS2300: Duplicate identifier 'LayoutProps'`; and a
+duplicated ref turned up inside `.git/refs/heads/`.
+
+**Rule of thumb:** when a tool result contradicts the committed file, suspect a
+conflict copy before suspecting the tool.
+
+### Prevention
+
+- `bash scripts/dev/icloud-exclude.sh --apply` relocates the regenerable
+  artefacts (`node_modules`, `.next`, `.codegraph`, `qmanager-build`) to
+  `.artifacts.nosync/` and symlinks them back. iCloud skips any path component
+  ending in `.nosync`, which drops the bulk of the sync churn — `node_modules`
+  alone was 71,029 of the 75,412 paths iCloud was tracking here — and a
+  backlogged sync engine is what produces conflict copies in the first place.
+  It **deletes and lets each artefact be rebuilt** at the new path rather than
+  `mv`-ing it there, which is why the deletion needs `--yes-delete` and why the
+  allowlist admits only names with a known rebuild command. Moving already-
+  indexed content is the operation that cost 212 MB here: iCloud had those
+  paths in its index, the move looked like a mass delete, and it propagated the
+  delete. Regenerated content is born invisible instead. `--status` reports
+  without touching anything, `--revert` undoes it.
+- `tsconfig.json` excludes `**/* ?*.*`. This guard matters most for
+  `.next/types/**`, which `include` pulls in even though git ignores it: a copy
+  landing there is invisible to `git status` and surfaces only as a
+  duplicate-identifier error that reads like a genuine type bug. It cannot reuse
+  the ESLint spelling because tsc's glob grammar is only `*`, `?` and `**` —
+  brackets are literal there, so a `[0-9]` class matches nothing.
+- `eslint.config.mjs` ignores `**/* [0-9].[A-Za-z]*` and its two- and
+  three-digit siblings — a mirror of the detector's regex, not a superset. The
+  two must agree in both directions: a shape ESLint hides *and* the detector
+  does not match is seen by nothing, while a shape ESLint lets through is read
+  as source. Finder's worded duplicates (`use-i18n copy.ts`) and
+  `use-i18n 2 copy.ts` match neither side, so they lint — deliberately, since
+  noisy beats unseen.
+
+### Checking
+
+```bash
+bash scripts/dev/conflict-copies.sh   # graded report with a per-file verdict
+bash scripts/test/run-all.sh          # same scan, folded into the pre-build gate
+```
+
+The report is graded by where the copy landed, because the damage differs:
+CRITICAL inside `.git/` (a duplicated ref or index can corrupt the repository),
+HIGH in build output (regenerable, but tools re-read build output as input),
+WARN in the source tree, and a bare count for `node_modules`.
+
+### Fixing
+
+```bash
+bash scripts/dev/conflict-copies.sh --clean         # dry run — deletes nothing
+bash scripts/dev/conflict-copies.sh --clean --yes   # delete identical/stale copies
+```
+
+The tool never deletes anything under `.git/` — it reports and stops there, since
+that is the case where a wrong guess costs commits. Copies that differ from the
+original *and* are newer are held back too unless `--include-newer` is passed:
+one of those can be the only copy of a change.
+
+`node_modules` is only ever counted, never listed, because the answer there is
+never "which of these two is the good one" — it is a reinstall. **Which
+reinstall depends on whether the exclusion is applied**, so check first:
+
+```bash
+bash scripts/dev/icloud-exclude.sh --status         # is node_modules "excluded" or "SYNCED"?
+```
+
+If it reports `SYNCED` (no exclusion yet — a fresh clone, or after `--revert`),
+`node_modules` is a real directory and the obvious command is right:
+
+```bash
+rm -rf node_modules && bun install
+```
+
+If it reports `excluded`, `node_modules` is a **symlink** into
+`.artifacts.nosync/`, and that same command is actively harmful: `rm -rf` on a
+symlink removes the link and not its target, orphaning ~705 MB, and `bun install`
+then materialises a real `node_modules` back in the synced tree — re-exposing the
+94% of the problem the exclusion existed to remove, and leaving a later `--apply`
+refusing to choose between the real directory and the orphaned target. Delete the
+target instead and let the script restore the layout:
+
+```bash
+rm -rf node_modules .artifacts.nosync/node_modules   # the link AND its target
+bash scripts/dev/icloud-exclude.sh --apply           # relinks, target pre-created empty
+bun install                                          # bun 1.3.14 installs through the symlink
+```
+
+Both, not just the target. `--apply` treats a link whose target has vanished as
+a failure and stops — deliberately, because that is the state iCloud leaves
+behind when it eats a target, and reporting `OK` there is how the damage stays
+invisible. Removing the link too puts the artefact in the `absent` state, which
+is the one `--apply` is allowed to fix on its own.
+
+The same shape applies to any managed artefact.
+
+Conflict copies in the source tree are deliberately **not** git-ignored, so
+`git status` keeps surfacing those until they are dealt with. It is a partial
+net, not a second opinion: `git status` can only see copies on paths git tracks.
+Anything landing under ignored build output — `.next/types/`, `.codegraph/`,
+`.artifacts.nosync/`, `node_modules/` — is invisible to it, which is exactly
+where the two worst incidents happened (`routes.d 2.ts` breaking `tsc`, and two
+`codegraph 2.db-*` sidecars sitting unreported). `.env 2` is swallowed the same
+way by the existing `.env*` rule. The detector is what covers all of them, which
+is why it scans rather than defers to `git status`.
+
+---
+
 ## Troubleshooting
 
 ### CGI Returns Empty Response

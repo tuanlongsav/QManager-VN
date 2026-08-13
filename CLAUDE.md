@@ -12,6 +12,7 @@
 4. **Reference source cho VN tweaks**: [tuanlongsav/quectel-rgmii-toolkit](https://github.com/tuanlongsav/quectel-rgmii-toolkit) branch `SDXLEMUR`.
 5. **Upstream sync**: remote `upstream` trỏ về dr-dolomite. Pull bằng `git fetch upstream main`. Khi merge sẽ conflict ở các file đã rebrand — luôn ưu tiên giá trị fork (xem `UPSTREAM_DIFF.md` cho conflict resolution).
 6. **Credit upstream**: README.md đã credit dr-dolomite. Đừng xoá credit. Donate links vẫn point về dr-dolomite — fork không có donate riêng.
+7. **Checkout nằm trong `~/Desktop` do iCloud sync, và Ở LẠI ĐÓ** — user đã chốt, đừng đề xuất move repo nữa. Hệ quả: iCloud rải bản sao xung đột `<name> 2.<ext>` — snapshot cũ mà tool đọc như source thật. **Khi kết quả của tool mâu thuẫn với file đã commit, nghi bản sao trước khi nghi tool.** Hàng rào đã dựng sẵn, đừng derive lại: `scripts/dev/conflict-copies.sh` (phát hiện + dọn, cũng chạy trong `scripts/test/run-all.sh`); `scripts/dev/icloud-exclude.sh` (artefact tái tạo được thì **xoá cho build lại** dưới `.artifacts.nosync/` rồi symlink về — tuyệt đối không `mv` vào đó, `mv` nội dung iCloud đã index chính là thao tác đã làm mất 212 MB); pattern loại trừ trong `tsconfig.json` + `eslint.config.mjs` (không được rộng hơn regex của detector — rộng hơn nghĩa là tàng hình với cả hai hàng rào). Sau khi exclude, `node_modules`/`.next` là **symlink**: muốn cài lại phải xoá đích của symlink, `rm -rf node_modules` chỉ xoá cái link. Chi tiết ở `docs/DEPLOYMENT.md`.
 
 ## How to Use This File
 

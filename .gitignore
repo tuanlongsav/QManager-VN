@@ -73,6 +73,16 @@ RELEASE_NOTE.md
 .vscode/
 .idea/
 
+# scripts/dev/icloud-exclude.sh parks the regenerable artefacts here, where the
+# ".nosync" suffix hides them from iCloud, and leaves symlinks in their place.
+# The rules above end in "/" so they match directories only, and git does not
+# count a symlink as a directory — without the slash-less repeats below, a
+# `git add -A` after --apply would happily stage the replacement symlinks.
+/.artifacts.nosync/
+/.next
+/.codegraph
+/qmanager-build
+
 # macOS / Windows filesystem junk. iCloud and Finder also drop "name 2.ext"
 # conflict copies into synced folders — those are caught during review, not
 # here, since the pattern is too broad to ignore safely.

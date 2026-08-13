@@ -30,5 +30,17 @@
     ".next/dev/types/**/*.ts",
     "**/*.mts"
   ],
-  "exclude": ["node_modules", "at terminal from RM551E"]
+  // "**/* ?*.*" keeps iCloud conflict copies ("routes.d 2.ts" beside
+  // "routes.d.ts") out of the program. It has to live here rather than only in
+  // eslint.config.mjs because "include" pulls in .next/types/**, which git
+  // ignores — so a copy landing there is invisible to `git status` and surfaces
+  // only as TS2300 duplicate identifier, reading exactly like a real type error.
+  // The eslint spelling "**/* [0-9].*" cannot be reused: tsc's glob grammar is
+  // only * ? and **, and it escapes brackets to literals, so that pattern
+  // silently matches nothing (measured — the copy still broke the build).
+  // Hence "?", which cannot be pinned to a digit; the trailing "*" then covers
+  // " 10.ts" and " 2 copy.ts" too. Broad by construction, but harmless: exclude
+  // only filters what "include" globbed, so any file real code imports stays in
+  // the program regardless.
+  "exclude": ["node_modules", "at terminal from RM551E", "**/* ?*.*"]
 }
