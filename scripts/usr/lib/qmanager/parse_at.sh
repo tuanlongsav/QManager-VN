@@ -294,6 +294,74 @@ parse_temperature() {
 }
 
 # -----------------------------------------------------------------------------
+# Registered-PLMN code -> carrier brand name (Vietnam only)
+# -----------------------------------------------------------------------------
+# Contract: carrier_name_from_code <numeric_plmn>
+#   In  — the operator code exactly as AT+COPS numeric format spells it: MCC
+#         concatenated with MNC. Vietnam's MNCs are all two digits, so every
+#         code this table can ever match is five characters.
+#   Out — the brand name on stdout, or nothing when the code is not listed.
+#         Always exits 0. Refusing to answer is a supported outcome, not a bug.
+#
+# Self-contained on purpose: no globals, no qlog_*, no side effects, so any
+# subsystem can source this file just for the lookup instead of growing a
+# second table that drifts out of step with this one.
+#
+# WHY THE TABLE IS THIS SHORT
+#
+# The dashboard's operator name comes from the modem: the poller asks for the
+# long alphanumeric format (AT+COPS=3,0) and AT+COPS? then answers "VinaPhone"
+# rather than "45202". This table is only the fallback for the reads where that
+# has not taken effect — the first read after a reboot, a PLMN with no long
+# name in the modem's internal table, and an unrecognised roaming network. A
+# fallback that fires rarely earns no benefit of the doubt: a wrong brand name
+# is undetectable to the user, while a bare PLMN code is honest and greppable.
+# So the table holds only the four networks that operate radio in Vietnam and
+# omits everything else deliberately. Codes omitted, and why:
+#
+#   452-03 S-Fone (S-Telecom) and 452-06 EVNTelecom — licences revoked and the
+#   MNCs withdrawn (Wikipedia, "Mobile network codes in ITU region 4xx (Asia)",
+#   Vietnam section, wikitext retrieved 2026-08-15:
+#   https://en.wikipedia.org/wiki/Mobile_network_codes_in_ITU_region_4xx_(Asia)
+#   — both rows read "Not operational … MNC withdrawn"). No cell broadcasts
+#   them, so a row could never fire honestly; a withdrawn MNC is also exactly
+#   the kind that gets reassigned, at which point the row would fire and lie.
+#
+#   452-07 Gmobile, 452-08 I-Telecom, 452-09 Wintel — MVNOs. None owns radio
+#   (same Wikipedia table: all three are marked MVNO; I-Telecom and Wintel run
+#   on VinaPhone, and Gmobile did too until it moved its subscribers onto
+#   MobiFone overnight on 28-29 June 2025, per MobiFone's own notice:
+#   https://www.mobifone.vn/tin-tuc/chi-tiet/thong-bao-chuyen-doi-thue-bao-gmobile-tren-ha-tang-mang-vinaphone-ve-mobifone-17961).
+#   AT+COPS? reports the PLMN the modem *registered on*, which is the one the
+#   serving cell broadcasts — the host's. An MVNO's own PLMN reaches the air
+#   only where the host runs a shared RAN broadcasting several PLMN IDs, and I
+#   found no evidence any Vietnamese operator does. So these rows would almost
+#   never fire, while the fact underneath them demonstrably moves.
+#
+# Consequence worth stating plainly: an I-Telecom or Wintel subscriber sees
+# "VinaPhone" here, because VinaPhone is genuinely the network their handset is
+# camped on. That is the radio truth, not a mislabel. The subscription-side
+# question ("whose SIM is this?") is answered from the IMSI, not from +COPS,
+# and lives in constants/mno-presets.ts — a different key, so a different table.
+#
+# Six-digit codes are not handled. Per 3GPP TS 23.003 an MNC is two or three
+# digits, and a two-digit MNC is never zero-padded to three — in the broadcast
+# encoding the unused third digit is a 0xF filler, not a '0'. "452002" would
+# therefore be MNC 002, a PLMN that does not exist, not a spelling of 452-02.
+#
+# Every claim above was checked on 2026-08-15 against the URLs named. Re-check
+# before extending: the previous version of this table cited a source that did
+# not support two of its rows.
+carrier_name_from_code() {
+    case "$1" in
+        45201) echo "MobiFone" ;;
+        45202) echo "VinaPhone" ;;
+        45204) echo "Viettel" ;;
+        45205) echo "Vietnamobile" ;;
+    esac
+}
+
+# -----------------------------------------------------------------------------
 # Parse AT+COPS?
 # Populates: t2_carrier
 # -----------------------------------------------------------------------------
@@ -307,19 +375,48 @@ parse_carrier() {
         return
     fi
 
-    # Strip prefix and CR: "0,0,"Smart",7" or just "2" when deregistered
+    # Strip prefix and CR: `0,0,"Smart",7` or just `2` when deregistered.
     local fields
-    fields=$(printf '%s' "$cops_line" | sed 's/+COPS: //g' | tr -d '\r')
+    fields=$(printf '%s' "$cops_line" | sed 's/^[[:space:]]*+COPS:[[:space:]]*//' | tr -d '\r')
 
-    # Need at least 3 comma-separated fields for operator name
-    local comma_count
-    comma_count=$(printf '%s' "$fields" | tr -cd ',' | wc -c)
-    if [ "$comma_count" -lt 2 ]; then
-        t2_carrier=""
-        return
-    fi
+    # <oper> is the only quoted field in a +COPS? read response, so the name is
+    # everything between the first and the last double quote. Splitting on
+    # commas instead would truncate any name that contains one — TS 27.007 puts
+    # no such restriction on <oper>, and real networks use it
+    # (`+COPS: 0,0,"Telecom Italia, S.p.A.",2` would yield "Telecom Italia").
+    # That mattered even for the numeric path: the truncation happened before
+    # the fallback ran, so the lookup could be handed a mangled code.
+    case "$fields" in
+        *'"'*)
+            t2_carrier=$(printf '%s' "$fields" | sed -n 's/^[^"]*"\(.*\)".*$/\1/p')
+            ;;
+        *)
+            # Unquoted <oper> is off-spec but cheap to tolerate. Without quotes
+            # there is nothing to protect, so positional splitting is safe —
+            # but only once three fields are actually present. A deregistered
+            # modem answers `+COPS: 2`, which has no operator at all.
+            if [ "$(printf '%s' "$fields" | tr -cd ',' | wc -c)" -lt 2 ]; then
+                t2_carrier=""
+                return
+            fi
+            t2_carrier=$(printf '%s' "$fields" | cut -d',' -f3)
+            ;;
+    esac
 
-    t2_carrier=$(printf '%s' "$fields" | cut -d',' -f3 | tr -d '"')
+    # Decode only what is unambiguously a bare PLMN code. A name the modem
+    # supplied is the authority and is never "corrected", and an unrecognised
+    # code stays as raw digits — a number the user can look up beats a name we
+    # invented. See carrier_name_from_code above for when this path is reached.
+    local decoded
+    case "$t2_carrier" in
+        ''|*[!0-9]*) ;;
+        *)
+            decoded=$(carrier_name_from_code "$t2_carrier")
+            if [ -n "$decoded" ]; then
+                t2_carrier="$decoded"
+            fi
+            ;;
+    esac
 }
 
 # -----------------------------------------------------------------------------

@@ -12,7 +12,7 @@
 # Tiers:
 #   Tier 1 (Hot):    Every cycle (~2s)  — AT+QENG="servingcell", /proc reads
 #   Tier 1.5 (Signal): Every 5 cycles (10s) — AT+QRSRP, AT+QRSRQ, AT+QSINR
-#   Tier 2 (Warm):   Every 15 cycles    — AT+QTEMP, AT+COPS?, AT+CPIN?, AT+QUIMSLOT?,
+#   Tier 2 (Warm):   Every 15 cycles    — AT+QTEMP, AT+COPS=3,0, AT+COPS?, AT+CPIN?, AT+QUIMSLOT?,
 #                                         AT+QCAINFO, AT+QNWCFG="*_time_advance",
 #                                         AT+QNWCFG="*_mimo_layers" (network-mode-gated),
 #                                         AT+CGCONTRDP, AT+QMAP="WWAN"
@@ -901,6 +901,10 @@ collect_boot_data() {
     # CVERSION, CGMM, CGSN, CIMI return bare responses (no +PREFIX:).
     # CGMM: bare model name; CGSN/CIMI: bare 15-digit numbers.
     # Order is deterministic: first 15-digit line = IMEI, second = IMSI.
+    # Deliberately carries no +COPS=3,0: nothing here reads the operator, and
+    # poll_tier2() issues the format-set immediately before the read that needs
+    # it. Adding a +COPS? read here means giving it its own format-set — and its
+    # own qcmd call, never appended to this chain (see poll_tier2 for why).
     # =========================================================================
     result=$(qcmd 'AT+CVERSION;+CGMM;+CGSN;+CIMI;+QCCID;+CNUM;+QGETCAPABILITY' 2>/dev/null)
 
@@ -1230,10 +1234,51 @@ append_ping_history() {
 poll_tier2() {
     local result
 
-    # Compound AT: status queries in one call.
-    # CPIN? is last — it can ERROR when SIM is absent; placing it last
-    # ensures earlier responses (QTEMP, COPS, QUIMSLOT, CNUM) are preserved
-    # even if the modem aborts on CPIN ERROR.
+    # Pin the operator-name format BEFORE the read chain, in its own call.
+    #
+    # <mode>=3 is "set <format> only" — it triggers no registration or
+    # deregistration — and <format>=0 selects the long alphanumeric name.
+    # Without it AT+COPS? answers in whichever format the modem happens to be
+    # holding; on VN networks that is the numeric PLMN ("45202"), which reached
+    # the dashboard verbatim.
+    #
+    # Re-asserted every Tier 2 pass rather than once at boot: the format is
+    # modem session state we do not exclusively own. The AT+COPS=2/0 recovery
+    # paths (watchcat Tier 1, reboot.sh reconnect, apn.sh save) omit <format>,
+    # and nothing guarantees it survives them or a firmware-side reset. A
+    # boot-only set would degrade silently and stay degraded until reboot;
+    # re-asserting self-heals within one Tier 2 interval.
+    #
+    # It gets its OWN qcmd instead of riding the chain below because qcmd
+    # collapses any compound response containing ERROR into an empty body
+    # (qcmd: `case "$result" in *ERROR*) output_result "" "command_failed"`).
+    # A write at the head of a five-command chain therefore risks the entire
+    # cycle: one ERROR and temperature, carrier, SIM slot, phone number and SIM
+    # status all go missing together. Splitting it costs one AT round trip and
+    # one flock per ~30s and caps the blast radius of a failed format-set at
+    # "operator shows as digits this cycle".
+    #
+    # The failure is deliberately swallowed: a numeric operator name is a far
+    # better outcome than skipping the read.
+    #
+    # Splitting does open a window in which another AT client could change the
+    # format between set and read. Accepted: qcmd serializes every AT client on
+    # /tmp/qmanager_at.lock, so nothing interleaves mid-command, and the only
+    # commands in this tree that move <format> are the AT+COPS=2/0 recovery
+    # paths above — rare, operator-initiated, and already covered by the
+    # re-assert. Worst case is one cycle of numeric operator name.
+    qcmd 'AT+COPS=3,0' >/dev/null 2>&1 \
+        || qlog_debug "AT+COPS=3,0 failed; operator may read as numeric PLMN this cycle"
+    sleep "$SIP_DELAY"
+
+    # Compound AT: the Tier 2 status reads in one call. Reads only — see above.
+    #
+    # Command order buys nothing at this layer. An earlier comment here claimed
+    # CPIN? sits last so the responses ahead of it survive a SIM-absent ERROR;
+    # that is false for this caller. qcmd returns an EMPTY body when ANY part
+    # of the compound response contains ERROR, so a CPIN ERROR costs the whole
+    # chain wherever CPIN? sits. Real isolation means a separate qcmd call, as
+    # the format-set above and the three network-info groups below do.
     result=$(qcmd 'AT+QTEMP;+COPS?;+QUIMSLOT?;+CNUM;+CPIN?' 2>/dev/null)
 
     if [ -n "$result" ]; then
@@ -1248,13 +1293,21 @@ poll_tier2() {
 
         # SIM status — extract CPIN line specifically (parse_sim_status uses
         # case matching, not grep, so pass only the relevant line)
+        #
+        # There is deliberately no "else infer sim_not_inserted from CME ERROR"
+        # arm here. It used to exist and could never run: reaching this point
+        # means $result is non-empty, and qcmd only ever yields a non-empty body
+        # when the response carried no ERROR at all. Restoring reachability
+        # would mean giving +CPIN? its own qcmd — but qcmd discards the error
+        # text too, so all the poller could learn is "the read failed", which is
+        # equally true of a lock timeout, a malformed response, or +CME ERROR:
+        # 14 (SIM busy). Labelling any of those "SIM not inserted" would state
+        # a cause we did not observe, so the status simply holds its previous
+        # value until a CPIN line is actually read.
         local cpin_line
         cpin_line=$(printf '%s\n' "$result" | grep '+CPIN:' | head -1)
         if [ -n "$cpin_line" ]; then
             parse_sim_status "$cpin_line"
-        elif printf '%s\n' "$result" | grep -q 'CME ERROR'; then
-            t2_sim_status="error"
-            errors="sim_not_inserted"
         fi
     fi
     sleep "$SIP_DELAY"
