@@ -1,0 +1,103 @@
+#!/bin/sh
+# =============================================================================
+# qmanager_auto_update_arm — arm/disarm the unattended-update systemd timer
+# =============================================================================
+# The Software Update page's auto-update toggle used to write a daily line into
+# /var/spool/cron/crontabs/root. Nothing reads that file on this device, so the
+# device has never once updated itself unattended despite the switch reading
+# "on". This helper is the privileged half of the replacement.
+#
+# Unlike the other two schedules, auto-update runs EVERY day and carries no day
+# mask — the UI offers only a time — so it renders the daily OnCalendar form.
+#
+# Usage:
+#   sudo -n /usr/bin/qmanager_auto_update_arm install <HH:MM>
+#   sudo -n /usr/bin/qmanager_auto_update_arm teardown
+#
+# Exit:  0 = the request was understood and acted on
+#        1 = the request was rejected or could not be carried out
+#
+# READ .armed, NOT .success — see qmanager_scheduled_reboot_arm's header.
+#
+# SECURITY: sudo-reachable from the web user. The time is re-validated here by
+# shape before it reaches the unit file. That matters more here than anywhere
+# else in this set: the CGI-side check this replaces was
+# `grep -qE '^[0-9]{2}:[0-9]{2}$'`, and grep anchors are LINE-based — a value
+# carrying an embedded newline whose second line looked like a time passed it
+# while the full multi-line value flowed on into the file. The charset gate in
+# schedule_timer.sh is whole-string and rejects the newline outright.
+#
+# Install location: /usr/bin/qmanager_auto_update_arm
+# =============================================================================
+
+PATH=/opt/bin:/opt/sbin:/usr/bin:/usr/sbin:/bin:/sbin
+export PATH
+
+UNIT="qmanager-auto-update.timer"
+SERVICE="qmanager-auto-update.service"
+DESC="QManager unattended update check"
+
+# Test-only path prefix; see schedule_timer.sh.
+QM_ROOT="${QM_TIMER_ROOT:-}"
+case "$QM_ROOT" in
+    '') ;;
+    *..*) QM_ROOT="" ;;
+    /*) ;;
+    *) QM_ROOT="" ;;
+esac
+LIB="$QM_ROOT/usr/lib/qmanager/schedule_timer.sh"
+
+action="$1"
+sched_time="$2"
+
+if [ ! -f "$LIB" ]; then
+    printf '{"success":false,"armed":false,"error":"lib_missing","detail":"schedule_timer.sh not found"}\n'
+    exit 1
+fi
+# shellcheck source=/dev/null
+. "$LIB"
+
+case "$action" in
+    install|teardown) ;;
+    *) _qm_emit_err "invalid_action" "action must be install or teardown"; exit 1 ;;
+esac
+
+if [ "$action" = "teardown" ]; then
+    if _qm_timer_disarm "$UNIT"; then
+        _qm_emit_ok false "" "unknown"
+        exit 0
+    fi
+    _qm_emit_err "disarm_failed" "timer unit or symlink still present after removal"
+    exit 1
+fi
+
+# --- install ----------------------------------------------------------------
+
+if ! _qm_validate_hhmm "$sched_time"; then
+    _qm_emit_err "invalid_time" "time must be HH:MM, hour 00-23"
+    exit 1
+fi
+
+if ! _qm_service_present "$SERVICE"; then
+    _qm_emit_ok false "unit_absent" "unknown"
+    exit 0
+fi
+
+line=$(_qm_oncalendar_daily "$sched_time")
+
+if ! _qm_timer_write "$UNIT" "$SERVICE" "$DESC" "$line"; then
+    _qm_timer_disarm "$UNIT" || true
+    _qm_emit_err "write_failed" "could not write or link the timer unit"
+    exit 1
+fi
+
+_qm_timer_activate "$UNIT"
+
+active=$(_qm_timer_state "$UNIT")
+if [ "$active" = "inactive" ]; then
+    _qm_emit_ok false "timer_inactive" "$active"
+    exit 0
+fi
+
+_qm_emit_ok true "" "$active"
+exit 0

@@ -55,6 +55,26 @@ BIN_DIR="/usr/bin"
 SYSTEMD_DIR="/lib/systemd/system"
 WANTS_DIR="/lib/systemd/system/multi-user.target.wants"
 
+# Timers are wanted by timers.target, NOT multi-user.target. A .timer symlinked
+# into $WANTS_DIR is not an error systemd reports — it is simply never pulled
+# in, which looks exactly like the "schedule saved, nothing happens" bug the
+# timers exist to fix. Kept as its own constant so no future edit can reach for
+# $WANTS_DIR out of habit.
+TIMERS_WANTS_DIR="/lib/systemd/system/timers.target.wants"
+
+# Legacy cron spool. QManager no longer writes here at all — see
+# scrub_legacy_cron() — but devices upgrading from a build that did still carry
+# its leftovers.
+CRON_SPOOL_DIR="/var/spool/cron/crontabs"
+CRON_SPOOL_FILE="$CRON_SPOOL_DIR/root"
+
+# The exact trailing-comment markers the three retired cron writers tagged
+# their own lines with (settings.sh, tower/schedule.sh, system/update.sh). They
+# are what makes the scrub surgical: the spool file was world-writable on every
+# device that ran those builds, so it may hold lines QManager did not write and
+# must not delete.
+LEGACY_CRON_MARKERS="qmanager_scheduled_reboot qmanager_tower_schedule qmanager_auto_update"
+
 # Detect Entware vs system sudo (called as function — must re-evaluate
 # after install_dependencies installs sudo on a fresh modem)
 detect_sudo() {
@@ -74,6 +94,17 @@ detect_sudo() {
 }
 detect_sudo
 CONF_DIR="/etc/qmanager"
+
+# Systemd EnvironmentFile= for the three root daemons. Deliberately a SIBLING
+# of $CONF_DIR, not a file inside it — see report_legacy_daemon_environment().
+#
+# NEVER introduce an /etc/qmanager* glob anywhere in this tree: it would match
+# this sibling and sweep it back under the www-data chown that this path exists
+# to escape. scripts/test/daemon-environment-path.sh fails the build if one
+# appears.
+DAEMON_ENV_FILE="/etc/qmanager.env"
+LEGACY_DAEMON_ENV_FILE="$CONF_DIR/environment"
+
 CERT_DIR="/usrdata/qmanager/certs"
 SESSION_DIR="/tmp/qmanager_sessions"
 BACKUP_DIR="/etc/qmanager/backups"
@@ -479,6 +510,99 @@ ensure_zoneinfo() {
             info "Linked /usr/share/zoneinfo -> /opt/usr/share/zoneinfo"
         else
             warn "Could not link /usr/share/zoneinfo — qmanager_set_timezone will fall back to the /opt path"
+        fi
+    fi
+}
+
+# --- Legacy Cron Scrub -------------------------------------------------------
+
+# Remove the crontab lines QManager used to write, and close the directory
+# permission that existed to let it write them.
+#
+# Background: Scheduled Reboot, Tower Schedule and Auto-update each used to
+# printf a line into /var/spool/cron/crontabs/root. Nothing on this device ever
+# read that file — there is no crond unit, the binary never runs — so every one
+# of those schedules silently did nothing. They arm systemd timers now, which
+# leaves the old lines behind as orphans on any upgrading device.
+#
+# Inert today, but only by luck: the day anything starts crond, those lines
+# resume running as root on a schedule the UI no longer shows and no longer has
+# any way to change. Deleting them is the cheap half of the fix.
+#
+# SURGICAL BY MARKER, NEVER A FILE WIPE. That spool directory was mode 0777 on
+# every device that ran the old builds, so any local process could have put a
+# line in that file. Only lines carrying one of our own markers come out; an
+# entry we did not write is none of our business and stays.
+#
+# Deliberately NOT inside install_backend(): same reasoning as ensure_zoneinfo()
+# above. This must run on the OTA path, and it must run on a device where the
+# backend install is skipped, because the leftovers are already on disk either
+# way. Non-fatal throughout — a device that cannot be scrubbed is no worse off
+# than before this ran, and aborting an otherwise healthy update over it would
+# be the wrong trade.
+scrub_legacy_cron() {
+    # Never create the file or the directory. Their absence is the desired end
+    # state, and a fresh install must not conjure a cron spool QManager has no
+    # further use for.
+    if [ -f "$CRON_SPOOL_FILE" ]; then
+        local pattern=""
+        for m in $LEGACY_CRON_MARKERS; do
+            pattern="${pattern:+$pattern|}$m"
+        done
+
+        if grep -qE "$pattern" "$CRON_SPOOL_FILE" 2>/dev/null; then
+            mount -o remount,rw / 2>/dev/null || true
+            local tmp="${CRON_SPOOL_FILE}.qm_scrub.$$"
+            # `|| true` because grep -v exits 1 when it filters everything out,
+            # which is the ordinary "this crontab was ours alone" case and must
+            # not abort the installer under set -e. The output file is written
+            # either way.
+            grep -vE "$pattern" "$CRON_SPOOL_FILE" > "$tmp" 2>/dev/null || true
+
+            # No early return anywhere in here: the directory tightening at the
+            # end is the half that closes a privilege-escalation path, and it
+            # must still run on a device where the file rewrite failed.
+            if [ ! -f "$tmp" ]; then
+                warn "Could not rewrite $CRON_SPOOL_FILE — legacy cron entries left in place"
+
+            # A remainder of nothing but whitespace is an empty crontab, not a
+            # crontab containing a blank line. Remove the file rather than leave
+            # an empty one implying something is still scheduled.
+            elif [ -n "$(tr -d ' \t\n' < "$tmp" 2>/dev/null)" ]; then
+                if mv "$tmp" "$CRON_SPOOL_FILE" 2>/dev/null; then
+                    info "Removed legacy QManager cron entries (kept other entries)"
+                else
+                    rm -f "$tmp" 2>/dev/null || true
+                    warn "Could not replace $CRON_SPOOL_FILE — legacy cron entries left in place"
+                fi
+            else
+                rm -f "$tmp" 2>/dev/null || true
+                if rm -f "$CRON_SPOOL_FILE" 2>/dev/null; then
+                    info "Removed legacy QManager cron entries (root crontab is now empty)"
+                else
+                    warn "Could not remove $CRON_SPOOL_FILE — legacy cron entries left in place"
+                fi
+            fi
+        fi
+    fi
+
+    # Close the hole the entries needed. qmanager_setup used to `chmod 777` this
+    # directory every boot so the CGI (www-data) could write root's crontab —
+    # world-writable, i.e. anyone local could schedule commands as root the
+    # moment something started crond. That chmod is gone from qmanager_setup,
+    # but dropping it only stops the mode being re-applied; a device that has
+    # already run it keeps 0777 until something narrows it. This is that
+    # something. Non-fatal: if the directory turns out to be volatile on some
+    # image, the chmod is simply redundant rather than wrong.
+    #
+    # 0700 root-owned rather than a milder 0755: crond and crontab both run as
+    # root here (crontab is setuid where it is used at all), so nothing that
+    # legitimately touches this directory loses access, while every non-root
+    # write — the actual hole — is closed rather than merely narrowed.
+    if [ -d "$CRON_SPOOL_DIR" ]; then
+        mount -o remount,rw / 2>/dev/null || true
+        if chmod 0700 "$CRON_SPOOL_DIR" 2>/dev/null; then
+            _log_raw "Tightened $CRON_SPOOL_DIR to 0700"
         fi
     fi
 }
@@ -1154,6 +1278,10 @@ DEFLATEEOF
 
     # --- Bootstrap default ping_profile.json / migrate legacy env vars ----------
     install_ping_profile
+    # Must precede the two ping-env rewrites: they operate on
+    # $DAEMON_ENV_FILE, which only exists once this has moved it out of the
+    # www-data-owned config directory.
+    report_legacy_daemon_environment
     migrate_ping_environment
     prune_stale_ping_environment
 
@@ -1181,13 +1309,116 @@ install_ping_profile() {
     fi
 }
 
+# --- Relocate Daemon Environment File ----------------------------------------
+
+# Move the systemd EnvironmentFile out of the www-data-owned config directory.
+#
+# Why this exists: EnvironmentFile= makes systemd inject every KEY=VALUE line
+# of that file straight into the unit's process environment, and all three
+# consumers (qmanager-poller, qmanager-watchcat, qmanager-ping) run as root —
+# none of them sets User=. The file used to sit at $CONF_DIR/environment, and
+# $CONF_DIR is chown -R www-data:www-data both here (install_backend) and on
+# every single boot (qmanager_setup). www-data is the user lighttpd runs CGI
+# as, so a foothold in any web endpoint was a foothold in root's PATH and
+# LD_PRELOAD, three daemons over.
+#
+# Pinning the file itself to root:root 0600 does NOT close this. Unlinking and
+# renaming a file are authorised by write permission on the *parent directory*,
+# not by the file's own mode — so www-data could delete the pinned file and
+# drop its own in its place regardless. A root-owned subdirectory is no better
+# (the parent is still writable, so the subdirectory can be renamed away), and
+# the sticky bit is no better either (its protection exempts the directory's
+# owner, which is www-data here). Only moving the file to a directory www-data
+# cannot write closes every one of create/modify/replace/rename/delete.
+#
+# The content is filtered, not transcribed. This tree has never pinned the old
+# file's ownership, so on any device that has been running, www-data has been
+# able to write it since day one — a straight copy would carry an existing
+# payload into the new, now-tamper-proof location and hand it to root forever.
+#
+# Copy-verify-delete, never mv: if the rootfs is still read-only the write
+# fails, the verify fails, and the old file is left exactly where it was. The
+# daemons keep reading the old (still vulnerable) path until a later run
+# succeeds — no worse than before this ran. A half-completed mv would instead
+# lose the operator's overrides *silently*, because EnvironmentFile= carries a
+# leading '-' in all three units: a missing file is not an error, so a lost
+# file looks like "reverted to defaults", never like a failure.
+#
+# The old PATH is hostile, not merely stale. Its content is attacker-controlled
+# (filtered above) and so is the path ITSELF: www-data owns the directory, so it
+# chooses what the name resolves to — a link to the file this function is
+# writing, a link to a root-only file, a directory, a FIFO. A privileged process
+# migrating a file out of an unprivileged directory has to treat that name as
+# hostile input for exactly the reason it is being moved. Hence the checks
+# before the first open, and the read-into-memory ordering, below.
+#
+# Idempotent: safe on every install, upgrade, and rollback.
+# The legacy path lives in $CONF_DIR, which is owned by www-data and is 0777
+# on fielded devices. That is the whole reason the daemons no longer read it.
+#
+# An earlier version of this function MIGRATED the file: it opened the legacy
+# path, filtered the contents through a key allowlist, and wrote the survivors
+# to $DAEMON_ENV_FILE. That was 418 lines, and an adversarial review broke it
+# twice — first by pointing the path at a root-only file so root would read it
+# aloud into the installer log, then, after symlinks were refused, by winning
+# the race between the five separate lookups the checks and the read each
+# performed. In a POSIX shell there is no way to open a path once and then
+# prove the thing you opened is the thing you checked; every guard is another
+# lookup of a name the attacker owns.
+#
+# So this no longer reads, writes, renames or deletes anything at that path.
+# It reports. The value being preserved was a handful of optional tuning keys
+# on a device that mostly runs defaults, and that is not worth a root process
+# dereferencing hostile ground on every install and every OTA.
+#
+# Leaving the file untouched is deliberate: nothing reads it any more, so it is
+# inert, and it is the operator's only record of what their settings were.
+report_legacy_daemon_environment() {
+    # Create the new file empty rather than leaving the operator to. www-data
+    # cannot squat the name — /etc is root:root 0755 — so this is not about
+    # racing an attacker; it is so that an operator who edits it is editing
+    # something already root:root 0600 instead of creating a fresh file at
+    # whatever umask their shell happens to carry.
+    if [ ! -e "$DAEMON_ENV_FILE" ]; then
+        mount -o remount,rw / 2>/dev/null || true
+        if : > "$DAEMON_ENV_FILE" 2>/dev/null; then
+            printf '# QManager daemon environment overrides (KEY=VALUE, one per line).\n# Read by qmanager-poller/watchcat/ping via systemd EnvironmentFile=.\n# Deliberately NOT in /etc/qmanager: that directory is owned by www-data,\n# and systemd injects every line here into three root daemons.\n' \
+                > "$DAEMON_ENV_FILE" 2>/dev/null || true
+        fi
+    fi
+    if [ -f "$DAEMON_ENV_FILE" ]; then
+        chown root:root "$DAEMON_ENV_FILE" 2>/dev/null || true
+        chmod 600 "$DAEMON_ENV_FILE" 2>/dev/null || true
+    fi
+
+    [ -e "$LEGACY_DAEMON_ENV_FILE" ] || [ -h "$LEGACY_DAEMON_ENV_FILE" ] || return 0
+
+    warn "Found a legacy daemon environment file at $LEGACY_DAEMON_ENV_FILE"
+    warn "  It is no longer read: the units now take $DAEMON_ENV_FILE, which sits"
+    warn "  outside the www-data-owned config directory. Anything writable by the"
+    warn "  web user is injected straight into three root daemons, so that path"
+    warn "  was abandoned rather than migrated."
+    warn "  To keep your overrides, copy the ones you recognise by hand, as root:"
+    warn "    cat $LEGACY_DAEMON_ENV_FILE      # review before trusting it"
+    warn "    \$EDITOR $DAEMON_ENV_FILE        # then: chown root:root, chmod 0600"
+    warn "  Nothing was copied automatically, and the old file was left in place."
+
+    # Syslog too: an OTA runs unattended, so the console warnings above may have
+    # no reader. Matches the _qm_config_quarantine convention in config.sh.
+    command -v logger >/dev/null 2>&1 && \
+        logger -t qmanager_install -p daemon.warn \
+        "legacy daemon environment at $LEGACY_DAEMON_ENV_FILE is no longer read; see $DAEMON_ENV_FILE" \
+        2>/dev/null || true
+    return 0
+}
+
 # --- Migrate Legacy Ping Environment -----------------------------------------
 
-# Migrate old cycle-count env vars in /etc/qmanager/environment to time-based.
+# Migrate old cycle-count env vars in the daemon environment file to time-based.
 # Old: FAIL_THRESHOLD=3 (cycles)  ->  New: FAIL_SECS=15 (seconds, assuming 5s probe interval)
 # Idempotent: re-running on already-migrated file is a no-op.
 migrate_ping_environment() {
-    local env_file="/etc/qmanager/environment"
+    local env_file="$DAEMON_ENV_FILE"
     [ -f "$env_file" ] || return 0
 
     # Skip if migration already happened (FAIL_SECS present, FAIL_THRESHOLD absent)
@@ -1210,6 +1441,8 @@ migrate_ping_environment() {
 
     local backup="${env_file}.pre-rust-ping.bak"
     cp "$env_file" "$backup"
+    chown root:root "$backup" 2>/dev/null || true
+    chmod 600 "$backup" 2>/dev/null || true
 
     local tmp; tmp=$(mktemp)
     while IFS= read -r line || [ -n "$line" ]; do
@@ -1235,7 +1468,11 @@ migrate_ping_environment() {
         esac
     done < "$env_file"
     mv "$tmp" "$env_file"
-    chmod 644 "$env_file"
+    # 0600 root:root, not 0644 — this file is read only by systemd (as root)
+    # and by nothing else. mktemp made it 0600 already; the point is to keep a
+    # rewrite from being the thing that relaxes it.
+    chown root:root "$env_file" 2>/dev/null || true
+    chmod 600 "$env_file"
     echo "  Migrated $env_file (backup at $backup)"
 }
 
@@ -1245,7 +1482,7 @@ migrate_ping_environment() {
 # Idempotent: safe to run on every install/upgrade.
 #   CARRIER_FILE — removed in v0.1.9: daemon now relies solely on HTTP probes.
 prune_stale_ping_environment() {
-    local env_file="/etc/qmanager/environment"
+    local env_file="$DAEMON_ENV_FILE"
     [ -f "$env_file" ] || return 0
 
     local stale_keys="CARRIER_FILE"
@@ -1267,11 +1504,74 @@ prune_stale_ping_environment() {
 
     if [ "$pruned" -gt 0 ]; then
         mv "$tmp" "$env_file"
-        chmod 644 "$env_file"
+        # See migrate_ping_environment: a rewrite must not relax 0600 root:root.
+        chown root:root "$env_file" 2>/dev/null || true
+        chmod 600 "$env_file"
         echo "  Removed $pruned stale ping env var(s) from $env_file (CARRIER_FILE no longer used)"
     else
         rm -f "$tmp"
     fi
+}
+
+# --- Cleanup Orphaned Timers -------------------------------------------------
+
+# Remove generated .timer units whose paired .service no longer ships, plus any
+# dangling symlink left in timers.target.wants.
+#
+# Timers are the one class of unit this installer must NOT sweep by the usual
+# "not in the source tree, therefore legacy" rule that cleanup_legacy_scripts()
+# applies to services. A .timer here is generated at save time from the user's
+# own schedule and is *never* in the source tree — that rule would delete every
+# armed schedule on every update.
+#
+# What can genuinely go stale is the pairing. Roll a device back to a build
+# predating this feature and its cleanup removes the .service (correctly — the
+# older tree has no such file) while knowing nothing about .timer files: the
+# timer and its wants-symlink survive, armed, pointing at a unit that no longer
+# exists. systemd fires it and logs "unit not found", forever. The next forward
+# update lands here and cleans it up.
+#
+# Pairing is read from the timer's own Unit= line rather than guessed from its
+# filename, so a timer that names something unexpected is judged on what it
+# would actually start.
+LEGACY_TIMERS_REMOVED=0
+cleanup_legacy_timers() {
+    LEGACY_TIMERS_REMOVED=0
+
+    for installed in "$SYSTEMD_DIR"/qmanager-*.timer; do
+        [ -f "$installed" ] || continue
+        local tname; tname=$(basename "$installed")
+
+        local paired
+        paired=$(sed -n 's/^[[:space:]]*Unit=[[:space:]]*//p' "$installed" 2>/dev/null | head -n 1)
+        # An unreadable or Unit-less timer falls back to the name convention;
+        # if that service is absent too, the timer is orphaned either way.
+        [ -n "$paired" ] || paired="$(basename "$installed" .timer).service"
+
+        if [ ! -f "$SRC_SCRIPTS/etc/systemd/system/$paired" ]; then
+            command -v systemctl >/dev/null 2>&1 && systemctl stop "$tname" 2>/dev/null || true
+            rm -f "$TIMERS_WANTS_DIR/$tname"
+            rm -f "$installed"
+            _log_raw "Removed orphaned timer: $tname (paired unit $paired no longer ships)"
+            info "Removed orphaned timer: $tname"
+            LEGACY_TIMERS_REMOVED=$(( LEGACY_TIMERS_REMOVED + 1 ))
+        fi
+    done
+
+    # A symlink whose target is gone: the other half of the same rollback story,
+    # and the half that survives if the .timer was removed by hand. -e follows
+    # the link, so this is true only when the target is missing; -L keeps a
+    # broken link from being mistaken for "no link at all".
+    for link in "$TIMERS_WANTS_DIR"/qmanager-*.timer; do
+        [ -L "$link" ] || continue
+        [ -e "$link" ] && continue
+        rm -f "$link"
+        _log_raw "Removed dangling timer symlink: $(basename "$link")"
+        info "Removed dangling timer symlink: $(basename "$link")"
+        LEGACY_TIMERS_REMOVED=$(( LEGACY_TIMERS_REMOVED + 1 ))
+    done
+
+    return 0
 }
 
 # --- Cleanup Legacy Scripts --------------------------------------------------
@@ -1320,6 +1620,12 @@ cleanup_legacy_scripts() {
             removed=$(( removed + 1 ))
         fi
     done
+
+    # After the .service sweep above, so a service removed in this same run is
+    # already gone from $SYSTEMD_DIR and its timer is judged against the source
+    # tree, which is the authority either way.
+    cleanup_legacy_timers
+    removed=$(( removed + LEGACY_TIMERS_REMOVED ))
 
     if [ "$removed" -eq 0 ]; then
         info "No legacy scripts to remove"
@@ -1442,6 +1748,31 @@ install_udev_rules() {
 
 # --- Enable Services ---------------------------------------------------------
 
+# unit_is_boot_enabled <unit-file> -> 0 enable at boot / 1 leave alone
+#
+# enable_services() below symlinks every installed qmanager-*.service into
+# multi-user.target.wants. That blanket glob is fine for daemons and wrong for
+# the oneshot bodies behind the scheduled timers: qmanager-scheduled-reboot
+# calls `reboot`, so boot-enabling it is a boot loop, and the tower-schedule and
+# auto-update bodies would apply a cell lock / attempt a firmware update on
+# every boot regardless of any configured schedule.
+#
+# The gate is the unit's own [Install] section, not a hardcoded name list.
+# [Install] is precisely systemd's declaration of "here is how this unit gets
+# enabled" — a unit that omits it is stating it is not meant to be enabled at
+# all, which is exactly true of a timer-triggered body. Reading that is
+# structural: a fifth timer pair added later is excluded because of what its
+# unit file says, with nothing here to remember to update. A name list would
+# have to be edited in lockstep, and the failure mode of forgetting is a device
+# that reboots forever.
+#
+# (The symlink would "work" without an [Install] section — the wants directory
+# is what systemd actually reads — which is why the absence has to be checked
+# for deliberately rather than relied on to fail.)
+unit_is_boot_enabled() {
+    grep -q '^[[:space:]]*\[Install\]' "$1" 2>/dev/null
+}
+
 enable_services() {
     step "Enabling systemd services"
 
@@ -1472,10 +1803,27 @@ enable_services() {
         fi
     done
 
+    # timers.target.wants is created here rather than left to the arm helpers so
+    # that a device which has never armed a schedule still has the directory
+    # systemd scans — and so `ls` there answers "nothing is scheduled" instead
+    # of "the mechanism is missing".
+    mkdir -p "$TIMERS_WANTS_DIR"
+
     # Scan all installed qmanager units and enable/skip based on gating
     for unit in "$SYSTEMD_DIR"/qmanager-*.service; do
         [ -f "$unit" ] || continue
         svc=$(basename "$unit" .service)
+
+        # Timer-triggered oneshot bodies declare no [Install] and must never be
+        # pulled into multi-user.target — see unit_is_boot_enabled().
+        if ! unit_is_boot_enabled "$unit"; then
+            # Belt-and-braces against an upgrade from a build that did enable
+            # it: leaving the old symlink would keep the boot loop alive
+            # through the very update that fixes it.
+            rm -f "$WANTS_DIR/${svc}.service"
+            info "Skipped $svc (timer-triggered — not enabled at boot)"
+            continue
+        fi
 
         # Check if this service is in the gated list
         local is_gated=0
@@ -1769,6 +2117,10 @@ print_summary() {
     printf "  ${DIM}Libraries: ${NC}%s\n" "$LIB_DIR"
     printf "  ${DIM}Daemons:   ${NC}%s/qmanager_*\n" "$BIN_DIR"
     printf "  ${DIM}Systemd:   ${NC}%s/qmanager-*\n" "$SYSTEMD_DIR"
+    # Named separately from the line above because it is where an operator
+    # checks that a saved schedule is real: `systemctl list-timers` must show a
+    # populated NEXT column for anything linked here.
+    printf "  ${DIM}Schedules: ${NC}%s/qmanager-*.timer\n" "$TIMERS_WANTS_DIR"
     printf "  ${DIM}Config:    ${NC}%s\n" "$CONF_DIR"
     printf "  ${DIM}Certs:     ${NC}%s\n" "$CERT_DIR"
     printf "  ${DIM}Log:       ${NC}%s\n" "$LOG_FILE"
@@ -1856,6 +2208,12 @@ main() {
     # remove_conflicts runs even with --skip-packages (e.g. socat-at-bridge
     # must be gone before atcli_smd11 can open /dev/smd11)
     remove_conflicts
+
+    # Same placement rule, same reason: qmanager_update always invokes this
+    # installer with --skip-packages, and it may also pass --frontend-only, so
+    # anything gated on DO_PACKAGES or DO_BACKEND would never reach the devices
+    # that actually carry the stale root crontab this removes.
+    scrub_legacy_cron
 
     [ "$DO_PACKAGES" = "1" ] && install_dependencies
 

@@ -13,7 +13,9 @@ Type=simple
 # which is not a failure and does not trigger Restart=.
 ExecCondition=/bin/sh -c '[ -f /usr/lib/qmanager/config.sh ] && . /usr/lib/qmanager/config.sh && val=$(qm_config_get watchcat enabled 0) && [ "$val" = "1" ]'
 ExecStart=/usr/bin/qmanager_watchcat
-EnvironmentFile=-/etc/qmanager/environment
+# Outside /etc/qmanager on purpose — that directory is www-data-owned, and this
+# unit runs as root. Full rationale in qmanager-ping.service.
+EnvironmentFile=-/etc/qmanager.env
 ExecStopPost=/bin/sh -c 'rm -f /tmp/qmanager_watchcat.pid /tmp/qmanager_watchcat.lock /tmp/qmanager_recovery_active'
 TimeoutStopSec=10
 Restart=on-failure

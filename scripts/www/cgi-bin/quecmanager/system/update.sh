@@ -1,8 +1,18 @@
 #!/bin/sh
-. /usr/lib/qmanager/cgi_base.sh
-. /usr/lib/qmanager/config.sh
-. /usr/lib/qmanager/semver.sh
-. /usr/lib/qmanager/downloader.sh
+# The library root is a variable so scripts/test/schedule-cgi.sh can run this
+# endpoint against stub libraries. A request cannot introduce it: lighttpd
+# exports a request's headers as HTTP_* and nothing else. Same hook as
+# settings/quality_thresholds.sh.
+LIB_DIR="${QM_LIB_DIR:-/usr/lib/qmanager}"
+. "$LIB_DIR/cgi_base.sh"
+. "$LIB_DIR/config.sh"
+. "$LIB_DIR/semver.sh"
+. "$LIB_DIR/downloader.sh"
+# For $_SUDO, used by the auto-update arm helper below. cgi_base.sh already
+# sources platform.sh, but its fallback stub does not define $_SUDO, and that
+# helper has to run as root — so name the dependency here rather than inherit it
+# by luck. platform.sh guards against double-sourcing.
+. "$LIB_DIR/platform.sh"
 # =============================================================================
 # update.sh — CGI Endpoint: Software Update (GET + POST)
 # =============================================================================
@@ -17,6 +27,8 @@
 # Config: UCI quecmanager.update.*
 # State:  /tmp/qmanager_update.json, /tmp/qmanager_update.pid
 #         /tmp/qmanager_staged.tar.gz, /tmp/qmanager_staged_version
+# Timer:  qmanager-auto-update.timer, armed through the root helper
+#         /usr/bin/qmanager_auto_update_arm
 #
 # Endpoint: GET/POST /cgi-bin/quecmanager/system/update.sh
 # =============================================================================
@@ -53,11 +65,25 @@ ensure_update_config() {
     qm_config_init
 }
 
-strip_leading_zero() {
-    local v
-    v=$(echo "$1" | sed 's/^0*//')
-    [ -z "$v" ] && v=0
-    echo "$v"
+# Path to the privileged arm helper for the auto-update schedule. Overridable
+# for the same test-only reason as LIB_DIR above, and absolute in every case —
+# never resolved through PATH.
+AUTO_UPDATE_ARM_HELPER="${QM_ARM_BIN_DIR:-/usr/bin}/qmanager_auto_update_arm"
+
+# Turn the arm helper's machine-readable reason into a sentence the user can act
+# on. The preference IS saved in every branch; what failed is the arming, and
+# until it is fixed the device will not check for updates on its own.
+auto_update_arm_message() {
+    case "$1" in
+        helper_unavailable)
+            printf '%s' "Saved the auto-update preference, but the schedule could not be armed — this build does not carry the timer helper yet. Update once manually to install it." ;;
+        unit_absent)
+            printf '%s' "Saved the auto-update preference, but the schedule could not be armed — the auto-update timer unit is not installed. Update once manually to install it." ;;
+        timer_inactive)
+            printf '%s' "Saved the auto-update preference, but the system did not start the timer, so no automatic check is scheduled yet. It should arm on the next reboot." ;;
+        *)
+            printf '%s' "Saved the auto-update preference, but the schedule could not be armed, so the device will not check for updates on its own." ;;
+    esac
 }
 
 # Check if an update process is already running
@@ -331,41 +357,105 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
             true|false) ;;
             *) cgi_error "invalid_value" "enabled must be true or false"; exit 0 ;;
         esac
-        echo "$auto_time" | grep -qE '^[0-9]{2}:[0-9]{2}$' || {
-            cgi_error "invalid_value" "time must be HH:MM format"; exit 0
-        }
-
-        case "$enabled" in
-            true)  qm_config_set update auto_update_enabled 1 ;;
-            false) qm_config_set update auto_update_enabled 0 ;;
+        # HH:MM with a real 00-23 hour, matched as a whole string.
+        #
+        # Two separate defects in the line this replaces, both of which produced
+        # a schedule that saves clean and never fires. First, `grep -E` anchors
+        # are LINE-based: a value carrying an embedded newline whose second line
+        # looked like a time passed the check while the whole multi-line value
+        # flowed on into the file being written — and the file in question is
+        # now a systemd unit, where a smuggled newline is a second directive.
+        # A `case` pattern matches the entire string, so the newline is simply
+        # not a time. Second, [0-9]{2} accepted "99:99"; systemd rejects that as
+        # a calendar parse error and loads the timer as failed, silently.
+        case "$auto_time" in
+            [01][0-9]:[0-5][0-9]|2[0-3]:[0-5][0-9]) ;;
+            *) cgi_error "invalid_value" "time must be HH:MM, 00:00-23:59"; exit 0 ;;
         esac
-        qm_config_set update auto_update_time "$auto_time"
 
-        # Manage crontab (write directly to root's crontab file)
-        CRON_MARKER="# qmanager_auto_update"
-        AUTO_UPDATE_SCRIPT="/usr/bin/qmanager_auto_update"
-        CRON_FILE="/var/spool/cron/crontabs/root"
-        current_cron=$(cat "$CRON_FILE" 2>/dev/null || true)
-        filtered_cron=$(printf '%s\n' "$current_cron" | grep -v "$CRON_MARKER")
+        # Bail on a failed write and leave the timer alone. The timer is what
+        # actually installs updates; the config is what the UI reads back.
+        # Arming a schedule the config does not hold would have the device
+        # update itself at a time no page ever shows.
+        auto_write_failed() {
+            cgi_error "auto_update_save_failed" \
+                "Could not save the auto-update preference — writing the configuration file failed. The existing schedule was left untouched."
+            exit 0
+        }
+        case "$enabled" in
+            true)  qm_config_set update auto_update_enabled 1 || auto_write_failed ;;
+            false) qm_config_set update auto_update_enabled 0 || auto_write_failed ;;
+        esac
+        qm_config_set update auto_update_time "$auto_time" || auto_write_failed
 
+        # --- Arm (or disarm) the systemd timer -------------------------------
+        #
+        # This used to printf a daily line into /var/spool/cron/crontabs/root.
+        # Nothing on this device reads that file: there is no crond unit, the
+        # binary never runs, and the spool directory is empty. So the switch has
+        # read "on" while the device has never once updated itself unattended.
+        #
+        # The CGI runs as www-data and cannot write /lib/systemd/system, so the
+        # unit is generated by a root helper reached through an exact-path
+        # sudoers rule.
         if [ "$enabled" = "true" ]; then
-            sched_hour=$(printf '%s' "$auto_time" | cut -d: -f1)
-            sched_min=$(printf '%s' "$auto_time" | cut -d: -f2)
-            sched_hour=$(strip_leading_zero "$sched_hour")
-            sched_min=$(strip_leading_zero "$sched_min")
-
-            new_cron=$(printf '%s\n%s %s * * * %s  %s' \
-                "$filtered_cron" "$sched_min" "$sched_hour" "$AUTO_UPDATE_SCRIPT" "$CRON_MARKER")
-            printf '%s\n' "$new_cron" > "$CRON_FILE"
+            arm_resp=$($_SUDO "$AUTO_UPDATE_ARM_HELPER" install "$auto_time" 2>/dev/null)
         else
-            if [ -z "$(printf '%s' "$filtered_cron" | tr -d '[:space:]')" ]; then
-                rm -f "$CRON_FILE"
-            else
-                printf '%s\n' "$filtered_cron" > "$CRON_FILE"
-            fi
+            arm_resp=$($_SUDO "$AUTO_UPDATE_ARM_HELPER" teardown 2>/dev/null)
         fi
 
-        cgi_success
+        # Read .armed, never .success. The helper answers success:true with
+        # armed:false when it did its job and there is still nothing scheduled —
+        # an older base without the .service, or a timer systemd declined to
+        # start. A green tick over that response rebuilds the exact bug this
+        # replaces, one layer up.
+        schedule_armed="false"
+        arm_reason=""
+        if [ -z "$arm_resp" ]; then
+            # No JSON at all: the helper is missing, or sudo refused it. Either
+            # way the device carries no new schedule.
+            arm_reason="helper_unavailable"
+        else
+            case "$(printf '%s' "$arm_resp" | jq -r '.armed // false' 2>/dev/null)" in
+                true) schedule_armed="true" ;;
+            esac
+            arm_reason=$(printf '%s' "$arm_resp" | jq -r '.reason // .error // ""' 2>/dev/null)
+        fi
+
+        # schedule_armed answers one question — will this device check for
+        # updates on its own — and schedule_apply_error appears only when that
+        # answer disagrees with what was asked for. Disabling successfully is
+        # armed:false with no error; it is the intended outcome, not a warning.
+        arm_error=""
+        if [ "$enabled" = "true" ]; then
+            if [ "$schedule_armed" != "true" ]; then
+                arm_error=$(auto_update_arm_message "$arm_reason")
+                qlog_warn "Auto-update saved but not armed (reason=${arm_reason:-unknown})"
+            else
+                qlog_info "Auto-update armed daily at ${auto_time}"
+            fi
+        elif [ -n "$arm_reason" ]; then
+            # Teardown reports "" on success. Anything else means the old unit
+            # may still be on disk and counting down, so a device the user just
+            # took off automatic updates can still install one unattended —
+            # which reboots it. Report it as still armed rather than guess the
+            # comfortable answer.
+            schedule_armed="true"
+            arm_error="Saved auto-update as disabled, but the existing timer could not be removed — the device may still update itself on the old schedule."
+            qlog_warn "Auto-update disable saved but timer not removed (reason=${arm_reason})"
+        else
+            qlog_info "Auto-update timer removed"
+        fi
+
+        # schedule_armed always travels, in both directions — it is the fact the
+        # old response ({"success":true} and nothing else) was missing.
+        # schedule_apply_error appears only when the save and the arming
+        # disagree, so a consumer that knows neither field is unaffected.
+        jq -n \
+            --argjson armed "$schedule_armed" \
+            --arg arm_error "$arm_error" \
+            '{success: true, schedule_armed: $armed}
+             + (if $arm_error == "" then {} else {schedule_apply_error: $arm_error} end)'
         exit 0
     fi
 

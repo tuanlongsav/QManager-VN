@@ -1,0 +1,42 @@
+# /lib/systemd/system/qmanager-scheduled-reboot.service
+#
+# TIMER-TRIGGERED ONLY — see the [Install] note at the bottom before editing.
+# Paired with qmanager-scheduled-reboot.timer, which is generated at save time
+# by /usr/bin/qmanager_scheduled_reboot_arm and is the only thing that should
+# ever start this unit.
+[Unit]
+Description=QManager Scheduled Reboot
+After=qmanager-setup.service
+
+# Skip cleanly instead of failing when the worker is absent (a partial install,
+# or a base that predates the feature). Condition* is only honoured in [Unit] —
+# under [Service] it is inert and the unit runs anyway.
+ConditionFileIsExecutable=/usr/bin/qmanager_scheduled_reboot
+
+# Do not reboot through an in-flight OTA. qmanager_update holds this pidfile for
+# the whole download/stage/install cycle, and the installer's file writes are
+# only crash-safe either side of its `sync` — a reboot landing between the unit
+# copies and that sync can leave a half-installed unit set behind. The leading
+# '!' negates the condition: the unit is skipped while the file exists. A missed
+# window is not made up (Persistent=false on the timer, by necessity — /var/lib
+# is tmpfs here), so this cycle is simply dropped and the next one fires
+# normally.
+ConditionPathExists=!/tmp/qmanager_update.pid
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/qmanager_scheduled_reboot
+
+# Deliberately NO RemainAfterExit. A oneshot that stays "active" after exiting
+# cannot be started again, so the second and every later timer trigger would be
+# discarded as "job already satisfied" — a schedule that fires once and then
+# quietly stops, which is a subtler version of the bug this feature replaces.
+
+# NO [Install] SECTION, ON PURPOSE.
+#
+# enable_services() in scripts/install_rm520n.sh symlinks every installed
+# qmanager-*.service into multi-user.target.wants unless the unit is gated; its
+# gate is the absence of an [Install] section, read from the unit file itself.
+# Adding one here would boot-enable this unit, and this unit reboots the device.
+# That is a boot loop, not a failed unit. The .timer is what carries
+# WantedBy=timers.target — see scripts/usr/lib/qmanager/schedule_timer.sh.

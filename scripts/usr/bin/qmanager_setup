@@ -14,10 +14,17 @@ if ! touch /usr/.qm_rw_test 2>/dev/null; then
 fi
 rm -f /usr/.qm_rw_test
 
-# Ensure required directories exist
-mkdir -p /var/lock /etc/qmanager /usr/lib/qmanager /tmp/quecmanager /var/spool/cron/crontabs
-# CGI (www-data) writes cron entries for root — needs write access to spool dir
-chmod 777 /var/spool/cron/crontabs
+# Ensure required directories exist.
+#
+# /var/spool/cron/crontabs is deliberately NOT among them any more, and neither
+# is the `chmod 777` that used to follow. Three CGI endpoints wrote root's
+# crontab through that directory and nothing ever executed it: this device runs
+# no crond (no unit, `systemctl is-active crond` inactive, spool empty), so
+# every schedule saved through the UI silently never fired. Those endpoints now
+# arm systemd timers instead and touch nothing under /var/spool, so the only
+# thing a world-writable root crontab directory still bought was a path for any
+# local user to schedule commands as root the moment something started crond.
+mkdir -p /var/lock /etc/qmanager /usr/lib/qmanager /tmp/quecmanager
 
 # AT device permissions — www-data (via dialout group) needs read/write access.
 # Primary mechanism: /etc/udev/rules.d/99-qmanager-smd11.rules fires on the
@@ -58,6 +65,22 @@ chmod 700 /tmp/qmanager_sessions
 
 # Config directory — www-data needs write access for auth.json, profiles
 chown -R www-data:www-data /etc/qmanager
+
+# /etc/qmanager.env is the systemd EnvironmentFile for qmanager-poller,
+# -watchcat and -ping, all of which run as root. It is a SIBLING of the
+# directory above, not a file in it, precisely so the chown on the line above
+# cannot reach it: `chown -R` descends into the named directory's children and
+# structurally cannot touch a sibling. Never move it back inside, and never
+# widen that chown to an /etc/qmanager* glob — the glob would match this file.
+#
+# Re-asserted here rather than trusted: root:root 0600 is what makes the file
+# unwritable by www-data even if it were ever placed somewhere reachable, and
+# a hand-edit or an interrupted install can leave it wrong. Same
+# belt-and-suspenders reasoning as the auth.json chmod below.
+if [ -f /etc/qmanager.env ]; then
+    chown root:root /etc/qmanager.env
+    chmod 600 /etc/qmanager.env
+fi
 
 # Make all qmanager binaries executable
 for f in /usr/bin/qmanager_*; do

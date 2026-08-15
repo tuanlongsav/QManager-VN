@@ -20,11 +20,15 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { AlertTriangleIcon, CircleIcon } from "lucide-react";
 
+import { useT } from "@/hooks/use-i18n";
 import type {
   UseSystemSettingsReturn,
   SaveScheduledRebootPayload,
 } from "@/hooks/use-system-settings";
-import type { ScheduleConfig } from "@/types/system-settings";
+import type {
+  ScheduleConfig,
+  SaveActionResponse,
+} from "@/types/system-settings";
 import { DAY_LABELS } from "@/types/system-settings";
 
 // ─── Animation variants ────────────────────────────────────────────────────
@@ -53,6 +57,8 @@ const ScheduledOperationsCard = ({
   error,
   saveScheduledReboot,
 }: ScheduledOperationsCardProps) => {
+  const { t } = useT();
+
   // ─── Scheduled Reboot local state ──────────────────────────────────────────
   const [rebootEnabled, setRebootEnabled] = useState(false);
   const [rebootTime, setRebootTime] = useState("04:00");
@@ -77,6 +83,53 @@ const ScheduledOperationsCard = ({
     };
   }, []);
 
+  // ─── Save-result reporting ────────────────────────────────────────────────
+  // Saving the schedule and arming the timer that runs it are two different
+  // things, and only the second decides whether the device actually reboots.
+  // They used to be reported as one: the schedule was written into a crontab
+  // that no daemon on this device reads, so a save that scheduled nothing
+  // looked exactly like one that worked. `schedule_armed` is what the old
+  // response was missing, so it — not `success` — is what gets read here.
+  //
+  // It describes the device, not the request, so it is judged against the
+  // `enabled` that was sent. Equal means the device agrees with what was asked
+  // and the save is a plain success, including the ordinary switch-off, where
+  // "no timer armed" is the goal rather than a failure. The two ways it can
+  // disagree are both real, and both worth saying out loud:
+  //
+  //   enabled, not armed  — saved, but nothing will reboot the device
+  //   disabled, still armed — switched off, but the old timer may still fire
+  //
+  // A warning rather than an error, because the schedule is stored either way:
+  // failing the save would throw away a value the device holds. Same call
+  // nav-user.tsx and system-settings-card.tsx make for a hostname or timezone
+  // that saved but did not apply.
+  //
+  // `schedule_apply_error` carries the specific cause, but it is an English
+  // sentence composed server-side and this UI is bilingual, so the wording
+  // comes from the dictionary instead — as it does for the other two apply
+  // errors, which are likewise typed but never rendered.
+  const reportSaveResult = useCallback(
+    (result: SaveActionResponse, enabled: boolean, successMessage: string) => {
+      // Absent on a device that predates the field. That is unknown, not
+      // failure — treating it as "not armed" would warn on every save on every
+      // such device, which is how a warning stops being read at all.
+      if (
+        typeof result.schedule_armed === "boolean" &&
+        result.schedule_armed !== enabled
+      ) {
+        toast.warning(
+          enabled
+            ? t("scheduledOperations.toastNotArmed")
+            : t("scheduledOperations.toastNotDisarmed"),
+        );
+        return;
+      }
+      toast.success(successMessage);
+    },
+    [t],
+  );
+
   // ─── Debounced save helper ────────────────────────────────────────────────
   const debouncedRebootSave = useCallback(
     (payload: SaveScheduledRebootPayload) => {
@@ -84,15 +137,19 @@ const ScheduledOperationsCard = ({
         clearTimeout(rebootSaveTimerRef.current);
       }
       rebootSaveTimerRef.current = setTimeout(async () => {
-        const success = await saveScheduledReboot(payload);
-        if (success) {
-          toast.success("Reboot schedule saved");
+        const result = await saveScheduledReboot(payload);
+        if (result) {
+          reportSaveResult(
+            result,
+            payload.enabled,
+            t("scheduledOperations.toastSaved"),
+          );
         } else {
-          toast.error("Failed to save reboot schedule");
+          toast.error(t("scheduledOperations.toastSaveFailed"));
         }
       }, 800);
     },
-    [saveScheduledReboot],
+    [saveScheduledReboot, reportSaveResult, t],
   );
 
   // ===========================================================================
@@ -105,21 +162,23 @@ const ScheduledOperationsCard = ({
       clearTimeout(rebootSaveTimerRef.current);
       rebootSaveTimerRef.current = null;
     }
-    const success = await saveScheduledReboot({
+    const result = await saveScheduledReboot({
       action: "save_scheduled_reboot",
       enabled: checked,
       time: rebootTime,
       days: rebootDays,
     });
-    if (success) {
-      toast.success(
+    if (result) {
+      reportSaveResult(
+        result,
+        checked,
         checked
-          ? "Scheduled reboot enabled"
-          : "Scheduled reboot disabled",
+          ? t("scheduledOperations.toastEnabled")
+          : t("scheduledOperations.toastDisabled"),
       );
     } else {
       setRebootEnabled(!checked);
-      toast.error("Failed to update reboot schedule");
+      toast.error(t("scheduledOperations.toastUpdateFailed"));
     }
   };
 

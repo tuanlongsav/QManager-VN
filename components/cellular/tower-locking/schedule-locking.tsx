@@ -26,12 +26,16 @@ import { CircleIcon } from "lucide-react";
 import type {
   TowerLockConfig,
   TowerScheduleConfig,
+  TowerScheduleResponse,
 } from "@/types/tower-locking";
 import { DAY_LABELS } from "@/types/tower-locking";
 
 interface ScheduleTowerLockingProps {
   config: TowerLockConfig | null;
-  onScheduleChange: (schedule: TowerScheduleConfig) => Promise<boolean>;
+  /** Resolves to the response body on success, `false` when the save failed. */
+  onScheduleChange: (
+    schedule: TowerScheduleConfig,
+  ) => Promise<TowerScheduleResponse | false>;
 }
 
 const ScheduleTowerLockingComponent = ({
@@ -88,17 +92,38 @@ const ScheduleTowerLockingComponent = ({
       clearTimeout(saveTimerRef.current);
       saveTimerRef.current = null;
     }
-    const success = await onScheduleChange({
+    const result = await onScheduleChange({
       enabled: checked,
       start_time: startTime,
       end_time: endTime,
       days,
     });
-    if (!success) {
+    if (!result) {
       // Backend rejected — revert toggle
       setEnabled(!checked);
       toast.warning(
         "No lock targets configured"
+      );
+      return;
+    }
+    // Saved is not the same as scheduled. The config write effectively always
+    // succeeds; arming the systemd timer goes through a root helper and can
+    // fail on a device that has not yet taken the update carrying it. Leaving
+    // the toggle green in that case is the bug the timer work exists to fix,
+    // so say it plainly instead.
+    //
+    // Absent means UNKNOWN, not false — a device predating the field never
+    // sends it, and warning on every save there is how a warning stops being
+    // read. Same rule as components/system-settings/scheduled-operations-card.
+    if (
+      typeof result.schedule_armed === "boolean" &&
+      result.schedule_armed !== checked
+    ) {
+      toast.warning(
+        result.schedule_apply_error ||
+          (checked
+            ? "Schedule saved, but no timer was armed — the tower lock will not change on this schedule."
+            : "Schedule saved, but the timer was not disarmed — the tower lock may still change on the old schedule."),
       );
     }
   };

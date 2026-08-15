@@ -14,8 +14,20 @@ www-data ALL=(root) NOPASSWD: /usr/sbin/iptables, /usr/sbin/iptables-restore, /u
 # System reboot (used by system/reboot.sh, update installer)
 www-data ALL=(root) NOPASSWD: /sbin/reboot
 
-# Crontab management (used by scheduled reboot, low power, auto-update)
-www-data ALL=(root) NOPASSWD: /usr/bin/crontab
+# Scheduled-task timer arming. These three replaced a `/usr/bin/crontab` grant
+# that was both dead and the largest escalation surface in this file: a bare
+# command name in sudoers matches ANY arguments, so it let the web user rewrite
+# root's crontab wholesale. It bought nothing — this device runs no crond, so
+# every schedule written through it silently never fired.
+#
+# Each helper hardcodes the unit names it manages and re-validates its own
+# arguments (HH:MM with a real 00-23 hour, day mask 0-6) by shape before either
+# value reaches a generated unit file, because a newline in a schedule string
+# would otherwise become a second systemd directive — ExecStart= included. The
+# CGI validates too; that layer is convenience, this one is the boundary.
+www-data ALL=(root) NOPASSWD: /usr/bin/qmanager_scheduled_reboot_arm
+www-data ALL=(root) NOPASSWD: /usr/bin/qmanager_tower_schedule_arm
+www-data ALL=(root) NOPASSWD: /usr/bin/qmanager_auto_update_arm
 
 # SSH password management (reads password from stdin, updates /etc/shadow)
 www-data ALL=(root) NOPASSWD: /usr/bin/qmanager_set_ssh_password

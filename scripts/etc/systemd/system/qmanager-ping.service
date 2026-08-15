@@ -14,8 +14,35 @@ ExecStart=/usr/bin/qmanager_ping
 # written by the Connectivity Sensitivity UI. The daemon's hardcoded
 # defaults (Cloudflare primary, Google secondary; relaxed profile) cover
 # fresh boots before the JSON exists. Operators who genuinely need a
-# manual override can drop values into /etc/qmanager/environment.
-EnvironmentFile=-/etc/qmanager/environment
+# manual override can drop values into /etc/qmanager.env.
+#
+# That path is /etc/qmanager.env and NOT /etc/qmanager/environment, and it must
+# stay a sibling of the config directory rather than a file inside it. This is
+# the canonical explanation; qmanager-poller.service and
+# qmanager-watchcat.service point back here.
+#
+# EnvironmentFile= makes systemd inject every KEY=VALUE line into this unit's
+# process environment, and this unit runs as root (no User=). /etc/qmanager is
+# chown -R www-data:www-data on every boot by qmanager_setup, because the web
+# CGI needs to write auth.json and the profile files there. So while this file
+# lived in that directory, anyone who could run code as www-data — i.e. anyone
+# with a foothold in any CGI endpoint — could set PATH= or LD_PRELOAD= for
+# three root daemons.
+#
+# Pinning the file to root:root 0600 does not fix that: deleting and renaming
+# a file are authorised by write permission on the PARENT DIRECTORY, not by
+# the file's own mode, so www-data could simply unlink the pinned file and
+# drop in its own. Upstream shipped exactly that partial fix and had to
+# follow it with a relocation. Moving the file to /etc — root-owned 0755, and
+# never chowned or chmoded by anything in this tree — is what actually denies
+# www-data create, modify, replace, rename and delete.
+#
+# Do not "tidy" this back under /etc/qmanager, and do not introduce an
+# /etc/qmanager* glob anywhere: that would match this sibling and sweep it
+# back into the chown. scripts/test/daemon-environment-path.sh fails the build
+# on either mistake, and on this line drifting away from the installer's
+# DAEMON_ENV_FILE constant.
+EnvironmentFile=-/etc/qmanager.env
 TimeoutStopSec=10
 Restart=on-failure
 RestartSec=5s

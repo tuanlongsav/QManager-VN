@@ -1,0 +1,142 @@
+#!/bin/sh
+# =============================================================================
+# qmanager_tower_schedule_arm — arm/disarm the Tower Lock schedule timer PAIR
+# =============================================================================
+# The Tower Lock schedule has two boundaries a day: apply the lock at
+# start_time, clear it at end_time. Those used to be two lines in
+# /var/spool/cron/crontabs/root that nothing on this device ever read (no crond
+# runs here), so the schedule silently never applied and never cleared.
+#
+# This helper is the privileged half of the replacement. Unlike the other two
+# arm helpers it manages a PAIR of units in one invocation —
+# qmanager-tower-schedule-apply.timer and qmanager-tower-schedule-clear.timer —
+# because half a schedule is worse than none: an apply that fires with no clear
+# leaves the modem locked to one cell indefinitely.
+#
+# Usage:
+#   sudo -n /usr/bin/qmanager_tower_schedule_arm install <start HH:MM> <end HH:MM> <days_csv>
+#   sudo -n /usr/bin/qmanager_tower_schedule_arm teardown
+#
+#   <days_csv>  Comma-separated cron weekdays, 0=Sun .. 6=Sat. Shared by both
+#               boundaries, matching the single day picker in the UI.
+#
+# Exit:  0 = the request was understood and acted on
+#        1 = the request was rejected or could not be carried out
+#
+# READ .armed, NOT .success — see qmanager_scheduled_reboot_arm's header. For
+# this helper `armed:true` additionally means BOTH halves are live; there is no
+# response that reports a half-armed pair, because there is no state in which
+# one is left armed without the other.
+#
+# SECURITY: sudo-reachable from the web user. Both times and the day mask are
+# re-validated here by shape before any of them reaches a unit file, and
+# schedule_timer.sh gates the rendered line again at the write. Nothing is
+# eval'd.
+#
+# Install location: /usr/bin/qmanager_tower_schedule_arm
+# =============================================================================
+
+PATH=/opt/bin:/opt/sbin:/usr/bin:/usr/sbin:/bin:/sbin
+export PATH
+
+UNIT_APPLY="qmanager-tower-schedule-apply.timer"
+SERVICE_APPLY="qmanager-tower-schedule-apply.service"
+DESC_APPLY="QManager tower lock schedule (apply)"
+
+UNIT_CLEAR="qmanager-tower-schedule-clear.timer"
+SERVICE_CLEAR="qmanager-tower-schedule-clear.service"
+DESC_CLEAR="QManager tower lock schedule (clear)"
+
+# Test-only path prefix; see schedule_timer.sh.
+QM_ROOT="${QM_TIMER_ROOT:-}"
+case "$QM_ROOT" in
+    '') ;;
+    *..*) QM_ROOT="" ;;
+    /*) ;;
+    *) QM_ROOT="" ;;
+esac
+LIB="$QM_ROOT/usr/lib/qmanager/schedule_timer.sh"
+
+action="$1"
+start_time="$2"
+end_time="$3"
+sched_days="$4"
+
+if [ ! -f "$LIB" ]; then
+    printf '{"success":false,"armed":false,"error":"lib_missing","detail":"schedule_timer.sh not found"}\n'
+    exit 1
+fi
+# shellcheck source=/dev/null
+. "$LIB"
+
+case "$action" in
+    install|teardown) ;;
+    *) _qm_emit_err "invalid_action" "action must be install or teardown"; exit 1 ;;
+esac
+
+if [ "$action" = "teardown" ]; then
+    if _qm_timer_disarm "$UNIT_APPLY" "$UNIT_CLEAR"; then
+        _qm_emit_ok false "" "unknown"
+        exit 0
+    fi
+    _qm_emit_err "disarm_failed" "timer unit or symlink still present after removal"
+    exit 1
+fi
+
+# --- install ----------------------------------------------------------------
+
+if ! _qm_validate_hhmm "$start_time"; then
+    _qm_emit_err "invalid_start_time" "start_time must be HH:MM, hour 00-23"
+    exit 1
+fi
+if ! _qm_validate_hhmm "$end_time"; then
+    _qm_emit_err "invalid_end_time" "end_time must be HH:MM, hour 00-23"
+    exit 1
+fi
+if ! _qm_validate_days "$sched_days"; then
+    _qm_emit_err "invalid_days" "days must be a comma list of 0-6"
+    exit 1
+fi
+
+# Either half missing means an older OTA base that predates this feature.
+# Report honestly and arm nothing — arming only the apply side would lock the
+# modem to a cell with nothing scheduled to release it.
+if ! _qm_service_present "$SERVICE_APPLY" || ! _qm_service_present "$SERVICE_CLEAR"; then
+    _qm_emit_ok false "unit_absent" "unknown"
+    exit 0
+fi
+
+apply_line=$(_qm_oncalendar_weekly "$sched_days" "$start_time")
+clear_line=$(_qm_oncalendar_weekly "$sched_days" "$end_time")
+
+if [ -z "$apply_line" ] || [ -z "$clear_line" ]; then
+    _qm_timer_disarm "$UNIT_APPLY" "$UNIT_CLEAR" || true
+    _qm_emit_ok false "no_schedule" "unknown"
+    exit 0
+fi
+
+rc=0
+_qm_timer_write "$UNIT_APPLY" "$SERVICE_APPLY" "$DESC_APPLY" "$apply_line" || rc=1
+_qm_timer_write "$UNIT_CLEAR" "$SERVICE_CLEAR" "$DESC_CLEAR" "$clear_line" || rc=1
+
+if [ "$rc" -ne 0 ]; then
+    # All-or-nothing: roll the pair back rather than leave whichever half
+    # succeeded armed on its own.
+    _qm_timer_disarm "$UNIT_APPLY" "$UNIT_CLEAR" || true
+    _qm_emit_err "write_failed" "could not write or link the timer units"
+    exit 1
+fi
+
+_qm_timer_activate "$UNIT_APPLY" "$UNIT_CLEAR"
+
+state_apply=$(_qm_timer_state "$UNIT_APPLY")
+state_clear=$(_qm_timer_state "$UNIT_CLEAR")
+if [ "$state_apply" = "inactive" ] || [ "$state_clear" = "inactive" ]; then
+    # One or both are on disk but not counting down. Both stay installed for
+    # the next boot; the response refuses to call that armed.
+    _qm_emit_ok false "timer_inactive" "inactive"
+    exit 0
+fi
+
+_qm_emit_ok true "" "$state_apply"
+exit 0

@@ -497,7 +497,7 @@ These run continuously under systemd supervision.
 **State files:** `/tmp/qmanager_status.json` (main cache), `/tmp/qmanager_signal_history.json`, `/tmp/qmanager_ping_history.json`, `/tmp/qmanager_events.json`
 **Logs:** `/tmp/qmanager.log`
 
-Main data collection daemon. Sources `qlog.sh`, `parse_at.sh`, `events.sh`, `email_alerts.sh`, `sms_alerts.sh` at startup.
+Main data collection daemon. Sources `qlog.sh`, `parse_at.sh`, `events.sh`, `sms_alerts.sh`, `profile_mgr.sh` and `detect_hardware.sh` at startup. (It sourced `email_alerts.sh` too until Email Alerts was cut in Phase B — see §4.5.)
 
 **Polling tiers:**
 
@@ -974,7 +974,7 @@ For request/response schemas, see `API-REFERENCE.md`.
 | `auth/password.sh` | POST | Change web UI password (and SSH password via `qm_set_ssh_password`) |
 | `auth/ssh_password.sh` | POST | Change root SSH password only |
 
-#### `at_cmd/` (14 scripts)
+#### `at_cmd/` (7 scripts)
 
 | Script | Method | Description |
 |--------|--------|-------------|
@@ -983,14 +983,12 @@ For request/response schemas, see `API-REFERENCE.md`.
 | `at_cmd/fetch_data.sh` | GET | Return current poller status cache (`qmanager_status.json`) |
 | `at_cmd/fetch_events.sh` | GET | Return recent events as JSON array |
 | `at_cmd/fetch_ping_history.sh` | GET | Return ping history data for latency chart |
-| `at_cmd/fetch_signal_history.sh` | GET | Return signal history data for RSRP/SINR chart |
 | `at_cmd/neighbour_scan_start.sh` | POST | Spawn `qmanager_neighbour_scanner`; return PID |
 | `at_cmd/neighbour_scan_status.sh` | GET | Poll neighbour scan progress and results |
-| `at_cmd/send_command.sh` | POST | Send arbitrary AT command via `qcmd`; returns raw response |
-| `at_cmd/speedtest_check.sh` | GET | Check if Ookla speedtest CLI is installed |
-| `at_cmd/speedtest_servers.sh` | GET | List nearest speedtest servers |
-| `at_cmd/speedtest_start.sh` | POST | Start a speedtest; return PID |
-| `at_cmd/speedtest_status.sh` | GET | Poll speedtest progress and results |
+
+`send_command.sh` went with the AT Terminal in Phase B; `speedtest_*.sh` and
+`fetch_signal_history.sh` are gone from the tree as well, and nothing in the
+frontend calls them.
 
 #### `bands/` (4 scripts)
 
@@ -1028,12 +1026,10 @@ For request/response schemas, see `API-REFERENCE.md`.
 | `frequency/lock.sh` | POST | Apply EARFCN/ARFCN frequency lock |
 | `frequency/status.sh` | GET | Read current frequency lock state |
 
-#### `monitoring/` (5 scripts)
+#### `monitoring/` (3 scripts)
 
 | Script | Method | Description |
 |--------|--------|-------------|
-| `monitoring/email_alert_log.sh` | GET | Return email alert history (NDJSON -> JSON array) |
-| `monitoring/email_alerts.sh` | GET/POST | Read or write email alert config; POST test send |
 | `monitoring/sms_alert_log.sh` | GET | Return SMS alert history (NDJSON -> JSON array) |
 | `monitoring/sms_alerts.sh` | GET/POST | Read or write SMS alert config; POST test send |
 | `monitoring/watchdog.sh` | GET/POST | Read or write watchcat config; start/stop watchcat service |
@@ -1073,15 +1069,20 @@ For request/response schemas, see `API-REFERENCE.md`.
 | `scenarios/list.sh` | GET | Return all saved scenarios |
 | `scenarios/save.sh` | POST | Create or update a scenario |
 
-#### `system/` (5 scripts)
+#### `system/` (6 scripts, plus the `system/health-check/` subdirectory)
 
 | Script | Method | Description |
 |--------|--------|-------------|
+| `system/hardware-info.sh` | GET | Return the hardware snapshot `detect_hardware()` writes at poller boot; live-probes if the snapshot is missing. Drives the model badge, feature gating and the band whitelist |
 | `system/logs.sh` | GET | Return QManager log file contents |
 | `system/modem-subsys.sh` | GET | Return modem subsystem health (state, crash count, coredump flag) by reshaping the `system_health` block from the poller status cache; thin `jq` extractor — never re-computes live data |
 | `system/reboot.sh` | POST | Initiate system reboot via `cgi_reboot_response` |
 | `system/settings.sh` | GET/POST | Read or write system settings (hostname, timezone, temperature/distance units, scheduled reboot) |
 | `system/update.sh` | GET/POST | OTA update: check version, download, install, rollback; spawns `qmanager_update` via sudo |
+| `system/health-check/run.sh` | POST | Launch the System Health Check runner (idempotent) |
+| `system/health-check/status.sh` | GET | Current health-check status JSON; `?test_id=<id>` returns the last 4 KB of that test's raw output |
+| `system/health-check/download.sh` | GET | Stream the gzipped diagnostic bundle |
+| `system/health-check/clear.sh` | POST | Delete previous health-check artifacts; refuses while a job is running |
 
 #### `tower/` (5 scripts)
 
@@ -1137,8 +1138,6 @@ Cleared on every reboot (tmpfs). Files pre-created by `qmanager_setup` are marke
 | `/tmp/qmanager_tower_failover.json` | root | qmanager_tower_failover | Failover daemon state |
 | `/tmp/qmanager_tower_failover.pid` | root | qmanager_tower_failover | Failover daemon PID |
 | `/tmp/qmanager_tower_failover` | root | qmanager_tower_failover | Failover active flag |
-| `/tmp/qmanager_email_log.json` | root | email_alerts.sh | Email alert history NDJSON (max 100) |
-| `/tmp/qmanager_email_reload` | www-data | monitoring/email_alerts.sh | Reload flag for email config |
 | `/tmp/qmanager_sms_log.json` | root | sms_alerts.sh | SMS alert history NDJSON (max 100) |
 | `/tmp/qmanager_sms_reload` | www-data | monitoring/sms_alerts.sh | Reload flag for SMS config |
 | `/tmp/qmanager_update.json` | root | qmanager_update | OTA update status (idle/downloading/verifying/ready/installing/rebooting/error) |
@@ -1151,7 +1150,12 @@ Cleared on every reboot (tmpfs). Files pre-created by `qmanager_setup` are marke
 | `/tmp/qmanager_cc_data.tmp` | root | parse_at.sh | Carrier component parse scratch file |
 | `/tmp/qmanager_ca_parse.tmp` | root | parse_at.sh | CA parse scratch file |
 | `/tmp/qmanager_mtu_reapply.pid` | root | tower_lock_mgr.sh | MTU re-apply watcher PID |
-| `/tmp/msmtp_last_err.log` | root | email_alerts.sh | Last msmtp error output |
+
+The Email Alerts runtime files (`/tmp/qmanager_email_log.json`,
+`/tmp/qmanager_email_reload`, `/tmp/msmtp_last_err.log`) are gone with the
+feature (§4.5). Nothing in the tree writes them; the uninstaller still deletes
+`/tmp/qmanager_email_reload` so a device upgraded from a pre-Phase-B build is
+left clean.
 
 ### Persistent Configuration (`/etc/qmanager/`)
 
@@ -1169,8 +1173,8 @@ Lives on the rootfs (read-only by default). `qmanager_setup` calls `mount -o rem
 | `/etc/qmanager/active_scenario` | Active scenario ID (plain text) — written by `scenario_set_active` |
 | `/etc/qmanager/scenarios/` | Custom scenario JSON files (`custom-<ts>.json`) |
 | `/etc/qmanager/tower_lock.json` | Tower lock config (lte, nr_sa, persist, failover, schedule) |
-| `/etc/qmanager/email_alerts.json` | Email alert config (enabled, sender, recipient, threshold) |
-| `/etc/qmanager/msmtprc` | msmtp config (generated on save; no `logfile` directive) |
+| `/etc/qmanager/email_alerts.json` | **Legacy.** Email alert config from a pre-Phase-B build. Nothing writes it; `qmanager_health_check` still reads and redacts it when collecting a bundle (§4.5) |
+| `/etc/qmanager/msmtprc` | **Legacy.** msmtp config from a pre-Phase-B build; same read-and-redact treatment as above |
 | `/etc/qmanager/sms_alerts.json` | SMS alert config (enabled, recipient_phone, threshold) |
 | `/etc/qmanager/imei_backup.json` | IMEI backup for rejection check restore |
 | `/etc/qmanager/imei_check_pending` | Marker: IMEI restore pending after next boot |
@@ -1178,7 +1182,43 @@ Lives on the rootfs (read-only by default). `qmanager_setup` calls `mount -o rem
 | `/etc/firewall.user.mtu` | MTU setting script (sourced by `qmanager_mtu.service`) |
 | `/etc/qmanager/long_commands.list` | List of AT commands treated as long (one per line) |
 | `/etc/qmanager/crash.log` | Watchcat Tier-4 reboot log |
-| `/etc/qmanager/environment` | Optional environment overrides for systemd units (e.g., `QLOG_LEVEL=DEBUG`) |
+
+### Daemon Environment Overrides — `/etc/qmanager.env`
+
+Optional `KEY=VALUE` overrides for the systemd units (e.g. `QLOG_LEVEL=DEBUG`).
+Read by `qmanager-poller`, `qmanager-watchcat` and `qmanager-ping` via
+`EnvironmentFile=-/etc/qmanager.env`. Root-owned, mode 0600; re-asserted on
+every boot by `qmanager_setup`.
+
+**It is a sibling of `/etc/qmanager/`, not a file inside it, and it has to
+stay one.** `EnvironmentFile=` injects every line of the named file into the
+unit's environment, and all three of those units run as root — no `User=`. But
+`/etc/qmanager/` is `chown -R www-data:www-data`'d by the installer and again
+on every boot, because the CGI layer needs to write config there. A file in
+that directory is therefore a file the web user can rewrite, and write access
+to a root unit's `EnvironmentFile=` is the ability to set `PATH` and
+`LD_PRELOAD` for a root process. Pinning the file's own mode does not help:
+unlinking and replacing a file is authorised by write permission on the
+*parent directory*, not by the file's mode.
+
+Two practical consequences:
+
+- **Do not write `/etc/qmanager/environment`.** That was this file's location
+  in builds before the move. Nothing reads it now, and because
+  `EnvironmentFile=` carries a leading `-` ("absent is not an error"), a stale
+  file there produces no warning and no effect — the override just silently
+  does nothing. The installer's `relocate_daemon_environment()` migrates a
+  surviving one across — but only if it is a plain regular file, and only the
+  keys on its allowlist, quarantining the original when it drops anything.
+  Find a symlink, a directory, a FIFO or a multiply-linked file there and it
+  refuses outright and leaves the object in place as evidence, because the
+  only thing that can put one there is something with write access to a
+  directory the web user owns.
+- **Never widen anything to an `/etc/qmanager*` glob.** `chown -R` on a
+  directory cannot reach a sibling, but a glob on the directory *name*
+  matches `/etc/qmanager.env` too. `scripts/test/daemon-environment-path.sh`
+  fails the build if one appears, and also if the env file ever ends up at or
+  under a path that is chowned to `www-data`.
 
 ### Other Paths
 

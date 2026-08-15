@@ -34,6 +34,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { DownloadIcon } from "lucide-react";
 import { toast } from "sonner";
+import type { CgiJson } from "@/hooks/use-software-update";
 
 import type { UpdateInfo } from "@/hooks/use-software-update";
 
@@ -46,7 +47,11 @@ interface UpdatePreferencesCardProps {
   isDownloading: boolean;
   installVersion: (version: string) => Promise<void>;
   togglePrerelease: (enabled: boolean) => Promise<void>;
-  saveAutoUpdate: (enabled: boolean, time: string) => Promise<void>;
+  /** Resolves to the response body on success, `false` when the save failed. */
+  saveAutoUpdate: (
+    enabled: boolean,
+    time: string,
+  ) => Promise<CgiJson | false>;
 }
 
 // ─── Component ──────────────────────────────────────────────────────────────
@@ -119,10 +124,33 @@ export function UpdatePreferencesCard({
     async (checked: boolean) => {
       setAutoUpdateToggling(true);
       try {
-        await saveAutoUpdate(checked, autoUpdateTime);
-        toast.success(
-          checked ? "Automatic updates enabled" : "Automatic updates disabled",
-        );
+        const result = await saveAutoUpdate(checked, autoUpdateTime);
+        // Saved is not the same as scheduled. Writing the preference all but
+        // always succeeds; arming the systemd timer goes through a root helper
+        // and can fail on a device that has not yet taken the update carrying
+        // it. A green toast there is exactly the silent-no-op this whole
+        // timer migration exists to remove — crond never ran, so the old
+        // crontab writers reported success for years while doing nothing.
+        //
+        // Absent means UNKNOWN, not false: a device predating the field never
+        // sends it, and warning on every save there is how a warning stops
+        // being read. Same rule as scheduled-operations-card.
+        if (
+          result &&
+          typeof result.schedule_armed === "boolean" &&
+          result.schedule_armed !== checked
+        ) {
+          toast.warning(
+            result.schedule_apply_error ||
+              (checked
+                ? "Preference saved, but no timer was armed — this device will not check for updates on its own."
+                : "Preference saved, but the timer was not disarmed — this device may still check for updates."),
+          );
+        } else {
+          toast.success(
+            checked ? "Automatic updates enabled" : "Automatic updates disabled",
+          );
+        }
       } catch {
         toast.error("Failed to update preference");
       } finally {

@@ -54,6 +54,30 @@ export interface SaveSettingsResponse {
 // cgi_error() on the failure path.
 export interface SaveActionResponse extends SaveSettingsResponse {
   scheduled_reboot?: ScheduleConfig;
+  // Whether a systemd timer is actually counting down behind the schedule that
+  // was just saved — the third `<thing>_applied` pair on this response, and
+  // split from `success` for the same reason as the two above: the schedule is
+  // stored either way, so folding a failed arm into `success` would make the
+  // client discard a value the device does hold.
+  //
+  // This is the field the old response was missing. The schedule used to be
+  // written into a crontab that no daemon on this device reads, so a save that
+  // scheduled nothing at all was indistinguishable from one that worked. Read
+  // this, not `success`, before telling the user a schedule is live.
+  //
+  // It reports the device's actual state rather than the request's outcome, so
+  // it is only meaningful against the `enabled` that was sent: equal means the
+  // device agrees with what was asked, and the two ways it can disagree are
+  // both real problems — enabled with no timer armed, or disabled with the old
+  // timer still counting down. Absent means the device predates the field;
+  // that is unknown, not failure, and must not warn.
+  schedule_armed?: boolean;
+  // Present only when `schedule_armed` disagrees with the `enabled` that was
+  // sent. It is an English sentence built server-side, not a code — the UI is
+  // bilingual, so it is not rendered; it exists for logs and for parity with
+  // `hostname_apply_error`/`timezone_apply_error`, which the UI also types but
+  // does not display.
+  schedule_apply_error?: string;
   error?: string;
   detail?: string;
 }

@@ -1,0 +1,31 @@
+# /lib/systemd/system/qmanager-auto-update.service
+#
+# TIMER-TRIGGERED ONLY — see the [Install] note at the bottom before editing.
+# Paired with qmanager-auto-update.timer, generated at save time by
+# /usr/bin/qmanager_auto_update_arm.
+[Unit]
+Description=QManager Automatic Update Check
+After=qmanager-setup.service network.target
+
+# Skip cleanly rather than fail when the worker is absent. Condition* is only
+# honoured in [Unit]; under [Service] it is inert and the unit runs anyway.
+ConditionFileIsExecutable=/usr/bin/qmanager_auto_update
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/qmanager_auto_update
+
+# An update downloads a tarball over a cellular link and then runs the
+# installer. The default 90 s start timeout would SIGTERM it mid-install, so it
+# is lifted rather than left implicit. 0 (no limit) is not used: a wedged
+# update that never returns would hold its own pidfile and block every later
+# run, including the manual one from the UI.
+TimeoutStartSec=1800
+
+# Deliberately NO RemainAfterExit — see qmanager-scheduled-reboot.service for
+# why a oneshot that stays active can only ever be triggered once.
+
+# NO [Install] SECTION, ON PURPOSE. enable_services() treats the absence of one
+# as "never boot-enable this unit", which is what keeps a firmware update from
+# being attempted on every single boot. The .timer carries
+# WantedBy=timers.target instead.

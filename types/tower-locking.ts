@@ -125,6 +125,19 @@ export interface TowerScheduleResponse {
   days?: number[];
   error?: string;
   detail?: string;
+  /**
+   * Whether a systemd timer is actually armed for this schedule — which is a
+   * different question from whether the schedule was saved. Saving writes
+   * config and effectively always succeeds; arming goes through a root helper
+   * and can fail on a device that has not yet taken the update carrying it.
+   *
+   * Absent means UNKNOWN, not false: a device predating the field never sends
+   * it, and treating that as "not armed" would warn on every save on every such
+   * device, which is how a warning stops being read.
+   */
+  schedule_armed?: boolean;
+  /** Present only when `schedule_armed` disagrees with the requested state. */
+  schedule_apply_error?: string;
 }
 
 /** Response from GET /cgi-bin/quecmanager/tower/failover_status.sh */

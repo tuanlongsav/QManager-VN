@@ -1,0 +1,29 @@
+# /lib/systemd/system/qmanager-tower-schedule-clear.service
+#
+# TIMER-TRIGGERED ONLY — see the [Install] note at the bottom before editing.
+# Paired with qmanager-tower-schedule-clear.timer, generated at save time by
+# /usr/bin/qmanager_tower_schedule_arm alongside the -apply pair.
+[Unit]
+Description=QManager Tower Schedule (clear lock)
+After=qmanager-setup.service qmanager-poller.service
+
+# Skip cleanly rather than fail when the worker is absent. Condition* is only
+# honoured in [Unit]; under [Service] it is inert and the unit runs anyway.
+ConditionFileIsExecutable=/usr/bin/qmanager_tower_schedule
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/qmanager_tower_schedule clear
+
+# Same AT-transport contention as the apply side; unlocking additionally kills
+# the failover watcher the apply side may have spawned.
+TimeoutStartSec=300
+
+# Deliberately NO RemainAfterExit — see qmanager-scheduled-reboot.service for
+# why a oneshot that stays active can only ever be triggered once. If this one
+# were triggered only once, every later window would open and never close: the
+# modem would stay locked to one cell indefinitely.
+
+# NO [Install] SECTION, ON PURPOSE. enable_services() reads the absence of one
+# as "never boot-enable this unit". The .timer carries WantedBy=timers.target
+# instead.

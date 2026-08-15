@@ -1,8 +1,13 @@
 #!/bin/sh
-. /usr/lib/qmanager/cgi_base.sh
-. /usr/lib/qmanager/config.sh
-. /usr/lib/qmanager/platform.sh
-. /usr/lib/qmanager/system_config.sh
+# The library root is a variable so scripts/test/schedule-cgi.sh can run this
+# endpoint against stub libraries. A request cannot introduce it: lighttpd
+# exports a request's headers as HTTP_* and nothing else. Same hook as
+# settings/quality_thresholds.sh.
+LIB_DIR="${QM_LIB_DIR:-/usr/lib/qmanager}"
+. "$LIB_DIR/cgi_base.sh"
+. "$LIB_DIR/config.sh"
+. "$LIB_DIR/platform.sh"
+. "$LIB_DIR/system_config.sh"
 # =============================================================================
 # settings.sh — CGI Endpoint: System Settings (GET + POST)
 # =============================================================================
@@ -11,7 +16,8 @@
 # POST: Saves settings, scheduled reboot config, or low-power config.
 #
 # Config: /etc/qmanager/qmanager.conf (settings section)
-# Cron:   qmanager_scheduled_reboot markers
+# Timer:  qmanager-scheduled-reboot.timer, armed through the root helper
+#         /usr/bin/qmanager_scheduled_reboot_arm
 #
 # Endpoint: GET/POST /cgi-bin/quecmanager/system/settings.sh
 # Install location: /www/cgi-bin/quecmanager/system/settings.sh
@@ -23,12 +29,26 @@ cgi_handle_options
 
 # --- Helpers -----------------------------------------------------------------
 
-# Strip leading zero from a time component (handle "00" -> "0", not empty)
-strip_leading_zero() {
-    local v
-    v=$(printf '%s' "$1" | sed 's/^0//')
-    [ -z "$v" ] && v="0"
-    printf '%s' "$v"
+# Path to the privileged arm helper. Overridable for the same test-only reason
+# as LIB_DIR above, and absolute in every case — never resolved through PATH.
+SCHED_ARM_HELPER="${QM_ARM_BIN_DIR:-/usr/bin}/qmanager_scheduled_reboot_arm"
+
+# Turn the arm helper's machine-readable reason into a sentence the user can act
+# on. Every branch says the same two things, because both are true: the schedule
+# IS saved, and the device will NOT reboot until the arming problem is resolved.
+sched_arm_message() {
+    case "$1" in
+        helper_unavailable)
+            printf '%s' "Saved the reboot schedule, but it could not be armed — this build does not carry the timer helper yet. Updating QManager installs it." ;;
+        unit_absent)
+            printf '%s' "Saved the reboot schedule, but it could not be armed — the reboot timer unit is not installed. Updating QManager installs it." ;;
+        no_schedule)
+            printf '%s' "Saved the reboot schedule, but it resolves to no day at all, so no reboot is scheduled." ;;
+        timer_inactive)
+            printf '%s' "Saved the reboot schedule, but the system did not start the timer, so no reboot is scheduled yet. It should arm on the next reboot." ;;
+        *)
+            printf '%s' "Saved the reboot schedule, but it could not be armed, so the device will not reboot on its own." ;;
+    esac
 }
 
 # =============================================================================
@@ -289,13 +309,24 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
             exit 0
         fi
 
-        # Validate when enabling
+        # Validate when enabling.
+        #
+        # The arm helper validates these again — it must, since it runs as root
+        # on values that arrived over HTTP. This copy exists so a bad request
+        # gets a specific error where it was parsed, instead of a generic
+        # "could not be armed" warning from one layer down.
         if [ "$ENABLED" = "true" ]; then
-            # Validate time format HH:MM
+            # HH:MM with a real 00-23 hour. The looser [0-2][0-9] this used to
+            # carry accepts "25:00"; cron ignored the line, systemd instead
+            # rejects the calendar and loads the timer as failed — a schedule
+            # that saves clean and never fires, which is the failure being
+            # fixed. A `case` pattern matches the whole string, so an embedded
+            # newline cannot slip past it the way it can past an anchored
+            # `grep -E`, which matches line by line.
             case "$SCHED_TIME" in
-                [0-2][0-9]:[0-5][0-9]) ;;
+                [01][0-9]:[0-5][0-9]|2[0-3]:[0-5][0-9]) ;;
                 *)
-                    cgi_error "invalid_time" "time must be HH:MM format"
+                    cgi_error "invalid_time" "time must be HH:MM, 00:00-23:59"
                     exit 0
                     ;;
             esac
@@ -305,6 +336,17 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
                 cgi_error "no_days" "At least one day must be selected"
                 exit 0
             fi
+
+            # A leading, trailing or doubled comma is rejected rather than
+            # silently collapsing: the loop below word-splits, so empty fields
+            # vanish there and the stored mask would quietly differ from the
+            # one sent.
+            case "$DAYS_RAW" in
+                ,*|*,|*,,*)
+                    cgi_error "invalid_day" "days must be a comma-separated list of 0-6"
+                    exit 0
+                    ;;
+            esac
 
             invalid_day=""
             for d in $(printf '%s' "$DAYS_RAW" | tr ',' ' '); do
@@ -325,14 +367,14 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
 
         # Write to config.
         #
-        # Bail on the first failed write and leave the crontab alone. The cron
-        # entry is what actually reboots the device; the config is what the UI
-        # reads back. Installing a cron line for a schedule the config does not
-        # hold would give the user a device that reboots at a time no page ever
-        # shows — the worst of the two possible mismatches.
+        # Bail on the first failed write and leave the timer alone. The timer is
+        # what actually reboots the device; the config is what the UI reads
+        # back. Arming a timer for a schedule the config does not hold would
+        # give the user a device that reboots at a time no page ever shows — the
+        # worst of the two possible mismatches.
         sched_write_failed() {
             cgi_error "sched_save_failed" \
-                "Could not save the reboot schedule — writing the configuration file failed. The existing cron entry was left untouched."
+                "Could not save the reboot schedule — writing the configuration file failed. The existing schedule was left untouched."
             exit 0
         }
         case "$ENABLED" in
@@ -342,46 +384,85 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
         qm_config_set settings sched_reboot_time "$SCHED_TIME" || sched_write_failed
         qm_config_set settings sched_reboot_days "$DAYS_RAW" || sched_write_failed
 
-        # --- Manage crontab (write directly to root's crontab file) ---
-        # CGI runs as www-data but scheduled scripts need root.
-        # BusyBox crond reads /var/spool/cron/crontabs/<user> directly.
-        CRON_MARKER="qmanager_scheduled_reboot"
-        SCHEDULE_SCRIPT="/usr/bin/qmanager_scheduled_reboot"
-        CRON_FILE="/var/spool/cron/crontabs/root"
-
-        current_cron=$(cat "$CRON_FILE" 2>/dev/null || true)
-        cleaned_cron=$(printf '%s\n' "$current_cron" | grep -v "$CRON_MARKER")
-
+        # --- Arm (or disarm) the systemd timer -------------------------------
+        #
+        # This used to printf a line into /var/spool/cron/crontabs/root. Nothing
+        # on this device reads that file: there is no crond unit, the binary
+        # never runs, and the spool directory is empty. So the toggle reported
+        # success and the box never rebooted — not once, for any user. systemd's
+        # own timers are the mechanism that actually fires here.
+        #
+        # The CGI runs as www-data and cannot write /lib/systemd/system, so the
+        # unit is generated by a root helper reached through an exact-path
+        # sudoers rule — the same shape as the hostname and timezone helpers.
         if [ "$ENABLED" = "true" ]; then
-            sched_hour=$(printf '%s' "$SCHED_TIME" | cut -d: -f1)
-            sched_min=$(printf '%s' "$SCHED_TIME" | cut -d: -f2)
-            sched_hour=$(strip_leading_zero "$sched_hour")
-            sched_min=$(strip_leading_zero "$sched_min")
-
-            new_cron="${cleaned_cron}
-# QManager Scheduled Reboot — DO NOT EDIT MANUALLY
-${sched_min} ${sched_hour} * * ${DAYS_RAW} ${SCHEDULE_SCRIPT}  # ${CRON_MARKER}"
-
-            printf '%s\n' "$new_cron" > "$CRON_FILE"
-            qlog_info "Scheduled reboot cron installed: ${SCHED_TIME} days=${DAYS_RAW}"
+            arm_resp=$($_SUDO "$SCHED_ARM_HELPER" install "$SCHED_TIME" "$DAYS_RAW" 2>/dev/null)
         else
-            if [ -n "$cleaned_cron" ]; then
-                printf '%s\n' "$cleaned_cron" > "$CRON_FILE"
+            arm_resp=$($_SUDO "$SCHED_ARM_HELPER" teardown 2>/dev/null)
+        fi
+
+        # Read .armed, never .success. The helper answers success:true with
+        # armed:false when it did its job and there is still nothing scheduled —
+        # an older base without the .service, or a timer systemd declined to
+        # start. A green tick over that response rebuilds the exact bug this
+        # replaces, one layer up.
+        schedule_armed="false"
+        arm_reason=""
+        if [ -z "$arm_resp" ]; then
+            # No JSON at all: the helper is missing, or sudo refused it. Either
+            # way the device carries no new schedule.
+            arm_reason="helper_unavailable"
+        else
+            case "$(printf '%s' "$arm_resp" | jq -r '.armed // false' 2>/dev/null)" in
+                true) schedule_armed="true" ;;
+            esac
+            arm_reason=$(printf '%s' "$arm_resp" | jq -r '.reason // .error // ""' 2>/dev/null)
+        fi
+
+        # schedule_armed answers one question — is a reboot scheduled on this
+        # device right now — and arm_error appears only when that answer
+        # disagrees with what was asked for. Disabling successfully is
+        # armed:false with no error; it is the intended outcome, not a warning.
+        arm_error=""
+        if [ "$ENABLED" = "true" ]; then
+            if [ "$schedule_armed" != "true" ]; then
+                arm_error=$(sched_arm_message "$arm_reason")
+                qlog_warn "Scheduled reboot saved but not armed (reason=${arm_reason:-unknown})"
             else
-                rm -f "$CRON_FILE"
+                qlog_info "Scheduled reboot armed: ${SCHED_TIME} days=${DAYS_RAW}"
             fi
-            qlog_info "Scheduled reboot cron entries removed"
+        elif [ -n "$arm_reason" ]; then
+            # Teardown reports "" on success. Anything else means the old unit
+            # may still be on disk and counting down, so the schedule the user
+            # just switched off can still fire. Report it as still armed:
+            # guessing "off" here would be the comfortable answer, not the true
+            # one, and the failure it hides is an unexpected reboot.
+            schedule_armed="true"
+            arm_error="Saved the schedule as disabled, but the existing timer could not be removed — the device may still reboot on the old schedule."
+            qlog_warn "Scheduled reboot disable saved but timer not removed (reason=${arm_reason})"
+        else
+            qlog_info "Scheduled reboot timer removed"
         fi
 
         # Build response
         DAYS_RESP=$(printf '%s' "$DAYS_RAW" | jq -Rc 'split(",") | map(tonumber)' 2>/dev/null)
         [ -z "$DAYS_RESP" ] && DAYS_RESP="[0,1,2,3,4,5,6]"
 
+        # schedule_armed always travels, in both directions — it is the fact the
+        # old response was missing. schedule_apply_error appears only when the
+        # save and the arming disagree, matching how save_settings reports a
+        # failed hostname or timezone apply: the preference is stored either
+        # way, so this is a warning on a successful save, never a failed one.
         jq -n \
             --argjson enabled "$([ "$ENABLED" = "true" ] && echo true || echo false)" \
             --arg time "$SCHED_TIME" \
             --argjson days "$DAYS_RESP" \
-            '{success: true, scheduled_reboot: {enabled: $enabled, time: $time, days: $days}}'
+            --argjson armed "$schedule_armed" \
+            --arg arm_error "$arm_error" \
+            '{success: true,
+              scheduled_reboot: {enabled: $enabled, time: $time, days: $days},
+              schedule_armed: $armed}
+             + (if $arm_error == "" then {} else {schedule_apply_error: $arm_error} end)'
         exit 0
     fi
 

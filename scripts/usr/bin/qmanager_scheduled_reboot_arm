@@ -1,0 +1,139 @@
+#!/bin/sh
+# =============================================================================
+# qmanager_scheduled_reboot_arm — arm/disarm the Scheduled Reboot systemd timer
+# =============================================================================
+# The System Settings -> Scheduled Reboot toggle used to write a line into
+# /var/spool/cron/crontabs/root. Nothing on this device reads that file — there
+# is no crond running — so the toggle reported success and the box never
+# rebooted. This helper is the privileged half of the replacement: it renders a
+# weekly OnCalendar trigger from the saved time and day mask, writes
+# qmanager-scheduled-reboot.timer, and arms it for this boot and every boot
+# after.
+#
+# The CGI runs as www-data and cannot write /lib/systemd/system, which is why
+# this exists as a root helper behind an exact-path sudoers rule rather than a
+# raw `tee`/`cp` grant.
+#
+# Usage:
+#   sudo -n /usr/bin/qmanager_scheduled_reboot_arm install <HH:MM> <days_csv>
+#   sudo -n /usr/bin/qmanager_scheduled_reboot_arm teardown
+#
+#   <HH:MM>     24-hour local time, hour 00-23.
+#   <days_csv>  Comma-separated cron weekdays, 0=Sun .. 6=Sat (e.g. "0,3,6").
+#
+# Exit:  0 = the request was understood and acted on
+#        1 = the request was rejected or could not be carried out
+#
+# READ .armed, NOT .success. A `success:true, armed:false` response means the
+# helper did its job and there is still nothing scheduled — the caller must
+# surface that to the user rather than showing a green tick. Reporting a
+# schedule that does not exist is the bug this replaces; do not reintroduce it
+# one layer up.
+#
+# SECURITY: sudo-reachable from the web user, so the CGI's own validation is
+# convenience, not a boundary. Both arguments are re-validated here, by shape,
+# before either reaches the generated unit file — and schedule_timer.sh gates
+# the rendered line again at the write itself. Nothing is eval'd.
+#
+# Install location: /usr/bin/qmanager_scheduled_reboot_arm
+# =============================================================================
+
+PATH=/opt/bin:/opt/sbin:/usr/bin:/usr/sbin:/bin:/sbin
+export PATH
+
+UNIT="qmanager-scheduled-reboot.timer"
+SERVICE="qmanager-scheduled-reboot.service"
+DESC="QManager scheduled reboot"
+
+# Test-only path prefix; see schedule_timer.sh. sudo's env_reset strips it on
+# the real path, and it is re-validated inside the library as well.
+QM_ROOT="${QM_TIMER_ROOT:-}"
+case "$QM_ROOT" in
+    '') ;;
+    *..*) QM_ROOT="" ;;
+    /*) ;;
+    *) QM_ROOT="" ;;
+esac
+LIB="$QM_ROOT/usr/lib/qmanager/schedule_timer.sh"
+
+action="$1"
+sched_time="$2"
+sched_days="$3"
+
+if [ ! -f "$LIB" ]; then
+    printf '{"success":false,"armed":false,"error":"lib_missing","detail":"schedule_timer.sh not found"}\n'
+    exit 1
+fi
+# shellcheck source=/dev/null
+. "$LIB"
+
+# Only the two verbs, nothing else — the action is not a string that gets
+# built into anything, it selects a branch.
+case "$action" in
+    install|teardown) ;;
+    *) _qm_emit_err "invalid_action" "action must be install or teardown"; exit 1 ;;
+esac
+
+if [ "$action" = "teardown" ]; then
+    if _qm_timer_disarm "$UNIT"; then
+        _qm_emit_ok false "" "unknown"
+        exit 0
+    fi
+    _qm_emit_err "disarm_failed" "timer unit or symlink still present after removal"
+    exit 1
+fi
+
+# --- install ----------------------------------------------------------------
+
+if ! _qm_validate_hhmm "$sched_time"; then
+    _qm_emit_err "invalid_time" "time must be HH:MM, hour 00-23"
+    exit 1
+fi
+if ! _qm_validate_days "$sched_days"; then
+    _qm_emit_err "invalid_days" "days must be a comma list of 0-6"
+    exit 1
+fi
+
+# An older OTA base may not carry the paired .service yet. There is nothing to
+# schedule against, so say so honestly rather than arming a timer pointed at a
+# unit that does not exist — systemd would load that timer, fire it, and log
+# "unit not found" forever while the UI showed a live schedule.
+if ! _qm_service_present "$SERVICE"; then
+    _qm_emit_ok false "unit_absent" "unknown"
+    exit 0
+fi
+
+line=$(_qm_oncalendar_weekly "$sched_days" "$sched_time")
+
+# Unreachable while _qm_validate_days rejects an empty mask, but kept as the
+# structural guard: an empty OnCalendar= is a systemd config error, so tear
+# down instead of arming something that will never load.
+if [ -z "$line" ]; then
+    _qm_timer_disarm "$UNIT" || true
+    _qm_emit_ok false "no_schedule" "unknown"
+    exit 0
+fi
+
+if ! _qm_timer_write "$UNIT" "$SERVICE" "$DESC" "$line"; then
+    # Never leave a half-armed unit behind: a stale .timer from a previous
+    # arm plus a failed rewrite would fire on the OLD schedule while the UI
+    # showed the new one.
+    _qm_timer_disarm "$UNIT" || true
+    _qm_emit_err "write_failed" "could not write or link the timer unit"
+    exit 1
+fi
+
+_qm_timer_activate "$UNIT"
+
+active=$(_qm_timer_state "$UNIT")
+if [ "$active" = "inactive" ]; then
+    # The unit is on disk and linked for next boot, but systemd was asked and
+    # said it is not counting down — a calendar systemd would not accept, or a
+    # timers.target that never came up. The files stay (next boot may well be
+    # fine); the response tells the truth about right now.
+    _qm_emit_ok false "timer_inactive" "$active"
+    exit 0
+fi
+
+_qm_emit_ok true "" "$active"
+exit 0

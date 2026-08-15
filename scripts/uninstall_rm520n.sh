@@ -3,7 +3,8 @@
 # QManager Uninstall Script — RM520N-GL
 # =============================================================================
 # Removes QManager from the RM520N-GL modem.
-# Preserves /etc/qmanager/ (config, passwords, profiles) unless --purge.
+# Preserves /etc/qmanager/ (config, passwords, profiles) and /etc/qmanager.env
+# (daemon environment overrides) unless --purge.
 # Entware (/opt/) is NEVER removed by this script regardless of flags.
 #
 # Usage: bash uninstall_rm520n.sh [--purge] [--force] [--no-reboot] [--help]
@@ -72,7 +73,25 @@ LIB_DIR="/usr/lib/qmanager"
 BIN_DIR="/usr/bin"
 SYSTEMD_DIR="/lib/systemd/system"
 WANTS_DIR="/lib/systemd/system/multi-user.target.wants"
+# Scheduled timers are wanted by timers.target, not multi-user.target, so the
+# constant above cannot reach their enablement symlinks. Must stay identical to
+# TIMERS_WANTS_DIR in install_rm520n.sh.
+TIMERS_WANTS_DIR="/lib/systemd/system/timers.target.wants"
 CONF_DIR="/etc/qmanager"
+
+# Legacy cron spool. QManager stopped writing here when the schedules moved to
+# systemd timers; a device uninstalling from an older build may still have our
+# lines in it. See Step 11.
+CRON_SPOOL_DIR="/var/spool/cron/crontabs"
+CRON_SPOOL_FILE="$CRON_SPOOL_DIR/root"
+
+# Systemd EnvironmentFile for the root daemons. A SIBLING of $CONF_DIR, not a
+# file inside it — see qmanager-ping.service for why — which is exactly why
+# `rm -rf "$CONF_DIR"` does not reach it and it needs removing by name.
+# Must stay identical to DAEMON_ENV_FILE in install_rm520n.sh;
+# scripts/test/daemon-environment-path.sh fails the build if they drift.
+DAEMON_ENV_FILE="/etc/qmanager.env"
+
 CERT_DIR="/usrdata/qmanager/certs"
 CONSOLE_DIR="/usrdata/qmanager/console"
 SESSION_DIR="/tmp/qmanager_sessions"
@@ -98,8 +117,9 @@ usage() {
     printf "QManager Uninstaller (RM520N-GL)\n\n"
     printf "Usage: bash uninstall_rm520n.sh [OPTIONS]\n\n"
     printf "Options:\n"
-    printf "  --purge       Also remove /etc/qmanager/ (config, passwords, profiles)\n"
-    printf "                and Tailscale installation\n"
+    printf "  --purge       Also remove /etc/qmanager/ (config, passwords, profiles),\n"
+    printf "                /etc/qmanager.env (daemon overrides) and Tailscale\n"
+    printf "                installation\n"
     printf "  --force       Skip interactive [y/N] confirmation prompt\n"
     printf "  --no-reboot   Print summary and exit instead of rebooting\n"
     printf "  --help, -h    Show this help\n\n"
@@ -167,6 +187,7 @@ confirm_uninstall() {
     printf "    • Cron jobs referencing qmanager\n"
     if [ "$PURGE" = "1" ]; then
         printf "    • Config directory: %s  ${YELLOW}[--purge]${NC}\n" "$CONF_DIR"
+        printf "    • Daemon environment overrides: %s  ${YELLOW}[--purge]${NC}\n" "$DAEMON_ENV_FILE"
         printf "    • Legacy Tailscale installation: %s  ${YELLOW}[--purge]${NC} ${DIM}(if present)${NC}\n" "$TAILSCALE_DIR"
     fi
     printf "\n"
@@ -233,6 +254,52 @@ info "Daemon processes terminated"
 # =============================================================================
 
 step "Removing systemd units and boot symlinks"
+
+# --- Scheduled timers, disarmed before anything is deleted -------------------
+#
+# Order is the whole point of doing this here rather than in the sweep below.
+# The arm helpers and the library they source are removed in Step 3, and Step 1
+# has already stopped the services — so this is the last moment at which the
+# shipped teardown path still exists. Deleting a .timer without disarming would
+# leave systemd holding a loaded, counting-down unit for the rest of this boot,
+# aimed at a binary this script is about to remove.
+#
+# Each helper tears down every unit it owns (the tower one handles its apply and
+# clear pair together) and verifies afterwards that the unit and its symlink are
+# actually gone. Failures are reported, not fatal: the filesystem sweep
+# immediately after is the backstop, and an uninstall must not stall because a
+# helper from a partial install is missing or broken.
+for _armer in qmanager_scheduled_reboot_arm qmanager_tower_schedule_arm qmanager_auto_update_arm; do
+    [ -x "$BIN_DIR/$_armer" ] || continue
+    if "$BIN_DIR/$_armer" teardown >/dev/null 2>&1; then
+        _log_raw "  disarmed via: $_armer"
+    else
+        warn "$_armer teardown reported a failure — removing its units directly"
+    fi
+done
+
+# Backstop, and the only path on a device whose helpers are already gone (a
+# rollback that removed them, a partial install). Timers are generated at save
+# time, never shipped, so there is no source tree to compare against here —
+# everything matching the name is ours by construction.
+for timer_file in "$SYSTEMD_DIR"/qmanager-*.timer; do
+    [ -f "$timer_file" ] || continue
+    tname=$(basename "$timer_file")
+    systemctl stop "$tname" 2>/dev/null || true
+    rm -f "$TIMERS_WANTS_DIR/$tname"
+    rm -f "$timer_file"
+    _log_raw "  removed: $timer_file"
+done
+
+# Symlinks whose target this script (or a rollback) already removed. -e follows
+# the link, so a surviving broken link is caught here.
+for timer_link in "$TIMERS_WANTS_DIR"/qmanager-*.timer; do
+    [ -L "$timer_link" ] || continue
+    rm -f "$timer_link"
+    _log_raw "  removed dangling link: $timer_link"
+done
+
+info "Scheduled timers disarmed and removed"
 
 # Filesystem-driven: remove qmanager-*.service units and their wants symlinks
 for unit_file in "$SYSTEMD_DIR"/qmanager-*.service "$SYSTEMD_DIR"/qmanager*.target; do
@@ -445,16 +512,66 @@ rmdir "$CONF_DIR/updates"                        2>/dev/null || true
 info "Runtime state removed"
 
 # =============================================================================
-# Step 11: Remove cron jobs
+# Step 11: Remove legacy cron entries
 # =============================================================================
 
-step "Removing cron jobs"
+step "Removing legacy cron entries"
 
-if crontab -l 2>/dev/null | grep -q qmanager; then
-    crontab -l 2>/dev/null | grep -v qmanager | crontab - 2>/dev/null || true
-    info "Removed qmanager cron jobs"
+# These are leftovers, not a live mechanism. Scheduled Reboot, Tower Schedule
+# and Auto-update used to write lines here; nothing on this device ever ran
+# them (no crond), and they now arm systemd timers instead — torn down in
+# Step 2. Only a device uninstalling from an older build still has anything to
+# find here.
+#
+# Edited as a file rather than through `crontab -l | crontab -`: the crontab
+# binary is not what wrote these lines, root's spool file is where they landed,
+# and going through a binary this script is not otherwise using adds a
+# dependency for no gain.
+#
+# Only lines naming QManager come out. Every binary those lines invoke is being
+# deleted by this uninstall, so they are dead either way — but the spool file
+# was world-writable on the builds that wrote them, so anything else in it may
+# well not be ours to delete.
+if [ -f "$CRON_SPOOL_FILE" ] && grep -q qmanager "$CRON_SPOOL_FILE" 2>/dev/null; then
+    _cron_tmp="${CRON_SPOOL_FILE}.qm_uninstall.$$"
+    # `|| true` — grep -v exits 1 when it filters everything out, which is the
+    # ordinary case here and must not abort the script under set -e. The output
+    # file is written either way.
+    grep -v qmanager "$CRON_SPOOL_FILE" > "$_cron_tmp" 2>/dev/null || true
+
+    if [ ! -f "$_cron_tmp" ]; then
+        warn "Could not rewrite $CRON_SPOOL_FILE — legacy cron entries left in place"
+    elif [ -n "$(tr -d ' \t\n' < "$_cron_tmp" 2>/dev/null)" ]; then
+        # Something not ours remains: keep the file, minus our lines.
+        if mv "$_cron_tmp" "$CRON_SPOOL_FILE" 2>/dev/null; then
+            info "Removed QManager cron entries (kept other entries)"
+        else
+            rm -f "$_cron_tmp" 2>/dev/null || true
+            warn "Could not replace $CRON_SPOOL_FILE — legacy cron entries left in place"
+        fi
+    else
+        rm -f "$_cron_tmp" 2>/dev/null || true
+        rm -f "$CRON_SPOOL_FILE" 2>/dev/null || true
+        info "Removed QManager cron entries (root crontab is now empty)"
+    fi
 else
-    info "No qmanager cron jobs found"
+    info "No QManager cron entries found"
+fi
+
+# Older builds had qmanager_setup chmod this directory to 0777 on every boot so
+# the web user could write root's crontab. Nothing re-applies that now, but a
+# device that ran those builds keeps the mode, and leaving a world-writable root
+# crontab directory behind after an uninstall would be leaving our hole behind
+# without our software. Removed outright when empty; narrowed when not, since a
+# directory holding someone else's crontab is not ours to delete.
+if [ -d "$CRON_SPOOL_DIR" ]; then
+    if rmdir "$CRON_SPOOL_DIR" 2>/dev/null; then
+        rmdir /var/spool/cron 2>/dev/null || true
+        _log_raw "Removed empty $CRON_SPOOL_DIR"
+    else
+        chmod 0700 "$CRON_SPOOL_DIR" 2>/dev/null || true
+        _log_raw "Tightened $CRON_SPOOL_DIR to 0700 (not empty)"
+    fi
 fi
 
 # =============================================================================
@@ -466,6 +583,19 @@ step "Config directory"
 if [ "$PURGE" = "1" ]; then
     rm -rf "$CONF_DIR"
     info "Purged config directory $CONF_DIR"
+    # Purge-gated for the same reason $CONF_DIR is: these are the operator's
+    # daemon overrides, and a plain uninstall preserves configuration. The
+    # sidecars are this file's own byproducts (.quarantined and
+    # .pre-rust-ping.bak are written by the installer's migration steps), so
+    # they go with it. Named individually rather than globbed: an
+    # /etc/qmanager* glob would also match $CONF_DIR, and normalising that
+    # glob anywhere in the tree is how the sibling gets swept back under the
+    # www-data chown it exists to escape.
+    rm -f "$DAEMON_ENV_FILE" \
+          "${DAEMON_ENV_FILE}.tmp" \
+          "${DAEMON_ENV_FILE}.quarantined" \
+          "${DAEMON_ENV_FILE}.pre-rust-ping.bak" 2>/dev/null || true
+    info "Purged daemon environment file $DAEMON_ENV_FILE"
     # User data, deliberately gated behind --purge exactly like $CONF_DIR:
     # friendly APN names, the accumulated data counter and sent-SMS history are
     # the user's, not ours. Removing them on a plain uninstall would be data
@@ -489,8 +619,8 @@ if [ "$PURGE" = "1" ]; then
         warn "QMANAGER_ROOT is '$QMANAGER_ROOT', not the expected /usrdata/qmanager — not removed"
         warn "Remove it by hand if it holds APN names, usage counter or sent-SMS history"
     fi
-elif [ -d "$CONF_DIR" ]; then
-    warn "Config preserved at $CONF_DIR (use --purge to remove)"
+elif [ -d "$CONF_DIR" ] || [ -f "$DAEMON_ENV_FILE" ]; then
+    warn "Config preserved at $CONF_DIR and $DAEMON_ENV_FILE (use --purge to remove)"
     warn "Also preserved: APN names, usage counter, sent-SMS history in $QMANAGER_ROOT"
 fi
 

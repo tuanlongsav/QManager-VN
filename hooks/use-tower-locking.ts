@@ -82,7 +82,14 @@ export interface UseTowerLockingReturn {
   ) => Promise<boolean>;
 
   /** Update schedule configuration and manage cron entries. */
-  updateSchedule: (schedule: TowerScheduleConfig) => Promise<boolean>;
+  /**
+   * Resolves to the response body on success (so callers can read
+   * `schedule_armed`) and to `false` on failure. `false` rather than `null`
+   * keeps every existing `if (ok)` call site behaving exactly as before.
+   */
+  updateSchedule: (
+    schedule: TowerScheduleConfig,
+  ) => Promise<TowerScheduleResponse | false>;
 
   /** True while the failover watcher is running (anti-spam guard) */
   isWatcherRunning: boolean;
@@ -482,7 +489,9 @@ export function useTowerLocking(): UseTowerLockingReturn {
   // Update Schedule
   // ---------------------------------------------------------------------------
   const updateSchedule = useCallback(
-    async (schedule: TowerScheduleConfig): Promise<boolean> => {
+    async (
+      schedule: TowerScheduleConfig,
+    ): Promise<TowerScheduleResponse | false> => {
       setError(null);
 
       try {
@@ -509,7 +518,11 @@ export function useTowerLocking(): UseTowerLockingReturn {
           prev ? { ...prev, schedule } : prev
         );
 
-        return true;
+        // Hand the body back rather than a bare `true`. schedule_armed only
+        // exists here, and dropping it is how a schedule that saved but never
+        // armed ended up under a green toast — the same shape as the reboot
+        // schedule, fixed the same way.
+        return data;
       } catch (err) {
         if (!mountedRef.current) return false;
         setError(
