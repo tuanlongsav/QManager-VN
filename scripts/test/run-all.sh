@@ -210,5 +210,36 @@ if ! bash "$REPO_ROOT/scripts/test/i18n-parity.sh"; then
     fail "en.json / vi.json are out of parity"
 fi
 
+# --- 5. iCloud exclusion drift (warn-only) --------------------------------
+# The exclusion is not self-healing, and two separate forces undo it.
+#
+# A tool can recreate the path: a `next build` racing another one replaced the
+# .next symlink with a real directory. And iCloud can undo it outright — if
+# CloudDocs still holds live index rows for a path, it restores its own idea of
+# that path as a directory and renames the symlink to "<name> 2". That is what
+# happened to .next and .codegraph overnight on 2026-08-15, while node_modules
+# and qmanager-build survived: those two had been deleted and rebuilt, so their
+# rows had already tombstoned and there was nothing left to restore from.
+#
+# Either way the artefact silently lands back in the synced tree and nothing
+# says so, which is how 642 MB of .codegraph got re-exposed unnoticed. Warn
+# rather than fail: a fresh clone has no exclusion applied at all and must not
+# be blocked from building.
+printf '\n== iCloud exclusion drift (warn-only) ==\n'
+drift=0
+for _a in node_modules .next .codegraph qmanager-build; do
+    [ -e "$REPO_ROOT/$_a" ] || continue
+    if [ ! -L "$REPO_ROOT/$_a" ] && [ -d "$REPO_ROOT/$_a" ]; then
+        printf '  WARN %s is a real directory in the synced tree, not a link into .artifacts.nosync/\n' "$_a"
+        drift=$((drift + 1))
+    fi
+done
+if [ "$drift" -gt 0 ]; then
+    printf '       iCloud is indexing it again. Check with:\n'
+    printf '         bash scripts/dev/icloud-exclude.sh --status\n'
+else
+    printf '  OK   no drift (or exclusion not applied)\n'
+fi
+
 printf '\n[run-all] PASS: %d scripts (%ds)\n\n' \
     "$syntax_total" "$(($(date +%s) - START))"
