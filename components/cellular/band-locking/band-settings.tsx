@@ -105,6 +105,23 @@ const BandSettingsComponent = ({
   isScenarioControlled = false,
 }: BandSettingsProps) => {
   const { t } = useT();
+
+  // --- Failover flags, read defensively -------------------------------------
+  // useBandLocking now normalises every wire payload before storing it, so in
+  // practice `failover` is always a complete object. These reads are the second
+  // layer, and they are worth their two lines because of WHERE this component
+  // renders: components/dashboard/home-component.tsx mounts it, so a throw here
+  // is not a broken card, it is a blank dashboard — the only UI this device has.
+  //
+  // A prop typed `FailoverState` is a promise the *caller* makes; TypeScript
+  // checks that promise at the call site and then erases itself, so it cannot
+  // stop a future caller from passing through an un-normalised fetch. Reading
+  // through `?.` costs nothing and makes that mistake a wrong badge instead of a
+  // white screen.
+  const failoverEnabled = failover?.enabled ?? false;
+  const failoverActivated = failover?.activated ?? false;
+  const failoverWatcherRunning = failover?.watcher_running ?? false;
+
   // --- Derive active bands from carrier_components --------------------------
   const activeLte = getActiveBandDisplay(carrierComponents, "LTE");
   const activeLteArfcn = getActiveArfcnDisplay(carrierComponents, "LTE");
@@ -125,7 +142,7 @@ const BandSettingsComponent = ({
   const renderFailoverStatus = () => {
     if (isLoading) return <Skeleton className="h-5 w-32" />;
 
-    if (!failover.enabled) {
+    if (!failoverEnabled) {
       return (
         <Badge
           variant="outline"
@@ -137,7 +154,7 @@ const BandSettingsComponent = ({
       );
     }
 
-    if (failover.activated) {
+    if (failoverActivated) {
       return (
         <Badge
           variant="outline"
@@ -149,7 +166,7 @@ const BandSettingsComponent = ({
       );
     }
 
-    if (failover.watcher_running) {
+    if (failoverWatcherRunning) {
       return (
         <Badge
           variant="outline"
@@ -206,12 +223,12 @@ const BandSettingsComponent = ({
                 <>
                   <Switch
                     id="band-failover"
-                    checked={failover.enabled}
+                    checked={failoverEnabled}
                     onCheckedChange={handleFailoverToggle}
                     disabled={isScenarioControlled}
                   />
                   <Label htmlFor="band-failover">
-                    {failover.enabled ? t("bandSettings.enabled") : t("bandSettings.disabled")}
+                    {failoverEnabled ? t("bandSettings.enabled") : t("bandSettings.disabled")}
                   </Label>
                 </>
               )}

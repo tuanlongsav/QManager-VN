@@ -8,8 +8,38 @@ import { Button } from "@/components/ui/button";
 import { useHardwareInfo } from "@/hooks/use-hardware-info";
 import { shouldShowUnsupportedBanner } from "@/lib/feature-gating";
 import { GITHUB_ISSUES_URL } from "@/constants/github";
+import { readStorageValueOrNull, writeStorageValue } from "@/lib/browser-storage";
 
 const DISMISS_KEY = "qmanager_vn_unsupported_banner_dismissed";
+
+/**
+ * Remember/recall the dismissal without ever letting storage take the page down.
+ *
+ * Both go through lib/browser-storage rather than carrying their own try/catch.
+ * This file used to hold a hand-rolled copy, and hand-rolled copies are what let
+ * this crash class survive three rounds of fixes: each copy looked correct on
+ * its own, and none of them was the one the next reviewer happened to read.
+ *
+ * Why it matters here specifically: the read runs in a useState initializer, a
+ * throw from which nothing catches, and this banner renders inside the
+ * dashboard tree — so one storage-blocked browser would mean a dashboard that
+ * renders nothing at all.
+ *
+ * Both directions fail open toward the harmless side: an unreadable store reads
+ * as "not dismissed" (the banner reappears), an unwritable one means the
+ * dismissal lasts only for this mount. Forgetting a dismissal is an annoyance;
+ * a blank dashboard on a headless modem is an outage.
+ */
+function readDismissedModel(): string | null {
+  return readStorageValueOrNull("session", DISMISS_KEY);
+}
+
+function rememberDismissedModel(model: string): void {
+  // Return value ignored on purpose: a dismissal that cannot be persisted just
+  // does not survive a reload, and the in-memory state below still hides the
+  // banner for the rest of this session.
+  writeStorageValue("session", DISMISS_KEY, model);
+}
 
 /**
  * Banner shown when the detected modem model isn't in the tested set (GL / GLAA).
@@ -22,14 +52,12 @@ const DISMISS_KEY = "qmanager_vn_unsupported_banner_dismissed";
 export function UnsupportedModelBanner() {
   const { hardware } = useHardwareInfo();
 
-  // Read the dismissal once, when the state is created. The `typeof window`
-  // guard covers the static-export prerender, where there is no sessionStorage;
-  // that prerendered pass can't render the banner anyway, since `hardware` is
-  // still null until the fetch below it resolves — so no hydration mismatch.
-  const [dismissedFor, setDismissedFor] = useState<string | null>(() =>
-    typeof window === "undefined"
-      ? null
-      : window.sessionStorage.getItem(DISMISS_KEY),
+  // Read the dismissal once, when the state is created. The prerender has no
+  // sessionStorage and reports null; that pass can't render the banner anyway,
+  // since `hardware` is still null until the fetch below it resolves — so no
+  // hydration mismatch.
+  const [dismissedFor, setDismissedFor] = useState<string | null>(
+    readDismissedModel,
   );
 
   if (!shouldShowUnsupportedBanner(hardware)) return null;
@@ -37,9 +65,7 @@ export function UnsupportedModelBanner() {
   if (dismissedFor === hardware.model) return null;
 
   const dismiss = () => {
-    if (typeof window !== "undefined") {
-      window.sessionStorage.setItem(DISMISS_KEY, hardware.model);
-    }
+    rememberDismissedModel(hardware.model);
     setDismissedFor(hardware.model);
   };
 

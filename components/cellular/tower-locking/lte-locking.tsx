@@ -42,6 +42,11 @@ import { Skeleton } from "@/components/ui/skeleton";
 
 import { Field, FieldGroup, FieldLabel, FieldSet } from "@/components/ui/field";
 
+import {
+  readStorageValueOrNull,
+  writeStorageValue,
+} from "@/lib/browser-storage";
+
 import type {
   TowerLockConfig,
   TowerModemState,
@@ -88,17 +93,30 @@ const LTELockingComponent = ({
   const [pci3, setPci3] = useState("");
   const [prevCells, setPrevCells] = useState(config?.lte?.cells);
 
-  // Simple Mode state + localStorage persistence (lazy init avoids SSR mismatch)
-  const [simpleMode, setSimpleMode] = useState<boolean>(() => {
-    if (typeof window === "undefined") return false;
-    return window.localStorage.getItem(STORAGE_KEY_LTE_SIMPLE_MODE) === "true";
-  });
+  // Simple Mode state + localStorage persistence.
+  //
+  // This runs inside a useState initializer, which is the worst possible place
+  // for a throw: it happens during render, before this component has committed,
+  // so it does not fail the switch — it fails the whole React tree, and the
+  // tower-locking page goes blank. The `typeof window` check that used to guard
+  // it covers only the static-export prerender; evaluating `window.localStorage`
+  // in a *browser* that has denied this document storage (blocked cookies, an
+  // iframe without allow-same-origin, some WebViews) throws SecurityError while
+  // `window` is perfectly defined. lib/browser-storage catches both, plus the
+  // QuotaExceededError the write below can raise.
+  //
+  // Remembering the toggle is a convenience, so an unreachable store degrades to
+  // "Simple Mode starts off, and does not stick" — no error, nothing to tell the
+  // user about.
+  const [simpleMode, setSimpleMode] = useState<boolean>(
+    () => readStorageValueOrNull("local", STORAGE_KEY_LTE_SIMPLE_MODE) === "true",
+  );
 
   const handleSimpleModeToggle = (on: boolean) => {
     setSimpleMode(on);
-    if (typeof window !== "undefined") {
-      window.localStorage.setItem(STORAGE_KEY_LTE_SIMPLE_MODE, String(on));
-    }
+    // Return value ignored on purpose: the toggle already took effect in state,
+    // and a failed write only costs the preference on the next page load.
+    writeStorageValue("local", STORAGE_KEY_LTE_SIMPLE_MODE, String(on));
   };
 
   // Derive available carrier options from live modem data

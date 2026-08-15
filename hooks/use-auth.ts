@@ -1,7 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { clearIndicatorCookie, isLoggedIn } from "@/lib/session";
+import {
+  clearAuthRedirectBudget,
+  clearIndicatorCookie,
+  isLoggedIn,
+  navigateForAuth,
+} from "@/lib/session";
 
 const CHECK_ENDPOINT = "/cgi-bin/quecmanager/auth/check.sh";
 const LOGIN_ENDPOINT = "/cgi-bin/quecmanager/auth/login.sh";
@@ -49,9 +54,15 @@ export function useLogin() {
   const [status, setStatus] = useState<LoginStatus>("loading");
 
   useEffect(() => {
-    // If already logged in, redirect to dashboard
-    if (isLoggedIn()) {
-      window.location.href = "/dashboard/";
+    // If already logged in, redirect to dashboard.
+    //
+    // This half is the reason a single bad verdict on the dashboard side turned
+    // into an infinite loop rather than one wrong page: the two gates redirect
+    // at each other. The budget inside navigateForAuth caps how many times that
+    // can happen; when the cap is hit it answers "refused" and we deliberately
+    // fall through to the setup check below, so the tab settles on a page the
+    // user can actually use rather than on a spinner.
+    if (isLoggedIn() && navigateForAuth("/dashboard/") !== "refused") {
       return;
     }
 
@@ -59,12 +70,30 @@ export function useLogin() {
     fetch(CHECK_ENDPOINT)
       .then((r) => r.json())
       .then((data) => {
-        setStatus(data.setup_required ? "setup_required" : "ready");
+        if (data.setup_required) {
+          // NOT a terminal state, and this is where the budget used to be
+          // wrongly cleared. LoginComponent reacts to this status by navigating
+          // on to /setup/, so the chain is still running — clearing here reset
+          // the counter on every lap of the exact /login/ -> /setup/ -> /login/
+          // ping-pong the counter exists to catch, and the loop breaker could
+          // never reach three.
+          setStatus("setup_required");
+          return;
+        }
+        // Terminal: the login form is what renders next, and a rendered form is
+        // something the user can act on. "The chain ended" means the user has
+        // ARRIVED somewhere usable — not that a page started loading, and not
+        // that this document happens to have skipped one redirect on its way to
+        // issuing another.
+        clearAuthRedirectBudget();
+        setStatus("ready");
       })
       .catch(() => {
         // Backend unreachable on a fresh install likely means setup hasn't
         // completed yet (e.g. lighttpd started before qmanager-setup).
         // Default to setup_required so onboarding isn't silently skipped.
+        // Same reasoning as the branch above: this hands off to /setup/, so the
+        // budget stays where it is.
         setStatus("setup_required");
       });
   }, []);
@@ -80,8 +109,16 @@ export function useLogin() {
         const data = await resp.json();
 
         if (data.success) {
-          // Cookie is set by the backend — just redirect
-          window.location.href = "/dashboard/";
+          // Cookie is set by the backend — just redirect.
+          //
+          // Uncounted, unlike the gate hops: reaching this line took a password
+          // and a click. A cycle through it would need the user to retype the
+          // password on every lap, which makes it a bad login experience but not
+          // the runaway this budget guards against — and spending budget here
+          // could see a correct password answered with a refusal and a form that
+          // just sits there. The latch still applies, so this never cancels a
+          // navigation already on the wire.
+          navigateForAuth("/dashboard/", { countsAsBounce: false });
           return { success: true };
         }
 
@@ -119,7 +156,8 @@ export function useLogin() {
         const data = await resp.json();
 
         if (data.success) {
-          window.location.href = "/dashboard/";
+          // Same reasoning as login() above — user-initiated, so uncounted.
+          navigateForAuth("/dashboard/", { countsAsBounce: false });
           return { success: true };
         }
 
@@ -187,7 +225,11 @@ export async function logout(): Promise<void> {
     // Ignore network errors on logout
   } finally {
     clearIndicatorCookie();
-    window.location.href = "/login/";
+    // Uncounted for the same reason as a successful login: a menu item the user
+    // clicked cannot be a lap of an automatic loop. Routed through the guard
+    // anyway so it defers to a navigation already in flight — a logout raced by
+    // authFetch's 401 hand-off is two documents fetched for one destination.
+    navigateForAuth("/login/", { countsAsBounce: false });
   }
 }
 
@@ -208,7 +250,9 @@ export async function changePassword(
 
     if (data.success) {
       clearIndicatorCookie();
-      window.location.href = "/login/";
+      // The backend invalidated the session along with the password, so this is
+      // a forced re-login rather than a gate decision — uncounted, latched.
+      navigateForAuth("/login/", { countsAsBounce: false });
       return { success: true };
     }
 

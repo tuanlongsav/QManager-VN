@@ -2,7 +2,8 @@
 
 import { useState, type FormEvent } from "react";
 import { toast } from "sonner";
-import { prepareForReboot } from "@/lib/session";
+import { navigateForAuth, prepareForReboot } from "@/lib/session";
+import { useT } from "@/hooks/use-i18n";
 import {
   Card,
   CardContent,
@@ -53,6 +54,7 @@ const MBNCard = ({
   // Form state. Each field holds `null` until the user picks something, so it
   // falls back to the fetched value — derived during render instead of synced
   // through an effect.
+  const { t } = useT();
   const { saved, markSaved } = useSaveFlash();
   const [autoSelEdit, setAutoSelEdit] = useState<string | null>(null);
   const [profileEdit, setProfileEdit] = useState<string | null>(null);
@@ -65,6 +67,11 @@ const MBNCard = ({
   // Reboot dialog
   const [showRebootDialog, setShowRebootDialog] = useState(false);
   const [isRebooting, setIsRebooting] = useState(false);
+  // Set only when the shared auth-navigation guard REFUSES the hand-off, i.e.
+  // the browser will never leave this document on its own. Holding the
+  // destination here lets the dialog render it as a plain <a> the user can
+  // click — a click is outside the redirect budget, so it always works.
+  const [rebootEscapeHref, setRebootEscapeHref] = useState<string | null>(null);
 
   const handleSave = async (e: FormEvent) => {
     e.preventDefault();
@@ -128,8 +135,16 @@ const MBNCard = ({
     e.preventDefault();
     setIsRebooting(true);
 
-    // Prepare session state for the countdown page
-    prepareForReboot();
+    // Clear the login indicator and write the marker the countdown page looks
+    // for. The boolean return is not decoration: `false` means the marker could
+    // not be persisted (storage denied by the browser, or the origin's quota is
+    // full), and components/reboot/reboot-countdown.tsx reads a missing marker
+    // as "somebody typed /reboot/ into the address bar" and bounces to "/".
+    // Sending the user there anyway would spend two more full-page loads on a
+    // device that is already going down, so aim at /login/ instead and let them
+    // wait for it to come back.
+    const countdownPageWillRender = prepareForReboot();
+    const destination = countdownPageWillRender ? "/reboot/" : "/login/";
 
     // Fire-and-forget: keepalive ensures the request survives page navigation.
     fetch("/cgi-bin/quecmanager/cellular/mbn.sh", {
@@ -139,8 +154,25 @@ const MBNCard = ({
       keepalive: true,
     }).catch(() => {});
 
-    // Navigate to countdown page immediately
-    window.location.href = "/reboot/";
+    // Every full-page navigation goes through the one guard in lib/session.ts.
+    // A bare `window.location.href = ...` aborts whichever document load is
+    // already in flight and starts another; two of those racing is precisely
+    // the never-settling page that made v1.0.4 unusable on real hardware.
+    const outcome = navigateForAuth(destination, {
+      // /reboot/ cannot be a link in an auth cycle — the device is going down
+      // and that page never hands back to a gate. The /login/ fallback IS a
+      // gate, so it spends the redirect budget like any other auth hop.
+      countsAsBounce: !countdownPageWillRender,
+    });
+
+    // "started" and "suppressed" both mean the browser is already on its way
+    // out of this document, so the spinner is correct and there is nothing
+    // left to do. Only "refused" needs handling: that navigation will never
+    // happen, so stop pretending it is about to and offer a real link.
+    if (outcome === "refused") {
+      setIsRebooting(false);
+      setRebootEscapeHref(destination);
+    }
   };
 
   if (isLoading) {
@@ -255,30 +287,49 @@ const MBNCard = ({
         }}>
           <AlertDialogContent>
             <AlertDialogHeader>
-              <AlertDialogTitle>Reboot Required</AlertDialogTitle>
+              <AlertDialogTitle>
+                {rebootEscapeHref
+                  ? t("rebootHandoff.blockedTitle")
+                  : "Reboot Required"}
+              </AlertDialogTitle>
               <AlertDialogDescription>
-                Carrier profile changes require a device reboot to take effect.
-                Would you like to reboot now?
+                {rebootEscapeHref
+                  ? `${t("rebootHandoff.rebootSent")} ${t("rebootHandoff.blockedBody")}`
+                  : "Carrier profile changes require a device reboot to take effect. Would you like to reboot now?"}
               </AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>
               <AlertDialogCancel disabled={isRebooting}>
-                Reboot Later
+                {rebootEscapeHref ? t("common.close") : "Reboot Later"}
               </AlertDialogCancel>
-              <AlertDialogAction
-                variant="destructive"
-                disabled={isRebooting}
-                onClick={handleReboot}
-              >
-                {isRebooting ? (
-                  <>
-                    <Loader2 className="size-4 animate-spin" />
-                    Rebooting...
-                  </>
-                ) : (
-                  "Reboot Now"
-                )}
-              </AlertDialogAction>
+              {rebootEscapeHref ? (
+                // A real anchor, not another scripted navigation: the guard has
+                // already refused to move this document, and a link the user
+                // clicks is a user gesture rather than a redirect, so it is
+                // outside the budget and always lands.
+                <AlertDialogAction asChild>
+                  <a href={rebootEscapeHref}>
+                    {rebootEscapeHref === "/reboot/"
+                      ? t("rebootHandoff.openCountdown")
+                      : t("rebootHandoff.goToSignIn")}
+                  </a>
+                </AlertDialogAction>
+              ) : (
+                <AlertDialogAction
+                  variant="destructive"
+                  disabled={isRebooting}
+                  onClick={handleReboot}
+                >
+                  {isRebooting ? (
+                    <>
+                      <Loader2 className="size-4 animate-spin" />
+                      Rebooting...
+                    </>
+                  ) : (
+                    "Reboot Now"
+                  )}
+                </AlertDialogAction>
+              )}
             </AlertDialogFooter>
           </AlertDialogContent>
         </AlertDialog>

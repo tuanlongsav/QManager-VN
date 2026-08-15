@@ -2,6 +2,7 @@
 
 import { useState, useCallback, useRef, useEffect } from "react";
 import { authFetch } from "@/lib/auth-fetch";
+import { isAuthNavigationInFlight } from "@/lib/session";
 import type {
   HealthCheckJob,
   RunResponse,
@@ -143,8 +144,39 @@ export function useSystemHealthCheck(): UseSystemHealthCheckReturn {
 
   const downloadBundle = useCallback(() => {
     if (!job?.job_id || !job.tarball_path) return;
+
+    // This document is on its way out for an auth reason, so there is nothing
+    // left to download it into. Checking is cheap and spends nothing.
+    if (isAuthNavigationInFlight()) return;
+
     const url = `${CGI_BASE}/download.sh?job_id=${encodeURIComponent(job.job_id)}`;
-    // Trigger native browser download — auth cookie is sent automatically.
+
+    // NOT a navigation, and deliberately NOT routed through navigateForAuth().
+    //
+    // download.sh answers with `Content-Disposition: attachment` (see
+    // scripts/www/cgi-bin/quecmanager/system/health-check/download.sh), which
+    // tells the browser to save the body as a file rather than render it. The
+    // current document is never replaced: assigning `location.href` here starts
+    // a download and this page carries on running, so none of the reasons the
+    // auth guard exists — an in-flight document load being aborted and
+    // restarted — apply.
+    //
+    // Sending it through the guard anyway would actively break things. The guard
+    // latches "this document is leaving" *before* handing the URL to the
+    // browser, and that latch is one-way by design because a real navigation
+    // never comes back. A download does come back, so the latch would be stuck
+    // on for the rest of the page's life: the auto-logout poller would stand
+    // down, authFetch's 401 handler would go quiet, and a session that expired
+    // after the user saved a diagnostics bundle could never hand them over to
+    // /login/ again. It would also spend a redirect-budget hop on an action that
+    // is not a redirect.
+    //
+    // The auth cookie rides along automatically, so an expired session gets
+    // download.sh's JSON 401 instead of a file. That is a cosmetic wart (the
+    // browser renders the JSON) and not worth pre-flighting with an extra
+    // request: reaching this button means the status poller was answering 200
+    // moments ago, and any real 401 on it has already started the hand-off that
+    // the check above returns on.
     window.location.href = url;
   }, [job]);
 

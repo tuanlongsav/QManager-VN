@@ -15,7 +15,11 @@ import { toast } from "sonner";
 import { logout } from "@/hooks/use-auth";
 import { authFetch } from "@/lib/auth-fetch";
 import { fileToAvatarDataUrl } from "@/lib/avatar-image";
-import { prepareForReboot } from "@/lib/session";
+import {
+  readStorageValueOrNull,
+  writeStorageValue,
+} from "@/lib/browser-storage";
+import { navigateForAuth, prepareForReboot } from "@/lib/session";
 import { useT } from "@/hooks/use-i18n";
 import type { SaveSettingsResponse } from "@/types/system-settings";
 
@@ -60,6 +64,9 @@ import {
 } from "@/components/ui/sidebar";
 import { ChangePasswordDialog } from "@/components/auth/change-password-dialog";
 
+/** Where the user's uploaded avatar is cached, as a data: URL. */
+const AVATAR_STORAGE_KEY = "qm_display_avatar";
+
 export function NavUser({
   user,
 }: {
@@ -73,10 +80,19 @@ export function NavUser({
 
   // --- Display name from device hostname ---
   const [displayName, setDisplayName] = useState<string>(user.name);
-  const [avatarSrc, setAvatarSrc] = useState<string>(() => {
-    if (typeof window === "undefined") return user.avatar;
-    return localStorage.getItem("qm_display_avatar") || user.avatar;
-  });
+  // Read through lib/browser-storage, never `localStorage` directly. This runs
+  // inside a useState INITIALIZER, i.e. during render, and NavUser sits in the
+  // sidebar of every authenticated page — so a SecurityError thrown here (a
+  // storage-blocked WebView, Safari with cookies off) does not degrade the
+  // avatar, it blanks the entire app. `typeof window` was never the right guard:
+  // in those browsers `window` exists and it is the `localStorage` property
+  // lookup itself that throws.
+  //
+  // ...OrNull is the deliberate collapse: "no stored avatar" and "no storage at
+  // all" both mean the same thing to a decorative picture — show the default.
+  const [avatarSrc, setAvatarSrc] = useState<string>(
+    () => readStorageValueOrNull("local", AVATAR_STORAGE_KEY) || user.avatar
+  );
 
   // Fetch hostname from system settings on mount
   useEffect(() => {
@@ -120,9 +136,19 @@ export function NavUser({
       toast.error(t("navUser.toastImageTooLarge"));
       return;
     }
-    localStorage.setItem("qm_display_avatar", base64);
+    // The picture is applied to this session either way — that part cannot fail.
+    // Persisting it can: a data: URL of a photo is easily a megabyte, which is
+    // what tips an origin over its localStorage quota (setItem then throws
+    // QuotaExceededError), and a storage-blocked document rejects the write
+    // outright. Say so rather than reporting an unqualified success the user will
+    // discover was untrue on their next page load.
+    const persisted = writeStorageValue("local", AVATAR_STORAGE_KEY, base64);
     setAvatarSrc(base64);
-    toast.success(t("navUser.toastPhotoUpdated"));
+    if (persisted) {
+      toast.success(t("navUser.toastPhotoUpdated"));
+    } else {
+      toast.warning(t("navUser.toastPhotoNotSaved"));
+    }
     e.target.value = "";
   };
 
@@ -171,10 +197,16 @@ export function NavUser({
     e.preventDefault();
     setRebooting(true);
 
-    // Prepare session state for the countdown page
-    prepareForReboot();
+    // Prepare session state for the countdown page. The return value is NOT
+    // decoration: it says whether the "a reboot really was requested" marker
+    // reached sessionStorage, and /reboot/ refuses to show the countdown to a
+    // visitor without one. Ignoring it (as this did) sends a user with unusable
+    // storage to a page that immediately bounces them somewhere else.
+    const countdownArmed = prepareForReboot();
 
     // Fire-and-forget: keepalive ensures the request survives page navigation.
+    // This happens regardless of the marker — the user asked for a reboot, and
+    // failing to write a UI breadcrumb is no reason to withhold it.
     fetch("/cgi-bin/quecmanager/system/reboot.sh", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -182,8 +214,54 @@ export function NavUser({
       keepalive: true,
     }).catch(() => {});
 
-    // Navigate to countdown page immediately
-    window.location.href = "/reboot/";
+    // Leave through the shared guard rather than assigning window.location
+    // directly. WHY it matters even though this is a plain user click: the
+    // assignment only *queues* a document load, it does not stop this page. The
+    // dashboard's pollers keep running for as long as the new document takes to
+    // arrive, and on a device that is in the act of rebooting they are all about
+    // to fail at once. A 401 landing in authFetch during that window cancels the
+    // /reboot/ load and starts a /login/ one instead — the reproduced bug. The
+    // latch inside navigateForAuth is set before the assignment, so those 401
+    // handlers see "already leaving" and stand down.
+    //
+    // countsAsBounce:false because /reboot/ is the textbook uncounted edge: the
+    // device is going down, the countdown page never hands on to a gate, and
+    // spending budget here would leave the loop breaker poorer for the /login/
+    // hop the user genuinely needs when the box comes back.
+    //
+    // Without the marker, /reboot/ may treat this as a direct URL visit and
+    // bounce onward anyway, so go straight to /login/ — which is what
+    // lib/session.ts's prepareForReboot contract prescribes for a caller that
+    // reads the result. The user loses the countdown animation and waits on the
+    // login form instead; the reboot is already on its way, so there is nothing
+    // to undo, only a better place to wait. That hop DOES count as a bounce:
+    // /login/ is a real auth gate that can hand on to /setup/ or /dashboard/.
+    //
+    // "may", not "will": a `false` here has two causes that /reboot/ can tell
+    // apart even though we cannot. A rejected write on a working store leaves the
+    // marker genuinely absent and /reboot/ does bounce; a store this document
+    // cannot touch at all leaves /reboot/ unable to read the marker either, and
+    // it fails open and shows the countdown. Taking the /login/ branch for both
+    // costs the second group an animation and nothing else, which is the cheaper
+    // side to be wrong on than duplicating /reboot/'s fail-open policy here and
+    // having the two drift apart later.
+    const outcome = countdownArmed
+      ? navigateForAuth("/reboot/", { countsAsBounce: false })
+      : navigateForAuth("/login/");
+
+    // "started" and "suppressed" both mean the browser is leaving and there is
+    // nothing left for this component to do. "refused" (only reachable on the
+    // budget-counted /login/ fallback) means no navigation will ever happen — so
+    // stop here and leave the dialog on its terminal "Reboot command sent" text,
+    // which is still true. Re-enabling the button would only invite a second
+    // reboot of a device that is already going down.
+    if (outcome === "refused") {
+      console.error(
+        "[nav-user] Reboot requested but the redirect budget refused the " +
+          "hand-off to /login/. The device is still rebooting; this page will " +
+          "stop responding shortly."
+      );
+    }
   };
 
   const handleReconnect = async (e: React.MouseEvent) => {

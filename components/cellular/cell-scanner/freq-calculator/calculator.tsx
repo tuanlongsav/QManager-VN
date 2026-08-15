@@ -27,6 +27,11 @@ import {
   nrArfcnToFrequency,
   nrULFrequency,
 } from "@/lib/earfcn";
+import {
+  readStorageValueOrNull,
+  removeStorageValue,
+  writeStorageValue,
+} from "@/lib/browser-storage";
 
 // --- Auto-detection boundaries (derived from shared band tables) -------------
 const MAX_LTE_EARFCN = Math.max(...LTE_BANDS.map((b) => b.earfcnRange[1]));
@@ -181,19 +186,35 @@ const calculateFrequency = (
   return null;
 };
 
-// Initialize history from localStorage
+const HISTORY_STORAGE_KEY = "earfcnHistory";
+
+/**
+ * Initialize history from localStorage.
+ *
+ * The try/catch this replaces looked complete and was not: the guard read
+ * `window.localStorage` in the `if` condition, one line ABOVE the `try`. That
+ * property lookup is itself what throws SecurityError in a document the browser
+ * has denied storage to — blocked cookies, an iframe without allow-same-origin,
+ * some embedded WebViews — so the only access that could not be caught was the
+ * one written as the safety check. And because this function is a useState
+ * initializer, the throw lands during render and blanks the whole cell-scanner
+ * page rather than just emptying the history card.
+ *
+ * The JSON.parse result is now checked as well. It was cast to HistoryEntry[]
+ * and trusted; anything that parsed to a non-array (a key left behind by an
+ * older build, a hand-edited value) reached `history.map` below and crashed the
+ * same page from a different direction.
+ */
 const getInitialHistory = (): HistoryEntry[] => {
-  if (typeof window !== "undefined" && window.localStorage) {
-    try {
-      const savedHistory = localStorage.getItem("earfcnHistory");
-      if (savedHistory) {
-        return JSON.parse(savedHistory) as HistoryEntry[];
-      }
-    } catch {
-      // Silently fail
-    }
+  const saved = readStorageValueOrNull("local", HISTORY_STORAGE_KEY);
+  if (!saved) return [];
+  try {
+    const parsed: unknown = JSON.parse(saved);
+    return Array.isArray(parsed) ? (parsed as HistoryEntry[]) : [];
+  } catch {
+    // Not JSON. Nothing to recover and nothing worth telling the user.
+    return [];
   }
-  return [];
 };
 
 const FrequencyCalculator = () => {
@@ -203,18 +224,21 @@ const FrequencyCalculator = () => {
   const [activeTab, setActiveTab] = useState<"auto" | "lte" | "nr">("auto");
   const [history, setHistory] = useState<HistoryEntry[]>(getInitialHistory);
 
-  // Save history to localStorage whenever it changes
+  // Save history to localStorage whenever it changes.
+  //
+  // Same trap as getInitialHistory above: the `window.localStorage` test lived
+  // outside the try, so the check was the throw. An exception raised in an
+  // effect body is not swallowed either — React lets it propagate and unmounts
+  // the tree — so this cost the page too, just one commit later.
+  //
+  // Writing state OUT to storage is fine in an effect; it is reading external
+  // state back IN with setState that the project bans (react-hooks/
+  // set-state-in-effect), and nothing here does that.
   useEffect(() => {
-    if (typeof window !== "undefined" && window.localStorage) {
-      try {
-        if (history.length > 0) {
-          localStorage.setItem("earfcnHistory", JSON.stringify(history));
-        } else {
-          localStorage.removeItem("earfcnHistory");
-        }
-      } catch {
-        // Silently fail
-      }
+    if (history.length > 0) {
+      writeStorageValue("local", HISTORY_STORAGE_KEY, JSON.stringify(history));
+    } else {
+      removeStorageValue("local", HISTORY_STORAGE_KEY);
     }
   }, [history]);
 

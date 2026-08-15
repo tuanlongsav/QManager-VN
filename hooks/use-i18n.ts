@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useSyncExternalStore } from "react";
+import { readStorageValue, writeStorageValue } from "@/lib/browser-storage";
 import en from "@/lib/i18n/en.json";
 import vi from "@/lib/i18n/vi.json";
 
@@ -57,13 +58,53 @@ function getServerSnapshot(): Lang {
 }
 
 function detectBrowserLang(): Lang {
-  if (typeof navigator === "undefined") return DEFAULT_LANG;
-  return navigator.language.toLowerCase().startsWith("vi") ? "vi" : "en";
+  // `navigator.language` is missing in a few embedded WebViews, so read it
+  // defensively rather than calling .toLowerCase() on undefined. This function
+  // is on the render path of nearly every component in the app; a throw here is
+  // a blank screen on a device whose only UI is this page.
+  const advertised =
+    typeof navigator === "undefined" ? undefined : navigator.language;
+  return advertised?.toLowerCase().startsWith("vi") ? "vi" : "en";
 }
 
+/**
+ * The chosen language when localStorage refused the write, and only then.
+ *
+ * WHY it exists: a document with storage blocked (cross-origin iframe, Safari
+ * with cookies off, some WebViews — see lib/browser-storage.ts) cannot persist
+ * the preference, and without this the toggle would appear to do nothing at all:
+ * setLang would notify every subscriber, each would re-read storage, get the old
+ * answer back, and re-render identically. Holding the choice in module scope
+ * makes the toggle work for the life of the document, which is the most the
+ * browser will allow.
+ *
+ * WHY it is cleared on a successful write, rather than always set: while storage
+ * *is* usable it must stay the single source of truth, or the `storage` event
+ * from another tab would be read and then immediately overruled by this
+ * variable, and the two tabs would disagree forever.
+ */
+let unpersistedLang: Lang | null = null;
+
+/**
+ * getSnapshot for useSyncExternalStore.
+ *
+ * Two properties this function must keep, both easy to break:
+ *
+ * 1. **It must never throw.** It runs during render, on every component that
+ *    calls useT — which is nearly all of them. Reading the `localStorage`
+ *    property itself throws SecurityError in a storage-blocked document, so the
+ *    access goes through lib/browser-storage, which cannot throw. An unreadable
+ *    preference then degrades to the browser's advertised language, exactly as
+ *    an unset one does: for this hook the two really are the same answer, and
+ *    nothing downstream needs to tell them apart.
+ * 2. **It must be referentially stable.** React compares consecutive snapshots
+ *    with Object.is; hand back a fresh object and it re-renders forever. Every
+ *    return path here yields one of the two string literals "en" / "vi", which
+ *    compare equal by value — never widen this to an object.
+ */
 function readStored(): Lang {
-  if (typeof window === "undefined") return DEFAULT_LANG;
-  const stored = window.localStorage.getItem(STORAGE_KEY);
+  if (unpersistedLang !== null) return unpersistedLang;
+  const stored = readStorageValue("local", STORAGE_KEY);
   if (stored === "en" || stored === "vi") return stored;
   return detectBrowserLang();
 }
@@ -106,8 +147,15 @@ export function useT(): UseTReturn {
   const lang = useSyncExternalStore(subscribe, readStored, getServerSnapshot);
 
   const setLang = useCallback((next: Lang) => {
-    if (typeof window !== "undefined") {
-      window.localStorage.setItem(STORAGE_KEY, next);
+    // A blocked or full store makes setItem throw, and this runs from a click
+    // handler inside the language toggle — an uncaught throw there would leave
+    // the listeners un-notified and the UI stuck mid-toggle. writeStorageValue
+    // reports the failure instead, and we keep the choice in memory so the user
+    // still gets the language they asked for, just not across reloads.
+    if (writeStorageValue("local", STORAGE_KEY, next)) {
+      unpersistedLang = null;
+    } else {
+      unpersistedLang = next;
     }
     // Every subscriber re-reads through `readStored` once notified.
     listeners.forEach((cb) => cb());

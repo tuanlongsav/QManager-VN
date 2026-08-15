@@ -5,6 +5,7 @@ import { motion } from "motion/react";
 import { EyeIcon, EyeOffIcon } from "lucide-react";
 import { useLogin } from "@/hooks/use-auth";
 import { useT } from "@/hooks/use-i18n";
+import { isAuthRedirectBudgetExhausted, navigateForAuth } from "@/lib/session";
 import { LanguageToggle } from "@/components/language-toggle";
 import { Button } from "@/components/ui/button";
 import {
@@ -65,11 +66,22 @@ export default function LoginComponent() {
     typeof window !== "undefined" &&
     new URLSearchParams(window.location.search).get("reason") === "offline";
 
-  // Redirect to dedicated onboarding wizard when this is a fresh install
+  // Redirect to dedicated onboarding wizard when this is a fresh install.
+  //
+  // This is an auth gate hop exactly like /dashboard/ -> /login/, and for a long
+  // time it was the one that was not treated as one: a bare href assignment,
+  // outside both the in-flight latch and the redirect budget. That made the
+  // /login/ -> /setup/ -> /login/ cycle invisible to the loop breaker — /setup/
+  // spends the budget on its way back here, and this hop used to hand it back
+  // for free, so the count could never climb. It goes through navigateForAuth
+  // now, on the default (counted) setting, because it very much can be part of a
+  // cycle.
   useEffect(() => {
-    if (status === "setup_required") {
-      window.location.href = "/setup/";
-    }
+    if (status !== "setup_required") return;
+    // "refused" needs no handling here: the render below asks the budget the
+    // same question and puts an escape link on screen instead of the spinner.
+    // "suppressed" means someone else is already navigating — also nothing to do.
+    navigateForAuth("/setup/");
   }, [status]);
 
   // Rate limit countdown timer
@@ -91,7 +103,7 @@ export default function LoginComponent() {
         if (result.success) return;
 
         // useLogin already flipped status to "setup_required", so the redirect
-        // effect above takes over and this component renders the spinner
+        // effect above takes over and this component renders the hand-off
         // instead of the form — there is no error left to show.
         if (result.code === "setup_required") return;
 
@@ -120,6 +132,30 @@ export default function LoginComponent() {
     },
     [password, login, t]
   );
+
+  // A spent budget is the one case where the hand-off to /setup/ is never
+  // coming, and the spinner below would then spin for the life of the tab — a
+  // fresh install with no way in, on a box whose only other UI is SSH. The
+  // render asks the read-only companion rather than waiting to be told by the
+  // effect, because the render happens first and the answer is the same one
+  // navigateForAuth is about to reach.
+  if (status === "setup_required" && isAuthRedirectBudgetExhausted()) {
+    return (
+      <div className="flex flex-col items-center gap-3 py-12 text-center">
+        <p className="text-sm text-muted-foreground">
+          {t("authGate.sessionUnconfirmed")}
+        </p>
+        {/* A link, not another redirect: a click is a human deciding, which is
+            outside the budget and cannot be part of an automatic loop. */}
+        <a
+          href="/setup/"
+          className="text-sm font-medium text-primary underline underline-offset-4"
+        >
+          {t("authGate.goToSetup")}
+        </a>
+      </div>
+    );
+  }
 
   // Show spinner while detecting setup status or during redirect to /setup/
   if (status === "loading" || status === "setup_required") {

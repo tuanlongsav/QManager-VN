@@ -35,6 +35,95 @@ import { bandArrayToString } from "@/types/band-locking";
 const CGI_BASE = "/cgi-bin/quecmanager/bands";
 const FAILOVER_POLL_INTERVAL = 1000; // 1s — watcher sleeps 5s then checks
 
+// ---------------------------------------------------------------------------
+// Wire normalisation
+// ---------------------------------------------------------------------------
+//
+// Read this before adding another `const data: SomeResponse = await resp.json()`
+// to this file: that annotation is a CLAIM, not a check. `Response.json()` is
+// typed `Promise<any>`, so the type name on the left buys nothing at runtime —
+// TypeScript erases it, and whatever the device actually sent is stored as-is.
+//
+// That is not theoretical here. `setFailover(data.failover)` used to run on any
+// reply with `success: true`, and band-settings.tsx then read `failover.enabled`
+// during render. A 200 that omitted the `failover` object therefore threw
+// "Cannot read properties of undefined" out of a render pass — and because
+// BandSettingsComponent is mounted by components/dashboard/home-component.tsx,
+// that took down the entire dashboard, not just this card. On a headless modem
+// whose only UI is this page, that is the difference between a wrong badge and a
+// box that needs SSH.
+//
+// A reply can lose a field without being "corrupt": the /www tree is swapped
+// wholesale during an OTA, so a browser tab held open across an update can talk
+// to a CGI from one version while running the JS of another. Field-by-field
+// normalisation is what makes that survivable.
+
+/**
+ * Coerce one wire field into a boolean.
+ *
+ * NOT `Boolean(value)`: the backend is shell, and the string "false" is what a
+ * shell writes when jq's `--argjson` is not in play — `Boolean("false")` is
+ * `true`, which would report failover as armed precisely when it is not. So the
+ * spellings are matched explicitly and everything unrecognised (including a
+ * missing field) reads as `false`.
+ *
+ * `false` is the safe default for all three failover flags: "not enabled", "has
+ * not fired", "not monitoring". Nothing destructive follows from any of them, so
+ * a gap degrades to a conservative badge rather than to an exception.
+ */
+function toBool(value: unknown): boolean {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value !== 0;
+  if (typeof value === "string") return value === "true" || value === "1";
+  return false;
+}
+
+/**
+ * Build a complete FailoverState out of whatever arrived.
+ *
+ * Deliberately total — it always returns a usable object rather than `null` for
+ * a malformed input, which is the opposite of toCurrentBands below, and the
+ * asymmetry is the point. Refusing the payload outright would also discard
+ * `current`, the band lists that are the only reason this page loads, so one
+ * missing failover flag would blank all three band cards. Filling the gap costs
+ * a possibly-stale badge; refusing costs the page.
+ *
+ * Accepts `unknown` so it can normalise both shapes that carry these flags: the
+ * nested `failover` object from current.sh and the flat body of
+ * failover_status.sh.
+ */
+function toFailoverState(value: unknown): FailoverState {
+  // A primitive here yields `undefined` for every lookup, which toBool already
+  // maps to false — so no shape check is needed, only a null guard.
+  const raw = (value ?? {}) as Partial<Record<keyof FailoverState, unknown>>;
+  return {
+    enabled: toBool(raw.enabled),
+    activated: toBool(raw.activated),
+    watcher_running: toBool(raw.watcher_running),
+  };
+}
+
+/**
+ * Narrow the `current` object, or report that there wasn't one.
+ *
+ * `null` rather than a synthetic empty object because the declared state type is
+ * `CurrentBands | null` and the consumers already branch on it —
+ * band-locking.tsx renders empty band cards for `null`. Storing `undefined`, as
+ * the unchecked assignment did, was a value the type does not admit; it happened
+ * to render the same way, which is exactly why it would have gone unnoticed
+ * until some later consumer treated `null` and `undefined` differently.
+ */
+function toCurrentBands(value: unknown): CurrentBands | null {
+  if (!value || typeof value !== "object") return null;
+  const raw = value as Partial<Record<keyof CurrentBands, unknown>>;
+  const str = (v: unknown) => (typeof v === "string" ? v : "");
+  return {
+    lte_bands: str(raw.lte_bands),
+    nsa_nr5g_bands: str(raw.nsa_nr5g_bands),
+    sa_nr5g_bands: str(raw.sa_nr5g_bands),
+  };
+}
+
 export interface UseBandLockingReturn {
   /** Currently locked/configured bands from ue_capability_band */
   currentBands: CurrentBands | null;
@@ -109,18 +198,20 @@ export function useBandLocking(): UseBandLockingReturn {
         throw new Error(`HTTP ${resp.status}: ${resp.statusText}`);
       }
 
-      const data: BandCurrentResponse = await resp.json();
+      // Partial<> is the honest annotation: every field here crossed a network
+      // from a shell script, so none of them is guaranteed to have arrived.
+      const data: Partial<BandCurrentResponse> | null = await resp.json();
       if (!mountedRef.current) return;
 
-      if (!data.success) {
+      if (!data?.success) {
         setError(
-          data.detail || data.error || "Failed to fetch band configuration",
+          data?.detail || data?.error || "Failed to fetch band configuration",
         );
         return;
       }
 
-      setCurrentBands(data.current);
-      setFailover(data.failover);
+      setCurrentBands(toCurrentBands(data.current));
+      setFailover(toFailoverState(data.failover));
       setError(null);
     } catch (err) {
       if (!mountedRef.current) return;
@@ -170,12 +261,24 @@ export function useBandLocking(): UseBandLockingReturn {
         const resp = await authFetch(`${CGI_BASE}/failover_status.sh`);
         if (!resp.ok) return; // Silent fail — retry next interval
 
-        const data: FailoverStatusResponse = await resp.json();
+        const data: Partial<FailoverStatusResponse> | null = await resp.json();
         if (!mountedRef.current) return;
 
+        // failover_status.sh has no `success` envelope — its whole body IS the
+        // three flags, so the body is what gets normalised. Doing it once here
+        // also removes the three separate `data.<flag>` reads that previously
+        // wrote raw wire values straight into state.
+        //
+        // A reply missing `watcher_running` therefore reads as "finished" and
+        // ends the poll. That is the deliberate direction: an unbounded 1s poll
+        // against a device whose CGI is answering nonsense is worse than a badge
+        // that stops at "Ready" one tick early, and the next fetchCurrent() or
+        // page load re-reads the real state anyway.
+        const next = toFailoverState(data);
+
         // Watcher still running — update state to show "Monitoring", keep polling
-        if (data.watcher_running) {
-          setFailover({ enabled: data.enabled, activated: data.activated, watcher_running: true });
+        if (next.watcher_running) {
+          setFailover(next);
           return;
         }
 
@@ -185,10 +288,10 @@ export function useBandLocking(): UseBandLockingReturn {
           failoverPollRef.current = null;
         }
 
-        setFailover({ enabled: data.enabled, activated: data.activated, watcher_running: false });
+        setFailover(next);
 
         // If failover activated, bands were reset — re-fetch to get new values
-        if (data.activated) {
+        if (next.activated) {
           await fetchCurrent();
         }
       } catch {
@@ -224,11 +327,11 @@ export function useBandLocking(): UseBandLockingReturn {
           throw new Error(`HTTP ${resp.status}: ${resp.statusText}`);
         }
 
-        const data: BandLockResponse = await resp.json();
+        const data: Partial<BandLockResponse> | null = await resp.json();
         if (!mountedRef.current) return false;
 
-        if (!data.success) {
-          setError(data.detail || data.error || "Failed to apply band lock");
+        if (!data?.success) {
+          setError(data?.detail || data?.error || "Failed to apply band lock");
           return false;
         }
 
@@ -237,7 +340,7 @@ export function useBandLocking(): UseBandLockingReturn {
 
         // If failover is armed (enabled + watcher spawned), start polling
         // for watcher completion so we detect activation in real-time
-        if (data.failover_armed) {
+        if (toBool(data.failover_armed)) {
           // Clear any previous activated flag from UI — watcher just started fresh
           setFailover((prev) => ({ ...prev, activated: false }));
           startFailoverPolling();
@@ -296,16 +399,22 @@ export function useBandLocking(): UseBandLockingReturn {
           throw new Error(`HTTP ${resp.status}: ${resp.statusText}`);
         }
 
-        const data: FailoverToggleResponse = await resp.json();
+        const data: Partial<FailoverToggleResponse> | null = await resp.json();
         if (!mountedRef.current) return false;
 
-        if (!data.success) {
-          setError(data.detail || data.error || "Failed to toggle failover");
+        if (!data?.success) {
+          setError(data?.detail || data?.error || "Failed to toggle failover");
           return false;
         }
 
-        // Optimistic update
-        setFailover((prev) => ({ ...prev, enabled: data.enabled ?? enabled }));
+        // Optimistic update. An echoed `enabled` is authoritative; an absent one
+        // falls back to what the user just asked for, which is what the `??`
+        // here always did — toBool only stops a stringly-typed echo ("false")
+        // from flipping the switch the wrong way.
+        setFailover((prev) => ({
+          ...prev,
+          enabled: data.enabled == null ? enabled : toBool(data.enabled),
+        }));
         return true;
       } catch (err) {
         if (!mountedRef.current) return false;

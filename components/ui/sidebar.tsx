@@ -82,8 +82,30 @@ function SidebarProvider({
         _setOpen(openState)
       }
 
-      // This sets the cookie to keep the sidebar state.
-      document.cookie = `${SIDEBAR_COOKIE_NAME}=${openState}; path=/; max-age=${SIDEBAR_COOKIE_MAX_AGE}`
+      // ---- QManager-VN local modification (NOT upstream shadcn/ui) --------
+      // WHAT CHANGED: the bare `document.cookie = ...` that shadcn ships was
+      // wrapped in try/catch. Nothing else in this file differs from upstream.
+      //
+      // WHY: assigning `document.cookie` is a property *setter* call, and the
+      // setter throws SecurityError in any document the browser has denied
+      // storage to — a sandboxed iframe without `allow-same-origin`, Safari
+      // with cookies blocked, or the embedded WebView that a router-management
+      // app opens QManager in. SidebarProvider wraps every authenticated page,
+      // and this callback runs from the toggle button *and* the Ctrl/Cmd-B
+      // shortcut handler, so an uncaught throw here escapes into the app on a
+      // perfectly ordinary click. Losing the remembered open/closed state is a
+      // cosmetic regression; throwing is not. Same guard and same reasoning as
+      // the storage helpers in lib/session.ts.
+      //
+      // IF THIS FILE IS EVER REGENERATED (`npx shadcn add sidebar`), the guard
+      // disappears silently — re-apply it.
+      try {
+        document.cookie = `${SIDEBAR_COOKIE_NAME}=${openState}; path=/; max-age=${SIDEBAR_COOKIE_MAX_AGE}`
+      } catch {
+        // Storage denied. The sidebar still opens and closes for this visit,
+        // it just will not be remembered on the next page load.
+      }
+      // ---- end QManager-VN local modification ------------------------------
     },
     [setOpenProp, open]
   )

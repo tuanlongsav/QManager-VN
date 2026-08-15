@@ -53,6 +53,7 @@ import {
   type RecordingSnapshot,
   type SignalKey,
 } from "./utils";
+import { readStorageValueOrNull, writeStorageValue } from "@/lib/browser-storage";
 
 // ---------------------------------------------------------------------------
 // Recording hook — accumulates samples then averages
@@ -73,10 +74,12 @@ function usePositionRecorder(spa: SignalPerAntenna | null) {
       activeSlot: null,
       samplesCollected: 0,
     };
-    if (typeof window === "undefined") return defaults;
+    // The storage access and the JSON parse fail for unrelated reasons, so they
+    // are handled separately: the helper absorbs an unreachable store, and the
+    // try below still has to absorb a corrupt or hand-edited value.
+    const raw = readStorageValueOrNull("local", ALIGNMENT_STORAGE_KEY);
+    if (!raw) return defaults;
     try {
-      const raw = window.localStorage.getItem(ALIGNMENT_STORAGE_KEY);
-      if (!raw) return defaults;
       const parsed = JSON.parse(raw);
       if (parsed?.version !== 1) return defaults;
       if (parsed.antennaType !== "directional" && parsed.antennaType !== "omni") return defaults;
@@ -147,9 +150,16 @@ function usePositionRecorder(spa: SignalPerAntenna | null) {
     for (const key of SIGNAL_KEYS) acc[key] = [];
   }, [spa, state.activeSlot]);
 
+  // The read side above has always been guarded; this write side was not, and
+  // a throw here is worse than a throw there — it happens inside a passive
+  // effect with no caller on the stack, so it takes the alignment page down
+  // rather than falling back to defaults. Reading `window.localStorage` is
+  // itself what throws SecurityError in a storage-blocked document, which is
+  // why `typeof window` was never enough. Losing the saved slots is an
+  // annoyance; losing the page is an outage.
   useEffect(() => {
-    if (typeof window === "undefined") return;
-    window.localStorage.setItem(
+    writeStorageValue(
+      "local",
       ALIGNMENT_STORAGE_KEY,
       JSON.stringify({
         version: 1,

@@ -3,7 +3,8 @@
 import { useState, type FormEvent, type ChangeEvent } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { toast } from "sonner";
-import { prepareForReboot } from "@/lib/session";
+import { navigateForAuth, prepareForReboot } from "@/lib/session";
+import { useT } from "@/hooks/use-i18n";
 
 import {
   Card,
@@ -103,8 +104,46 @@ function seedForm(server: UseIpPassthroughReturn): PassthroughFormSeed {
   };
 }
 
+/**
+ * Shown only when the shared auth-navigation guard REFUSES the hand-off to the
+ * reboot page — i.e. the browser is never going to leave this document on its
+ * own, so a spinner would spin forever. A plain <a> is the escape hatch: a
+ * click is a user gesture rather than a scripted redirect, so it sits outside
+ * the redirect budget and always lands.
+ */
+const RebootHandoffBanner = ({ href }: { href: string }) => {
+  const { t } = useT();
+  return (
+    <div
+      role="alert"
+      className="rounded-md border border-warning/40 bg-warning/10 px-3 py-2 mb-4 space-y-1"
+    >
+      <p className="text-sm font-medium text-foreground">
+        {t("rebootHandoff.blockedTitle")}
+      </p>
+      <p className="text-sm text-muted-foreground">
+        {t("rebootHandoff.rebootPending")} {t("rebootHandoff.blockedBody")}
+      </p>
+      <a
+        href={href}
+        className="inline-block text-sm font-medium underline underline-offset-4"
+      >
+        {href === "/reboot/"
+          ? t("rebootHandoff.openCountdown")
+          : t("rebootHandoff.goToSignIn")}
+      </a>
+    </div>
+  );
+};
+
 const IPPassthroughCard = () => {
   const server = useIpPassthrough();
+
+  // Held out here, above the keyed form, on purpose: the form is remounted
+  // whenever the server snapshot changes, and a refused reboot hand-off must
+  // survive a poller tick. The link is the user's only way forward at that
+  // point, so it must not blink out from under them.
+  const [rebootEscapeHref, setRebootEscapeHref] = useState<string | null>(null);
 
   // The form seeds every field from the server snapshot at mount. Keying on
   // that snapshot remounts it whenever the values change — the same trigger the
@@ -117,10 +156,24 @@ const IPPassthroughCard = () => {
     server.dnsProxy,
   ].join("|");
 
-  return <IPPassthroughForm key={seedKey} {...server} />;
+  return (
+    <>
+      {rebootEscapeHref && <RebootHandoffBanner href={rebootEscapeHref} />}
+      <IPPassthroughForm
+        key={seedKey}
+        onHandoffRefused={setRebootEscapeHref}
+        {...server}
+      />
+    </>
+  );
 };
 
-const IPPassthroughForm = (server: UseIpPassthroughReturn) => {
+const IPPassthroughForm = ({
+  onHandoffRefused,
+  ...server
+}: UseIpPassthroughReturn & {
+  onHandoffRefused: (destination: string) => void;
+}) => {
   const { isLoading, isSaving, error, saveSettings, refresh } = server;
   const { saved, markSaved } = useSaveFlash();
 
@@ -189,11 +242,39 @@ const IPPassthroughForm = (server: UseIpPassthroughReturn) => {
     }
 
     markSaved();
+
     // Hand off to the countdown page. The backend (cgi_reboot_response) is
     // waiting on /tmp/qmanager_reboot_ack — the /reboot/ page touches it on
     // mount, so the device reboots only after the page is in browser memory.
-    prepareForReboot();
-    window.location.href = "/reboot/";
+    //
+    // prepareForReboot() reports whether the marker it writes actually landed.
+    // `false` means storage is denied or full, and reboot-countdown.tsx reads a
+    // missing marker as "somebody typed /reboot/ by hand" and bounces to "/" —
+    // so /reboot/ would refuse the visit, the ack file would never be touched,
+    // and the reboot would never fire. /login/ is the honest destination in
+    // that case: the settings are saved and the user can re-apply from a tab
+    // that has working storage.
+    const countdownPageWillRender = prepareForReboot();
+    const destination = countdownPageWillRender ? "/reboot/" : "/login/";
+
+    // The one guard in lib/session.ts owns every full-page navigation. A bare
+    // `window.location.href = ...` aborts whichever document load is already in
+    // flight and starts another; two of those racing is the never-settling page
+    // that made v1.0.4 unusable on real hardware.
+    const outcome = navigateForAuth(destination, {
+      // /reboot/ cannot be a link in an auth cycle — the device is going down
+      // and that page never hands back to a gate. The /login/ fallback IS a
+      // gate, so it spends the redirect budget like any other auth hop.
+      countsAsBounce: !countdownPageWillRender,
+    });
+
+    // "started" and "suppressed" both mean the browser is on its way out of
+    // this document; there is no "after" worth writing code for. Only
+    // "refused" needs a UI, because that navigation is never coming and the
+    // device is sitting there waiting for a page load that will not happen.
+    if (outcome === "refused") {
+      onHandoffRefused(destination);
+    }
   };
 
   // Format MAC input: strip non-hex, uppercase, insert colons every 2 chars

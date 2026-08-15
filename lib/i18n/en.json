@@ -19,6 +19,12 @@
     "sessionEnded": "Your session ended because the device was unreachable for too long.",
     "footer": "QManager — Quectel Modem Management"
   },
+  "authGate": {
+    "sessionUnconfirmed": "Your session could not be confirmed.",
+    "goToSignIn": "Go to sign in",
+    "goToDashboard": "Go to dashboard",
+    "goToSetup": "Go to setup"
+  },
   "common": {
     "save": "Save",
     "cancel": "Cancel",
@@ -146,12 +152,21 @@
     "toastImageOnly": "Please select an image file.",
     "toastImageTooLarge": "Image must be under 500 KB.",
     "toastPhotoUpdated": "Profile photo updated.",
+    "toastPhotoNotSaved": "Photo applied, but it could not be saved on this browser — it will reset when you reload.",
     "toastNameUpdated": "Display name updated.",
     "toastNameSystemPending": "Display name saved, but the system hostname could not be updated. Update QManager to apply it.",
     "toastNameFailed": "Failed to update display name.",
     "toastReconnectStarted": "Network reconnect initiated. Connection may drop briefly.",
     "toastReconnectFailed": "Reconnect failed.",
     "toastReconnectError": "Failed to send reconnect command."
+  },
+  "rebootHandoff": {
+    "blockedTitle": "Couldn't switch pages automatically",
+    "blockedBody": "This tab could not move to the next page on its own. Use the link below to continue.",
+    "rebootSent": "The reboot command has already been sent, so the device is restarting either way.",
+    "rebootPending": "Your settings were saved, but the device only restarts once the progress page has loaded — open it to finish.",
+    "openCountdown": "Open the reboot progress page",
+    "goToSignIn": "Go to the sign-in page"
   },
   "support": {
     "heading": "Support",
@@ -347,5 +362,14 @@
     "toastSaved": "Settings saved",
     "toastSaveFailed": "Failed to save settings",
     "toastTimezonePending": "Settings saved, but the timezone could not be applied — the device clock has not changed. The zoneinfo database may be missing."
+  },
+  "scheduledOperations": {
+    "toastSaved": "Reboot schedule saved",
+    "toastSaveFailed": "Failed to save reboot schedule",
+    "toastEnabled": "Scheduled reboot enabled",
+    "toastDisabled": "Scheduled reboot disabled",
+    "toastUpdateFailed": "Failed to update reboot schedule",
+    "toastNotArmed": "Reboot schedule saved, but no timer was armed — the device will not reboot on this schedule.",
+    "toastNotDisarmed": "Scheduled reboot switched off, but the existing timer could not be removed — the device may still reboot on the old schedule."
   }
 }

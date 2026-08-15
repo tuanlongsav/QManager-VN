@@ -42,6 +42,11 @@ import { Skeleton } from "@/components/ui/skeleton";
 
 import { Field, FieldGroup, FieldLabel, FieldSet } from "@/components/ui/field";
 
+import {
+  readStorageValueOrNull,
+  writeStorageValue,
+} from "@/lib/browser-storage";
+
 import type {
   TowerLockConfig,
   TowerModemState,
@@ -92,20 +97,26 @@ const NRSALockingComponent = ({
   const [scs, setScs] = useState("");
   const [prevNrSa, setPrevNrSa] = useState(config?.nr_sa);
 
-  // Simple Mode state (persisted to localStorage)
-  const [simpleMode, setSimpleMode] = useState<boolean>(() => {
-    if (typeof window === "undefined") return false;
-    return window.localStorage.getItem(STORAGE_KEY_NR_SIMPLE_MODE) === "true";
-  });
+  // Simple Mode state (persisted to localStorage).
+  //
+  // Same reasoning as the LTE card next door, and the same stakes: this read is
+  // in a useState initializer, so it runs during render. A SecurityError there
+  // takes down the tower-locking page rather than just this switch. The old
+  // `typeof window` guard only covered the static-export prerender — reading
+  // `window.localStorage` throws in any browser that has denied this document
+  // storage, where `window` itself is fine. lib/browser-storage covers that case
+  // and the write's QuotaExceededError too.
+  const [simpleMode, setSimpleMode] = useState<boolean>(
+    () => readStorageValueOrNull("local", STORAGE_KEY_NR_SIMPLE_MODE) === "true",
+  );
 
   const [scsSource, setScsSource] = useState<ScsSource>("manual");
 
   const handleSimpleModeToggle = (on: boolean) => {
     setSimpleMode(on);
     setScsSource("manual");
-    if (typeof window !== "undefined") {
-      window.localStorage.setItem(STORAGE_KEY_NR_SIMPLE_MODE, String(on));
-    }
+    // A failed write costs only the remembered preference; state is already set.
+    writeStorageValue("local", STORAGE_KEY_NR_SIMPLE_MODE, String(on));
   };
 
   // Confirmation dialog state

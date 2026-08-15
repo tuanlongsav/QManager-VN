@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { CheckIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { navigateForAuth } from "@/lib/session";
 
 // =============================================================================
 // StepDone — Onboarding step 6: completion screen + confetti
@@ -17,7 +18,7 @@ export function StepDone() {
     window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
   const [show, setShow] = useState(prefersReducedMotion);
-  const dashboardBtnRef = useRef<HTMLButtonElement>(null);
+  const dashboardBtnRef = useRef<HTMLAnchorElement>(null);
 
   useEffect(() => {
     if (prefersReducedMotion) return;
@@ -78,8 +79,48 @@ export function StepDone() {
     dashboardBtnRef.current?.focus();
   }, []);
 
-  const handleGoToDashboard = () => {
-    window.location.href = "/dashboard/";
+  // "Go to Dashboard" is an AUTH navigation, not a cosmetic one: /dashboard/ is
+  // the dashboard auth gate, one of the vertices the redirect budget in
+  // lib/session.ts exists to bound. Onboarding hands off to it at the exact
+  // moment the session state is freshest and least settled — the wizard has just
+  // written config the gate is about to re-read — so this is precisely the edge
+  // that must be visible to the loop breaker rather than a raw location
+  // assignment racing whatever else the page has in flight.
+  //
+  // It SPENDS budget (the countsAsBounce default). lib/session.ts's own rule for
+  // opting out is "provably cannot be part of an auth cycle because it does not
+  // lead back to a gate", and /dashboard/ is a gate: if it misreads the session
+  // it hands straight on to /login/, which on this device can hand on again to
+  // /setup/ — the wizard we just came out of. That is a cycle, so it gets
+  // counted. The escape-hatch carve-out (countsAsBounce:false) is for links a
+  // *refused* gate renders as a last resort, not for ordinary forward progress.
+  //
+  // Rendering this as a real <a href> is what makes the refusal survivable, and
+  // it costs nothing: the element is a link either way. On "started"/"suppressed"
+  // the guard owns the navigation and we cancel the browser's default; on
+  // "refused" we let the default through, so the user's click still lands them on
+  // the dashboard. That is legitimate rather than a hole in the budget — a
+  // human-initiated navigation cannot be the lap of a machine loop, and it is the
+  // same escape valve the refused gates offer. It also means middle-click,
+  // open-in-new-tab and a failed JS bundle all behave sensibly.
+  const handleGoToDashboard = (e: React.MouseEvent<HTMLAnchorElement>) => {
+    // Modifier and non-primary clicks open a new tab or window. Those do not
+    // navigate THIS document, so there is nothing for the guard to protect — and
+    // calling it anyway would be actively wrong: it would send the *current* tab
+    // to /dashboard/ while preventDefault swallowed the new tab the user asked
+    // for. Hand them straight back to the browser.
+    if (
+      e.defaultPrevented ||
+      e.button !== 0 ||
+      e.metaKey ||
+      e.ctrlKey ||
+      e.shiftKey ||
+      e.altKey
+    ) {
+      return;
+    }
+    const outcome = navigateForAuth("/dashboard/");
+    if (outcome !== "refused") e.preventDefault();
   };
 
   return (
@@ -114,8 +155,10 @@ export function StepDone() {
         </p>
       </div>
 
-      <Button ref={dashboardBtnRef} onClick={handleGoToDashboard} className="w-full" size="lg">
-        Go to Dashboard
+      <Button asChild className="w-full" size="lg">
+        <a ref={dashboardBtnRef} href="/dashboard/" onClick={handleGoToDashboard}>
+          Go to Dashboard
+        </a>
       </Button>
     </div>
   );
