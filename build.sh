@@ -53,13 +53,49 @@ mkdir -p "$STAGING_DIR"
 step "Copying frontend build output..."
 cp -r "$OUT_DIR" "$STAGING_DIR/out"
 
+# Directories that exist only on a developer's machine and must not ship.
+#
+# install_rm520n.sh copies out of usr/lib/qmanager, usr/bin, www/cgi-bin,
+# etc/{systemd,sudoers.d,qmanager,udev} and usrdata — nothing else. Anything
+# else in scripts/ rides along in the archive, gets extracted to
+# /tmp/qmanager_install, and is deleted again with it, so excluding these costs
+# the device nothing and takes ~368 KB off every OTA download.
+#
+# scripts/dev/ is the one that matters beyond size: it is tooling that deletes
+# and relocates files on the build host (conflict-copies.sh --clean,
+# icloud-exclude.sh). It has no business on a modem.
+EXCLUDE_FROM_TARBALL="test dev"
+
 step "Copying backend scripts..."
 mkdir -p "$STAGING_DIR/scripts"
 for item in "$SCRIPTS_DIR"/*; do
   name="$(basename "$item")"
   case "$name" in install_rm520n.sh|uninstall_rm520n.sh) continue ;; esac
+  _skip=""
+  for _x in $EXCLUDE_FROM_TARBALL; do
+    [ "$name" = "$_x" ] && { _skip=1; break; }
+  done
+  [ -n "$_skip" ] && continue
   cp -r "$item" "$STAGING_DIR/scripts/$name"
 done
+
+# Prove the premise rather than trust it. The exclusion is only safe while the
+# installer genuinely never reads these paths; the day someone adds a reference,
+# the build would keep succeeding and the install would fail on the device with
+# a missing file. Cheaper to fail here.
+#
+# Matched as a regex rather than a fixed string because the installer spells
+# paths more than one way, and a literal "SRC_SCRIPTS/test" misses every variant
+# that is not the bare form — including "${SRC_SCRIPTS}/test", a style already
+# used elsewhere in that file, and "$INSTALL_DIR/scripts/test", which routes
+# around the variable entirely.
+for _x in $EXCLUDE_FROM_TARBALL; do
+  if grep -qE "(SRC_SCRIPTS|INSTALL_DIR/scripts)[}\"']*/$_x" \
+      "$SCRIPTS_DIR/install_rm520n.sh" "$SCRIPTS_DIR/uninstall_rm520n.sh" 2>/dev/null; then
+    fail "scripts/$_x is excluded from the tarball but install_rm520n.sh or uninstall_rm520n.sh now reads it — remove it from EXCLUDE_FROM_TARBALL or stop depending on it"
+  fi
+done
+step "Excluded from tarball: $(echo "$EXCLUDE_FROM_TARBALL" | tr ' ' ',') (dev-host only, never installed)"
 
 step "Copying install & uninstall scripts..."
 cp "$SCRIPTS_DIR/install_rm520n.sh"   "$STAGING_DIR/install_rm520n.sh"
@@ -138,6 +174,17 @@ COPYFILE_DISABLE=1 tar czf "$ARCHIVE" -C "$BUILD_DIR" qmanager_install
 if tar tzf "$ARCHIVE" 2>/dev/null | grep -q '/\._'; then
   fail "the archive still contains AppleDouble sidecars despite COPYFILE_DISABLE"
 fi
+
+# Same principle applied to the exclusion: check the artefact, not the loop that
+# built it. The grep above only asserts that nothing DEPENDS on these paths; this
+# asserts they are actually gone. A copy loop can be edited, a `cp -r` added
+# later, or an entry reintroduced under a different name — none of which the
+# source-side check would notice.
+for _x in $EXCLUDE_FROM_TARBALL; do
+  if tar tzf "$ARCHIVE" 2>/dev/null | grep -q "qmanager_install/scripts/$_x/"; then
+    fail "scripts/$_x was meant to be excluded but is present in the archive"
+  fi
+done
 
 step "Generating sha256sum.txt..."
 (cd "$BUILD_DIR" && sha256sum qmanager.tar.gz > sha256sum.txt)
