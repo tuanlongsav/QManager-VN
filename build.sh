@@ -107,8 +107,37 @@ chmod 755 "$STAGING_DIR/dependencies/atcli_smd11" "$STAGING_DIR/dependencies/sms
 # No Go toolchain required; no extra binaries to stage beyond the bundled
 # ARMv7 deps copied above (atcli_smd11, sms_tool, jq, dropbear).
 
+# Two kinds of macOS/iCloud debris have shipped to a live modem through this
+# archive, and neither was visible in the build output:
+#
+#   1. iCloud conflict copies — "cellular 3/", "_next 3/", "monitoring 2/".
+#      They are whole stale directory trees, so they land as extra routes
+#      serving out-of-date pages beside the real ones.
+#   2. AppleDouble sidecars — "._antenna-alignment". macOS tar writes one per
+#      file to carry extended attributes, and on a device that has no use for
+#      them they are pure noise: 528 of them reached the card, more than
+#      doubling the file count of /usrdata/qmanager/www.
+#
+# Refuse the first, suppress the second. Refusing rather than stripping is
+# deliberate for conflict copies: their presence means the source tree is not
+# what the author thinks it is, and a build that quietly cleans up hides that.
+step "Checking the staging tree for sync debris..."
+_debris=$(find "$STAGING_DIR" \( -name '* [0-9]' -o -name '* [0-9].*' -o -name '* copy' -o -name '* copy.*' \) 2>/dev/null)
+if [ -n "$_debris" ]; then
+  printf '%s\n' "$_debris" | sed 's|^|    |'
+  fail "conflict copies in the staging tree — remove them from the source, then rebuild (see scripts/dev/conflict-copies.sh)"
+fi
+echo "  no conflict copies"
+
 step "Creating qmanager.tar.gz..."
-tar czf "$ARCHIVE" -C "$BUILD_DIR" qmanager_install
+# COPYFILE_DISABLE stops macOS tar emitting ._ sidecars; it is a no-op on Linux.
+COPYFILE_DISABLE=1 tar czf "$ARCHIVE" -C "$BUILD_DIR" qmanager_install
+
+# Prove it rather than trust the variable: the flag is easy to lose in a future
+# edit, and the failure is silent — the archive simply carries junk again.
+if tar tzf "$ARCHIVE" 2>/dev/null | grep -q '/\._'; then
+  fail "the archive still contains AppleDouble sidecars despite COPYFILE_DISABLE"
+fi
 
 step "Generating sha256sum.txt..."
 (cd "$BUILD_DIR" && sha256sum qmanager.tar.gz > sha256sum.txt)
