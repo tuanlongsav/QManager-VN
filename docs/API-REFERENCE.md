@@ -594,25 +594,73 @@ Current frequency lock state.
 
 ## Tower Locking
 
-### GET/POST `/tower/lock.sh`
+### POST `/tower/lock.sh`
 
-**POST Request:**
+Apply or clear an LTE or NR-SA tower lock. POST only — a `GET` returns `method_not_allowed`.
+
+**POST Request** (one of four shapes):
+```json
+{"type":"lte","action":"lock","cells":[{"earfcn":1300,"pci":123},{"earfcn":1850,"pci":456}]}
+{"type":"lte","action":"unlock"}
+{"type":"nr_sa","action":"lock","pci":901,"arfcn":504990,"scs":30,"band":41}
+{"type":"nr_sa","action":"unlock"}
+```
+
+**POST Response** (lock):
 ```json
 {
-  "lte_pci": 123,
-  "nr_pci": 456,
-  "lte_earfcn": 66486,
-  "nr_arfcn": 520110
+  "success": true,
+  "type": "lte",
+  "action": "lock",
+  "num_cells": 2,
+  "failover_armed": true
 }
 ```
+
+`failover_armed` is absent on unlock. `num_cells` is LTE-only.
+
+<a id="failover-boot-fields"></a>
+**Boot-persistence failure fields (all four shapes, and `/tower/settings.sh`).** When the failover watcher's systemd boot symlink could not be written or removed, two more fields appear:
+
+```json
+{
+  "success": true,
+  "type": "lte",
+  "action": "lock",
+  "num_cells": 2,
+  "failover_armed": true,
+  "failover_boot_enabled": false,
+  "failover_boot_error": "Failover is running now, but it could not be set to start at boot — it will not protect this lock after a reboot."
+}
+```
+
+> ℹ️ NOTE: the pair is **emitted only on failure and omitted entirely on success** — `failover_boot_enabled` is never `true`. Absence means "nothing to report *or* an older device that does not send the field", so clients must test `failover_boot_enabled === false` rather than a falsy check. `success` stays `true`: the lock itself worked, only its boot persistence did not. `failover_boot_error` is a complete, user-facing English sentence composed by the server; it has three variants depending on direction and on whether the watcher is running right now. See [BACKEND.md §7.3](BACKEND.md#73-closed-a-denied-boot-persistence-grant-now-surfaces-at-every-call-site).
 
 ### GET `/tower/status.sh`
 
 Current tower lock state.
 
-### GET/POST `/tower/settings.sh`
+### POST `/tower/settings.sh`
 
-Tower locking general settings.
+Tower locking general settings. Persist changes go to the modem immediately via `AT+QNWLOCK="save_ctrl"`; failover settings are written to the config file only. Any field may be omitted to leave it unchanged.
+
+**POST Request:**
+```json
+{ "persist": true, "failover_enabled": true, "failover_threshold": 20 }
+```
+
+**POST Response:**
+```json
+{
+  "success": true,
+  "persist": true,
+  "failover_enabled": true,
+  "failover_threshold": 20,
+  "watcher_spawned": true
+}
+```
+
+Adds `"persist_command_failed": true` when the modem rejected the persist AT command (the config file is still updated). Carries the same [boot-persistence failure fields](#failover-boot-fields) as `/tower/lock.sh` — the two failures are unrelated and can both appear on one request.
 
 ### GET `/tower/failover_status.sh`
 
@@ -914,6 +962,18 @@ Get the currently active scenario.
   }
 }
 ```
+
+**POST Response** (`action: save_settings`) — `{"success": true}` on the healthy path. When the watchcat boot symlink could not be written or removed, the same failure-only pattern as the tower endpoints applies, under different field names:
+
+```json
+{
+  "success": true,
+  "boot_enabled": false,
+  "boot_enable_error": "Settings saved, but the watchdog could not be enabled at boot — it will not start after a reboot."
+}
+```
+
+> ℹ️ NOTE: `boot_enabled` appears **only** when it is `false`; the settings themselves are saved either way, hence `success: true`. Test `boot_enabled === false`, not falsiness. The message wording follows the direction the user asked for (enabled vs disabled). Same mechanism as `failover_boot_enabled` on `/tower/lock.sh` — see [BACKEND.md §7.3](BACKEND.md#73-closed-a-denied-boot-persistence-grant-now-surfaces-at-every-call-site).
 
 ### GET/POST `/settings/ping_profile.sh`
 

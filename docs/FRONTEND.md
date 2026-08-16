@@ -221,6 +221,10 @@ if (result.success) { /* toast success */ }
 | `useSystemSettings` | `/system/settings.sh` | `system-settings.ts` |
 | `useTailscale` | `/vpn/tailscale.sh` | — |
 
+> ⚠️ WARNING: **A save hook must hand the parsed response body back, not a bare `true`.** A hook typed `Promise<boolean>` throws away every field the endpoint reports alongside `success`, and no tool in the toolchain will tell you: `tsc` sees a correctly-typed boolean, `eslint` sees a value that is simply never read, and the backend looks blameless because it *is* emitting the field. `useWatchdogSettings` sat in exactly that state for a long time — `/monitoring/watchdog.sh` had been reporting `boot_enabled: false` correctly, and it could not reach a component. `useTowerLocking` and `useWatchdogSettings` now return `Promise<Response | false>` (`false` for the failure path, so `if (!result) return` still reads naturally), and `scripts/test/failover-boot-contract.sh` asserts it across the shell/TypeScript boundary that neither linter can see.
+>
+> Advisory fields of this kind are **omitted on success**, so absence means *unknown*, not *failed* — an older device never sends them. Compare with `=== false`, never a falsy check. Five components consume `failover_boot_enabled` and all route through one shared helper, `components/cellular/tower-locking/failover-boot-warning.ts`, so the comparison exists in exactly one place; see [BACKEND.md §7.3](BACKEND.md#73-closed-a-denied-boot-persistence-grant-now-surfaces-at-every-call-site).
+
 ### Async Process Hooks
 
 For long-running operations that run in the background:

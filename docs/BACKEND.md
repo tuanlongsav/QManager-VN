@@ -331,6 +331,8 @@ Service control abstraction and sudo wrappers for CGI context. Detects whether c
 
 **`svc_enable`/`svc_disable` check the post-condition, not the write.** Both used to return the exit status of a command whose stderr was discarded, and nothing looked at it. On a read-only rootfs, or on a device whose sudoers file predates the grant, enabling a service therefore did nothing and said nothing — the user found out at the next boot. They now `stat` the symlink afterwards instead, which is the thing systemd actually reads. `svc_enable` uses `-h`, not `-e`: `-e` follows the link and would report `false` for a boot symlink whose target unit file is missing, which is a different (and less useful) question.
 
+The return value is direction-aware, which is what makes it safe to compare against a constant rather than against what the caller asked for: `svc_enable` succeeds when the symlink is present, `svc_disable` succeeds when it is gone. Either way, "true" means *the boot state now matches the request*. **Every caller now reads it** — `monitoring/watchdog.sh` for `qmanager-watchcat`, and the tower handlers for `qmanager-tower-failover` via the globals in [§4.14](#414-tower_lock_mgrsh) ([§7.3](#73-closed-a-denied-boot-persistence-grant-now-surfaces-at-every-call-site)).
+
 > ⚠️ WARNING: from `www-data` context, these helpers only work on the units named in the sudoers file (§7) — **exact-argument** grants, no wildcards:
 >
 > | Helper | Units reachable as `www-data` |
@@ -472,8 +474,36 @@ Tower lock config CRUD, AT command builders, signal quality calculation, and fai
 | `tower_read_persist` | Query persistence state; prints `<lte_ctrl> <nr_ctrl>` |
 | `calc_signal_quality <rsrp>` | Map RSRP to 0-100 integer: `clamp(0,100,((rsrp+140)*100)/60)` |
 | `tower_kill_failover_watcher` | Stop `qmanager-tower-failover` service |
-| `tower_spawn_failover_watcher` | Check config, restart failover service, verify PID; prints `true`/`false` |
+| `tower_spawn_failover_watcher` | Check config, restart failover service, boot-enable it, verify PID; prints `true`/`false` **and sets two globals** (below) |
+| `tower_failover_boot_error <enable\|disable>` | Print the user-facing sentence for a boot-persistence miss; three cases, see below |
 | `mtu_reapply_after_bounce` | Spawn background MTU re-apply watcher (polls up to 30s after interface bounce) |
+
+#### `tower_spawn_failover_watcher` answers two independent questions
+
+Locking a tower and *keeping* it locked across a reboot are separate promises, and they fail separately. The function therefore leaves two globals behind:
+
+| Global | Values | Means |
+|--------|--------|-------|
+| `TOWER_FAILOVER_WATCHER_ALIVE` | `"true"` / `"false"` | The failover daemon is running **right now** (PID file written and the PID is alive) |
+| `TOWER_FAILOVER_BOOT_ENABLED` | `""` = not attempted on this call; else `"true"` / `"false"` | `svc_enable`'s verified post-condition — whether the daemon **comes back after a reboot** |
+
+Both are reset at the top of every call, including the early return taken when `failover.enabled` is `false`, so a stale value from an earlier call in the same request cannot be reported as this call's result.
+
+> ⚠️ WARNING: **Call it directly, never as `x=$(tower_spawn_failover_watcher)`.** Command substitution runs the function in a subshell, so every global it sets dies when the substitution closes and the boot answer arrives empty. This is not a hypothetical — it is exactly how the first version of this change shipped half-dead while a grep-based contract test passed on it. Call it as `tower_spawn_failover_watcher >/dev/null` and read the globals; the daemon-alive answer is still printed on stdout for compatibility, but the boot answer only exists as a global. See [§14 Common Pitfalls](#14-common-pitfalls).
+
+`TOWER_FAILOVER_WATCHER_ALIVE` is seeded to `"false"` at **library scope**, not just inside the function, and that seed is load-bearing well beyond the warning. `tower/lock.sh` feeds it straight to `jq --argjson`, where an empty string is not valid JSON: jq exits, the CGI emits nothing at all, the frontend's `resp.json()` throws, and a tower lock that actually **succeeded** is reported to the user as "Failed to lock tower". An uninitialised global here takes down the whole response, not one field of it.
+
+#### `tower_failover_boot_error` has three cases, not two
+
+Six response sites across two CGI scripts have to say the same thing, so the wording lives in one function. It branches on direction *and* on `TOWER_FAILOVER_WATCHER_ALIVE`:
+
+| Condition | Message |
+|-----------|---------|
+| `disable` | "Failover was stopped, but it is still set to start at boot — it may run again after a reboot." |
+| `enable`, watcher alive | "Failover is running now, but it could not be set to start at boot — it will not protect this lock after a reboot." |
+| `enable`, watcher **not** alive | "Failover could not be started or set to start at boot — this lock is not protected now and will not be after a reboot." |
+
+The third case is the one that is easy to leave out. When the rootfs is still read-only, `svc_start` and `svc_enable` both fail — nothing is running *and* nothing is scheduled. Saying "Failover is running now, but…" there would promise protection the user does not have, which is a worse untruth than the silent-success this whole change was written to remove.
 
 ### 4.15 `ttl_state.sh`
 
@@ -632,9 +662,12 @@ Monitors signal quality against the tower lock failover threshold. When quality 
 #### `qmanager_tower_schedule`
 
 **Location:** `/usr/bin/qmanager_tower_schedule`
-**State files:** `/tmp/qmanager_tower_schedule.pid`
+**Units:** `qmanager-tower-schedule-apply.service` and `-clear.service` ship in the repo; the matching `.timer` units are **generated at arm time** by `qmanager_tower_schedule_arm` (`_qm_timer_write`) from the user's schedule
+**State files:** none — it is a short-lived oneshot, not a resident daemon, so there is no PID file to check
 
-Applies and removes tower lock on a time schedule. Reads `tower_lock.json` section `schedule`. Spawned by `tower/schedule.sh` when schedule is enabled.
+Applies and removes tower lock on a time schedule. Reads `tower_lock.json` section `schedule`. Armed by `tower/schedule.sh` via the `qmanager_tower_schedule_arm` root helper (a systemd timer, not a spawned process).
+
+In `apply` mode it also re-arms the failover watcher through `tower_spawn_failover_watcher`, which makes it the **fifth** boot-persistence call site and the only one with no HTTP response to report through — it emits a `qlog_warn` instead ([§7.3](#73-closed-a-denied-boot-persistence-grant-now-surfaces-at-every-call-site)). It runs as root, so sudo cannot deny the symlink write here; a read-only rootfs still can.
 
 #### `qmanager_profile_apply`
 
@@ -887,10 +920,10 @@ www-data ALL=(root) NOPASSWD: /bin/systemctl stop qmanager-tower-failover
 # here would parse fine under visudo and then never match at runtime.
 #
 # The trade is that a future qmanager-* unit the UI can enable needs a line
-# added here. Prefer that to the wildcard, but know what a missing grant costs:
-# svc_enable verifies the symlink afterwards, yet only watchdog.sh reads that
-# result (surfacing boot_enabled=false). The tower call sites discard it, so
-# there a denied grant would fail silently and only show after a reboot (§7.3).
+# added here. Prefer that to the wildcard: a missing grant is now visible.
+# svc_enable/svc_disable verify the symlink afterwards, and every caller reads
+# that result — watchdog.sh returns boot_enabled, the tower endpoints return
+# failover_boot_enabled, and both reach a toast (§7.3).
 www-data ALL=(root) NOPASSWD: /bin/ln -sf /lib/systemd/system/qmanager-watchcat.service /lib/systemd/system/multi-user.target.wants/qmanager-watchcat.service
 www-data ALL=(root) NOPASSWD: /bin/ln -sf /lib/systemd/system/qmanager-tower-failover.service /lib/systemd/system/multi-user.target.wants/qmanager-tower-failover.service
 www-data ALL=(root) NOPASSWD: /bin/rm -f /lib/systemd/system/multi-user.target.wants/qmanager-watchcat.service
@@ -946,18 +979,20 @@ www-data ALL=(root) NOPASSWD: /bin/chown radio\:radio /etc/data/dnsmasq.conf
 www-data ALL=(root) NOPASSWD: /usr/bin/killall -HUP dnsmasq
 ```
 
+> ℹ️ NOTE: the listing above is the file verbatim. Its boot-persistence comment still describes the tower call sites as discarding `svc_enable`'s result — that was true when the grants were written and is no longer true; see [§7.3](#73-closed-a-denied-boot-persistence-grant-now-surfaces-at-every-call-site). The rest of the comment (why the wildcards were removed, why spacing matters) is current. Reconciling the comment is a source edit, not a docs edit, and belongs with the next change that touches the file.
+
 **Rule annotations:**
 
 | Rule | Used by |
 |------|---------|
 | `systemctl restart qmanager-watchcat` | `platform.sh` `svc_restart`; `monitoring/watchdog.sh` |
 | `systemctl stop qmanager-watchcat` | `platform.sh` `svc_stop`; `monitoring/watchdog.sh` |
-| `systemctl start qmanager-tower-failover` | `platform.sh` `svc_start`; `tower_lock_mgr.sh`, sourced by `tower/lock.sh`, `tower/settings.sh`, `tower/schedule.sh`, `frequency/lock.sh` |
-| `systemctl stop qmanager-tower-failover` | `platform.sh` `svc_stop`; `tower_lock_mgr.sh` (same CGI callers) |
+| `systemctl start qmanager-tower-failover` | `platform.sh` `svc_start`; `tower_lock_mgr.sh` `tower_spawn_failover_watcher`, reached from `tower/lock.sh`, `tower/settings.sh` and the `qmanager_tower_schedule` daemon |
+| `systemctl stop qmanager-tower-failover` | `platform.sh` `svc_stop`; `tower_lock_mgr.sh` (same callers, plus `tower_kill_failover_watcher`) |
 | `ln -sf …/qmanager-watchcat.service` | `platform.sh` `svc_enable`; `monitoring/watchdog.sh:360` |
 | `rm -f …/qmanager-watchcat.service` | `platform.sh` `svc_disable`; `monitoring/watchdog.sh:366` |
-| `ln -sf …/qmanager-tower-failover.service` | `platform.sh` `svc_enable`; `tower_lock_mgr.sh:416` (reached from `tower/lock.sh`, `tower/settings.sh`, `tower/schedule.sh`, `frequency/lock.sh`) |
-| `rm -f …/qmanager-tower-failover.service` | `platform.sh` `svc_disable`; `tower/settings.sh:135`, `tower/lock.sh:189,301` |
+| `ln -sf …/qmanager-tower-failover.service` | `platform.sh` `svc_enable`; `tower_lock_mgr.sh:476`, reached from `tower/lock.sh:144,199,277,328`, `tower/settings.sh:132`, `qmanager_tower_schedule:136` |
+| `rm -f …/qmanager-tower-failover.service` | `platform.sh` `svc_disable`; `tower/settings.sh:151`, `tower/lock.sh:206,335` |
 | `iptables*`, `ip6tables*`, `*-restore` | `platform.sh` `run_iptables`/`run_ip6tables`; `network/ttl.sh`, `qmanager_firewall` |
 | `/sbin/reboot` | `cgi_base.sh` `cgi_reboot_response`; `system/reboot.sh`; `qmanager_update` |
 | `qmanager_scheduled_reboot_arm` | `system/settings.sh` (scheduled reboot timer) |
@@ -1013,7 +1048,7 @@ The four grants were verified against what `platform.sh` actually executes rathe
 
 #### What the gate checks
 
-The cost of getting this wrong is asymmetric in a way that is easy to underestimate. A grant that is too *narrow* fails silently — `platform.sh` discards sudo's stderr, `monitoring/watchdog.sh` backgrounds its restart, and the tower call sites drop `svc_enable`'s return value entirely (§7.3) — so the missing-grant case looks like "the service just didn't restart". A grant that is too *wide* is invisible until someone reaches a CGI they shouldn't have.
+The cost of getting this wrong is asymmetric in a way that is easy to underestimate. A grant that is too *narrow* fails quietly — `platform.sh` discards sudo's stderr and `monitoring/watchdog.sh` backgrounds its restart — so the missing-grant case looks like "the service just didn't restart". Boot persistence is the one place where a denied grant is now *reported* rather than guessed at ([§7.3](#73-closed-a-denied-boot-persistence-grant-now-surfaces-at-every-call-site)); everywhere else the silence is still the symptom. A grant that is too *wide* is invisible until someone reaches a CGI they shouldn't have.
 
 `scripts/test/run-all.sh` §6 catches both, and both halves were widened along with this change:
 
@@ -1038,20 +1073,44 @@ This is not hypothetical — an unescaped `:` in the Custom DNS `chown` rule shi
 
 The installer stages its candidate to `/tmp/qmanager-sudoers-candidate.$$` (outside `SUDOERS_DIR`, so a leftover can never be read as a rule) and validates *that*, so a rejected file never replaces one that currently works. If `visudo` is not present on the device the installer **warns and continues** rather than dying: a device can carry sudo without visudo, and refusing to install would leave the CGI with no privileges at all — a certain failure in place of a risk. The two upstream gates are the backstop for that path, though a hand-built tarball can still bypass both.
 
-### 7.3 Known gap: a denied boot-persistence grant is silent at the tower call sites
+### 7.3 Closed: a denied boot-persistence grant now surfaces at every call site
 
-`svc_enable` and `svc_disable` verify their own post-condition rather than trusting sudo — after the `ln`/`rm` they test whether the boot symlink now exists (`[ -h "$_WANTS_DIR/$unit" ]`), which is the thing systemd actually reads at boot. So the information is available to every caller. Only one caller reads it.
+`svc_enable` and `svc_disable` verify their own post-condition rather than trusting sudo — after the `ln`/`rm` they test whether the boot symlink now exists (`[ -h "$_WANTS_DIR/$unit" ]`), which is the thing systemd actually reads at boot. So the information has always been available to every caller. For a long time only one caller read it: a failover watcher the user switched on could report `success: true` and be gone after the next reboot.
 
-| Call site | Reads the return value? | User-visible on failure |
-|-----------|------------------------|------------------------|
-| `monitoring/watchdog.sh:360,366` (`qmanager-watchcat`) | Yes — `\|\| boot_enabled="false"` | `{"success": true, "boot_enabled": false, "boot_enable_error": "…"}` plus a `qlog_warn` |
-| `tower_lock_mgr.sh:416` (`svc_enable qmanager_tower_failover`) | No | None |
-| `tower/settings.sh:135` (`svc_disable`) | No | None |
-| `tower/lock.sh:189` and `:301` (`svc_disable`) | No | None |
+**That gap is now closed.** Every call site reads the verified result and reports it, and — the half that was actually blocking — the answer now survives all the way to the screen.
 
-For `qmanager-tower-failover`, therefore, a denied or missing grant fails completely silently: `platform.sh` discards sudo's stderr, the return value is dropped, the CGI reports `success: true`, and the discrepancy only surfaces at the next reboot — when the failover watcher the user switched on does not come back (or the one they switched off does).
+| Call site | Unit | Reads the result? | Surface on failure |
+|-----------|------|-------------------|--------------------|
+| `monitoring/watchdog.sh:360,366` | `qmanager-watchcat` | Yes (unchanged — this one was always correct) | `{"success": true, "boot_enabled": false, "boot_enable_error": "…"}` + `qlog_warn` |
+| `tower/lock.sh:144,199,277,328` (enable) and `:206,335` (disable) | `qmanager-tower-failover` | Yes | `failover_boot_enabled: false` + `failover_boot_error` on the lock/unlock response + `qlog_warn` |
+| `tower/settings.sh:132` (enable) and `:151` (disable) | `qmanager-tower-failover` | Yes | Same pair on the settings response + `qlog_warn` |
+| `qmanager_tower_schedule:136` | `qmanager-tower-failover` | Yes | `qlog_warn` **only** — see below |
 
-This is **not fixed**. It is the reason `run-all.sh` §6 asserts every grant by exact string rather than trusting review: for this unit, the test is the only thing that would notice. A future change to the tower handlers should propagate `svc_enable`/`svc_disable`'s status the way `watchdog.sh` already does — `boot_enabled` in the JSON response is the established shape for it.
+#### What closed it
+
+Three layers had to change together; any one of them alone would have left the failure invisible.
+
+**1. The library records the answer instead of dropping it.** `tower_spawn_failover_watcher` now sets `TOWER_FAILOVER_BOOT_ENABLED` and `TOWER_FAILOVER_WATCHER_ALIVE`, and `tower_failover_boot_error` holds the three canonical messages ([§4.14](#414-tower_lock_mgrsh)). The two globals are deliberately separate values: a watcher can be running while its boot symlink was never written, which is precisely the state that used to be reported as plain success. The direct `svc_disable` calls in `tower/lock.sh` and `tower/settings.sh` are checked inline with `if ! svc_disable …`.
+
+**2. The CGIs emit a pair of fields, and only on failure.** Six response sites (four in `tower/lock.sh` — LTE lock, LTE unlock, NR lock, NR unlock — and two in `tower/settings.sh`, one per persist branch) append `failover_boot_enabled: false` together with `failover_boot_error`. Both are **omitted entirely on success**:
+
+```sh
+jq -n --arg boot_err "$failover_boot_err" \
+    '{"success":true,"type":"lte","action":"lock","num_cells":$nc,"failover_armed":$fa}
+     + (if $boot_err == "" then {} else {failover_boot_enabled:false,failover_boot_error:$boot_err} end)'
+```
+
+Omission is what lets the frontend treat *absent* as "unknown" rather than "failed". A device on an older build never sends the field; if the fields were always present, an old device and a healthy new one would be indistinguishable, and the frontend would have to guess. Hence the strict `=== false` comparison on the client, not a falsy check.
+
+**3. A fifth call site nobody had counted.** `qmanager_tower_schedule` reaches the same boot-enable path from a systemd timer, unattended. It has no HTTP response and no user watching, so it logs (`qlog_warn`) — which also makes it the easiest of the five to lose again. It runs as **root**, so sudo cannot deny it there; a read-only rootfs still can, and that is the failure the log line catches.
+
+#### The frontend was the real blocker
+
+The CGI half was the visible half, but it was not what kept the user in the dark. `hooks/use-tower-locking.ts` and `hooks/use-watchdog-settings.ts` both returned `Promise<boolean>` and discarded the parsed response body. `monitoring/watchdog.sh` had been emitting `boot_enabled` and `boot_enable_error` **correctly for a long time**, and neither could ever reach a component — a backend that reports honestly into a hook that throws the body away is, from the user's chair, indistinguishable from a backend that lies. Both hooks now return `Promise<Response | false>`.
+
+Everything that consumes `failover_boot_*` shares one helper, `components/cellular/tower-locking/failover-boot-warning.ts` (`warnIfFailoverBootFailed`), rather than repeating the comparison: `result.failover_boot_enabled === false` then `toast.warning(server string || local fallback)`. It is `toast.warning` and never `toast.error`, and it is added *next to* the success toast rather than replacing it — the lock or the save genuinely worked; only boot persistence did not. Five components call it: `lte-locking`, `nr-sa-locking`, all three `tower-settings` controls, and both cell-scanner screens (`scanner.tsx` and `neighbourcell/neighbour-scanner.tsx`, which POST to `tower/lock.sh` directly rather than through the hook). `watchdog-settings-card` does the same thing inline on `boot_enabled === false`, since watchdog uses its own field names.
+
+`run-all.sh` §6 still asserts every grant by exact string, and `scripts/test/failover-boot-contract.sh` now guards the whole chain end to end ([§13](#13-development-guidelines)).
 
 ---
 
@@ -1649,6 +1708,26 @@ The wildcard half of check 6 is a **blanket** rejection of `*`, not a match on k
 
 **Syntax checking is not enough.** Checks 1 and 6 are both static. Neither would have caught the `set -e` behaviour described in §14 under *"`|| true` outside a command substitution does not disable errexit"* — that one is only visible by running the construct. When a change hinges on shell *semantics* rather than shell *grammar*, execute it under the interpreter that will actually run it (`dash` is a close stand-in for the on-device BusyBox `ash`).
 
+### The Functional Harnesses
+
+```sh
+# Deeper, slower pass: executes shipped shell against fixtures.
+bash scripts/test/run-harnesses.sh     # or: bun run test:harness
+```
+
+`run-harnesses.sh` **auto-discovers** every `scripts/test/*.sh` except itself, `run-all.sh`, and `i18n-parity.sh` (which `run-all.sh` already runs as a fatal step — discovering it twice bought a second ~2 s pass of an idempotent check). Adding a harness therefore needs no runner edit: drop the file in `scripts/test/` and it runs. Most assertions need `jq`.
+
+Two kinds of harness live here, and the difference matters:
+
+| Kind | Asserts against | Example |
+|------|-----------------|---------|
+| Behaviour harness | Shipped shell executed over fixtures | `parse-at.sh`, `poller-*.sh`, `qmanager-firewall-chain.sh` |
+| **Contract harness** | Field names that must stay in step across the shell/TypeScript boundary | `schedule-armed-contract.sh`, `failover-boot-contract.sh` |
+
+Contract harnesses exist because nothing else in the toolchain can see across that boundary. `tsc` and `eslint` type-check the frontend and stop at the CGI; `bash -n` parses the CGI and knows nothing about the hook that consumes it. A field can be emitted by the backend, declared in `types/`, and still reach nobody because the hook in the middle returns a bare boolean and drops the body — which is exactly what happened to `boot_enabled` for a long time ([§7.3](#73-closed-a-denied-boot-persistence-grant-now-surfaces-at-every-call-site)).
+
+> ⚠️ WARNING: **A contract harness that only greps has a blind spot: source text can be entirely correct while the runtime value is gone.** The first version of the boot-persistence fix captured the library function with `x=$(tower_spawn_failover_watcher)`. Every grep passed — the assignments were all present in the source — and the subshell threw the globals away at runtime ([§14](#14-common-pitfalls)). `failover-boot-contract.sh` (28 checks) therefore does both: it greps the field names *and* executes `tower_spawn_failover_watcher` against stubbed `svc_enable`/`svc_start`/`pid_alive`, forcing the failure branch and asserting that **both** globals are readable in the caller afterwards. When a harness asserts that a value *arrives* somewhere, grep can only prove it was written down; run it.
+
 ---
 
 ## 14. Common Pitfalls
@@ -1667,7 +1746,7 @@ The wildcard half of check 6 is a **blanket** rejection of `*`, not a match on k
 
 **Assuming a sudoers `*` stays inside "its" argument.** It does not. sudo joins the arguments into one space-separated string and matches the pattern against the whole thing, so `*` swallows spaces and additional operands. `/bin/rm -f /path/qmanager*.service` reads like "one file under `/path`" and actually permits `rm -f /path/qmanagerX /any/other/file /x.service` — every operand deleted, as root. Enumerate the exact command, including the destination path. See [§7.1](#71-wildcards-in-argument-specs).
 
-**A double space in a sudoers grant.** `visudo` accepts it; sudo never matches it. Because the comparison is against the joined argument string, whitespace inside a grant is significant in a way it is nowhere else in a config file. The symptom is not an error — it is a privileged action that quietly stops working, and on the tower call sites even the CGI response still says `success: true` ([§7.3](#73-known-gap-a-denied-boot-persistence-grant-is-silent-at-the-tower-call-sites)). `scripts/test/run-all.sh` §6 matches grants with `grep -F` specifically to pin this.
+**A double space in a sudoers grant.** `visudo` accepts it; sudo never matches it. Because the comparison is against the joined argument string, whitespace inside a grant is significant in a way it is nowhere else in a config file. The symptom is not an error — it is a privileged action that quietly stops working. The two boot-persistence units are now the exception: a denied `ln`/`rm` is reported back to the user rather than swallowed ([§7.3](#73-closed-a-denied-boot-persistence-grant-now-surfaces-at-every-call-site)). For every other grant, silence is still all you get. `scripts/test/run-all.sh` §6 matches grants with `grep -F` specifically to pin this.
 
 **Writing to `/tmp/qmanager_*.json` from CGI without pre-creation.** If a CGI script creates a `/tmp` file that a root daemon will later overwrite, root will be blocked by `fs.protected_regular=1`. Pre-create the file in `qmanager_setup` with `www-data` ownership and mode 666 (or `root:root` mode 666 if root writes it primarily). See `qmanager_setup` for the full list of pre-created files.
 
@@ -1676,6 +1755,23 @@ The wildcard half of check 6 is a **blanket** rejection of `*`, not a match on k
 **UPX-compressing `atcli_smd11`.** UPX self-modifying code causes segmentation faults on exit for this ARMv7 Rust build. Ship the uncompressed binary (~647KB). The installer must not UPX-compress it.
 
 **Using `kill -0` for cross-user PID checks.** `kill -0 <pid>` fails with EPERM when www-data checks a root daemon's PID. Use `pid_alive()` from `platform.sh` which checks `/proc/$pid` existence instead.
+
+**Command substitution discards every variable the function sets.** `x=$(some_function)` runs `some_function` in a **subshell** — a separate process with a copy of the environment. Anything it assigns dies when the substitution closes, and only what it *printed* comes back. So a function that answers through globals is silently half-mute when captured this way:
+
+```sh
+# WRONG: the subshell gets the globals, the caller gets an empty string.
+armed=$(tower_spawn_failover_watcher)
+[ "$TOWER_FAILOVER_BOOT_ENABLED" = "false" ] && warn   # never true; it is ""
+
+# RIGHT: call it directly, discard stdout, read the globals in this shell.
+tower_spawn_failover_watcher >/dev/null
+armed="$TOWER_FAILOVER_WATCHER_ALIVE"
+[ "$TOWER_FAILOVER_BOOT_ENABLED" = "false" ] && warn
+```
+
+This is a general shell trap, not a tower quirk — it applies to any helper that reports through a variable, and it is invisible to `bash -n` because the syntax is impeccable. It shipped here once: the boot-persistence fix in [§7.3](#73-closed-a-denied-boot-persistence-grant-now-surfaces-at-every-call-site) was textually perfect and functionally half-dead for exactly this reason, and a grep-based contract test passed on it the whole time. A function that returns *one* value should print it; a function that has to return two, as `tower_spawn_failover_watcher` does, has to use globals and its callers have to stop capturing it. `scripts/test/failover-boot-contract.sh` rejects the `=$(…)` form outright and then executes the function against stubs to prove the globals really arrive.
+
+**An empty string is not valid JSON to `jq --argjson`.** `--argjson` parses its value as JSON; `--arg` does not. Feeding it an unset or empty shell variable makes jq exit with a parse error, which in a CGI means **no output at all** — the browser's `resp.json()` then throws, and the frontend reports a generic failure for an operation that actually succeeded. A tower lock that worked surfaced as "Failed to lock tower" from precisely this. Seed any variable destined for `--argjson` with a real JSON literal (`"false"`, `"0"`, `"null"`) at the scope where it is declared, not only inside the branch that normally sets it — and prefer `--arg` for anything that is genuinely a string.
 
 **`|| true` *outside* a command substitution does not disable errexit.** Under `set -e`, POSIX exempts commands in an AND-OR list from triggering an exit — but only the ones that are *not last*. The final command of the list is still checked. So this is a trap, not a safe fallback:
 
