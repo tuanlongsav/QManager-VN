@@ -74,7 +74,7 @@ bun install
 bun run dev
 ```
 
-Opens at `http://localhost:3000`. API requests are proxied to `http://192.168.224.1` (the modem's IP).
+Opens at `http://localhost:3000`. API requests reach the modem only if you uncomment the proxy below.
 
 The `rewrites()` block in `next.config.ts` ships **commented out**, because a
 rewrite is incompatible with the static export `bun run build` produces.
@@ -443,38 +443,38 @@ is why it scans rather than defers to `git status`.
 
 ### CGI Returns Empty Response
 
-1. **Check line endings** — CRLF is the #1 cause of silent CGI failures
-2. **Check permissions** — CGI scripts need `chmod +x`
-3. **Check syntax** — Run `sh -n /www/cgi-bin/quecmanager/<script>.sh`
-4. **Check logs** — `cat /tmp/qmanager.log | tail -50`
+An empty body rather than an error is the signature failure here, because
+lighttpd has nothing to report when the script dies before writing headers.
+
+1. **Line endings.** CRLF is the most common cause. The installer strips `\r`
+   from every non-ELF file it writes, so this normally only bites a file edited
+   in place on the device. Check with `file /usr/lib/qmanager/*.sh` — "CRLF line
+   terminators" is the giveaway.
+2. **Permissions.** CGI scripts need `chmod +x`.
+3. **PATH.** lighttpd starts CGI with a deliberately minimal environment, which
+   does not include `/opt/bin` — so `jq`, `qcmd` and the rest of Entware are
+   invisible unless something restores it. `cgi_base.sh` exports the full PATH,
+   which is why every endpoint sources it first. A script that skips it will
+   fail on its first Entware binary with no message at all.
+4. **Syntax.** `sh -n /usrdata/qmanager/www/cgi-bin/quecmanager/<script>.sh`
+5. **Logs.** `tail -50 /tmp/qmanager.log`
 
 ### Poller Not Producing Data
 
 ```bash
-# Check if poller is running
-ps | grep qmanager_poller
+# Is it running?
+systemctl status qmanager-poller
 
-# Check if modem serial port is accessible
-ls -la /dev/smd7  # or /dev/ttyUSB2
-
-# Test AT command
+# Can anything reach the modem at all?
+qcmd 'ATI'
 qcmd 'AT+QENG="servingcell"'
 
-# Check poller logs
+# The AT device must be crw-rw---- root:dialout. Wrong ownership here is the
+# usual reason qcmd works as root and fails from the web UI, which runs as
+# www-data — the udev rule that sets it is installed by qmanager_setup.
+ls -la /dev/smd11
+
 grep "poller" /tmp/qmanager.log
-```
-
-### Authentication Issues
-
-```bash
-# Reset password (run on device)
-/usr/bin/qmanager_reset_password
-
-# Check session directory
-ls /tmp/qmanager_sessions/
-
-# Check shadow file
-ls -la /etc/qmanager/shadow
 ```
 
 ### Service Won't Start
@@ -484,15 +484,41 @@ ls -la /etc/qmanager/shadow
 # scripts, but they are legacy and nothing starts them.
 systemctl status qmanager-poller
 systemctl start qmanager-poller
-journalctl -u qmanager-poller --no-pager | tail -30
+journalctl -u qmanager-poller --no-pager -n 50
 cat /tmp/qmanager.log
 
-# Verify dependencies
-which jq        # Required
-which qcmd      # Required
-which visudo    # Used by the installer to validate sudoers before replacing it
-which ethtool   # Optional (ethernet link-speed control only)
+# Verify dependencies. `command -v`, not `which`: it is the POSIX form and the
+# one the installer itself uses.
+command -v jq        # Required
+command -v qcmd      # Required
+command -v visudo    # Used by the installer to validate sudoers before replacing it
+command -v ethtool   # Optional (ethernet link-speed control only)
+ls /usr/lib/qmanager/cgi_base.sh   # Sourced by every CGI — absent means a partial install
 ```
+
+### Authentication Issues
+
+```bash
+# Reset password (run on device as root)
+/usr/bin/qmanager_reset_password
+
+# Check session directory
+ls /tmp/qmanager_sessions/
+
+# Check shadow file
+ls -la /etc/qmanager/shadow
+```
+
+### Installer / Update Failures
+
+**`VERSION.pending` exists after reboot:**
+The installer writes `/etc/qmanager/VERSION.pending` early and only moves it to `/etc/qmanager/VERSION` at the very end. If the modem rebooted mid-install, `VERSION.pending` survives. The update CGI GET response will include `"previous_install_failed": true` and `"pending_version": "<version>"`. Use the UI rollback option or re-run the installer manually.
+
+**`fs.protected_regular=1` — log truncation failures:**
+The kernel's sticky directory protection (`fs.protected_regular=1`) blocks a process from truncating a file in `/tmp` that was created by a different user. The OTA worker (`qmanager_update`) works around this by doing `rm -f $LOG_FILE` before creating a fresh log — never truncating an existing file. CGI scripts that need to write `/tmp` files should pre-create them with the correct ownership in `qmanager_setup` (boot one-shot).
+
+**Socat conflict blocks AT transport:**
+If `socat` or `socat-at-bridge` services are running, `atcli_smd11` cannot open `/dev/smd11`. The installer actively removes these packages (`opkg remove socat socat-at-bridge`) with retry through `--force-removal-of-dependent-packages`. This runs even with `--skip-packages`.
 
 ---
 
@@ -561,76 +587,6 @@ The uninstaller:
 - With `--purge`: also tears down Tailscale (stops `tailscaled`, removes unit, removes `/usrdata/tailscale/` and symlinks)
 - Cleans up `/etc/qmanager/VERSION.pending` and `/etc/qmanager/updates/previous_version`
 - **Entware (`/opt/`) is always preserved** even with `--purge` — remove it manually if needed
-
----
-
-## Troubleshooting — Installer & Platform Specifics
-
-> This section and the [Troubleshooting](#troubleshooting) section above both
-> carry entries for *CGI Returns Empty Response*, *Poller Not Producing Data*,
-> *Service Won't Start* and *Authentication Issues*. They are not copies — the
-> two have diverged, and this one generally carries the longer, more
-> RM520N-GL-specific version. Read both before concluding a symptom is not
-> covered. Consolidating them is outstanding work; renaming this heading at
-> least stops the two from colliding on the same `#troubleshooting` anchor,
-> which silently sent every inbound link to the first one.
-
-### Installer / Update Failures
-
-**`VERSION.pending` exists after reboot:**
-The installer writes `/etc/qmanager/VERSION.pending` early and only moves it to `/etc/qmanager/VERSION` at the very end. If the modem rebooted mid-install, `VERSION.pending` survives. The update CGI GET response will include `"previous_install_failed": true` and `"pending_version": "<version>"`. Use the UI rollback option or re-run the installer manually.
-
-**`fs.protected_regular=1` — log truncation failures:**
-The kernel's sticky directory protection (`fs.protected_regular=1`) blocks a process from truncating a file in `/tmp` that was created by a different user. The OTA worker (`qmanager_update`) works around this by doing `rm -f $LOG_FILE` before creating a fresh log — never truncating an existing file. CGI scripts that need to write `/tmp` files should pre-create them with the correct ownership in `qmanager_setup` (boot one-shot).
-
-**Socat conflict blocks AT transport:**
-If `socat` or `socat-at-bridge` services are running, `atcli_smd11` cannot open `/dev/smd11`. The installer actively removes these packages (`opkg remove socat socat-at-bridge`) with retry through `--force-removal-of-dependent-packages`. This runs even with `--skip-packages`.
-
-### CGI Returns Empty Response
-
-1. Check line endings — CRLF causes silent CGI failures (installer strips `\r` automatically; check manually with `file /usr/lib/qmanager/*.sh`)
-2. Check permissions — CGI scripts need `chmod +x`
-3. Check PATH — lighttpd CGI has a minimal PATH; `cgi_base.sh` exports the full PATH including `/opt/bin`
-4. Check logs — `tail -50 /tmp/qmanager.log`
-
-### Poller Not Producing Data
-
-```bash
-# Check if poller is running
-systemctl status qmanager-poller
-
-# Test AT command directly
-qcmd 'ATI'
-
-# Check /dev/smd11 permissions (should be crw-rw---- root:dialout)
-ls -la /dev/smd11
-
-# Check poller logs
-grep "poller" /tmp/qmanager.log
-```
-
-### Service Won't Start
-
-```bash
-# Check systemd status and journal
-systemctl status qmanager-poller
-journalctl -u qmanager-poller --no-pager -n 50
-
-# Verify dependencies
-command -v qcmd
-command -v jq
-ls /usr/lib/qmanager/cgi_base.sh
-```
-
-### Authentication Issues
-
-```bash
-# Reset password (run on device as root)
-/usr/bin/qmanager_reset_password
-
-# Check session directory
-ls /tmp/qmanager_sessions/
-```
 
 ---
 
