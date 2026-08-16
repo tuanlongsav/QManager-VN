@@ -215,7 +215,15 @@ These are issues observed on a running device; they should be fixed in code or t
 
 ## SimpleAdmin RGMII Toolkit Foundation
 
-QManager on the RM520N-GL builds on top of the **SimpleAdmin** web panel, originally created by the [quectel-rgmii-toolkit](https://github.com/iamromulan/quectel-rgmii-toolkit) project. Understanding this foundation is essential because QManager reuses its Entware installation, lighttpd web server, socat-at-bridge, firewall infrastructure, and systemd service patterns. The toolkit source is preserved in `simpleadmin-source/` for reference.
+> **Historical.** QManager once installed on top of the **SimpleAdmin** web panel from the [quectel-rgmii-toolkit](https://github.com/iamromulan/quectel-rgmii-toolkit) project, and this section describes that arrangement. It no longer holds:
+>
+> - QManager is **independent** — it bootstraps Entware, lighttpd, the firewall and its own systemd units itself, and SimpleAdmin need not be installed.
+> - It does **not** reuse `socat-at-bridge`. The installer *removes* it (`CONFLICT_PACKAGES="socat socat-at-bridge"`, `install_rm520n.sh:142`), because socat holds `/dev/smd11` open and conflicts with the bundled `atcli_smd11`.
+> - The vendored `simpleadmin-source/` copy is no longer in the tree; follow the link above if you need it.
+>
+> Read on for how the toolkit worked — it still explains why several layout and permission decisions look the way they do.
+
+QManager's RM520N-GL port grew out of the **SimpleAdmin** web panel, originally created by the [quectel-rgmii-toolkit](https://github.com/iamromulan/quectel-rgmii-toolkit) project. The layout it established — Entware under `/opt`, lighttpd as the web server, `/usrdata` for persistence — is still the shape QManager installs into, which is why the toolkit is worth understanding even though nothing depends on it any more.
 
 ### Toolkit Overview
 

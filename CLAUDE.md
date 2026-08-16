@@ -173,7 +173,7 @@ Read these only when working on the relevant subsystem:
 - **QManager standalone install & runtime internals** (Entware bootstrap, udev permissions, CGI auth, service persistence, firewall, Tailscale, web console, email/SMS alerts, OTA pipeline) — `docs/reference/qmanager-independence.md`
 - **Full platform architecture** (platform internals, Entware bootstrapping, lighttpd config, boot sequences, troubleshooting) — `docs/rm520n-gl-architecture.md`
 
-**Source reference:** `simpleadmin-source/` contains the original RM520N-GL admin panel (iamromulan/quectel-rgmii-toolkit) for historical reference. QManager is now fully independent and does not require SimpleAdmin to be installed.
+**QManager is fully independent** and does not require SimpleAdmin to be installed. (An earlier `simpleadmin-source/` vendored copy of the original RM520N-GL admin panel is no longer in the tree — go to [iamromulan/quectel-rgmii-toolkit](https://github.com/iamromulan/quectel-rgmii-toolkit) if you need it for historical reference.)
 
 ## Removed/Deferred Features (dev-rm520 Branch)
 

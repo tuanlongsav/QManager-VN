@@ -1,6 +1,6 @@
 # CFUN-0 Fix — Analysis
 
-Source: `simpleadmin-source/RMxxx_rgmii_toolkit.sh` lines 658–707, README line 18, `at-list.md` lines 72/80.
+Source: `RMxxx_rgmii_toolkit.sh` lines 658–707, README line 18, `at-list.md` lines 72/80, from [iamromulan/quectel-rgmii-toolkit](https://github.com/iamromulan/quectel-rgmii-toolkit). That repository was once vendored here as `simpleadmin-source/`; it no longer is, so the line numbers refer to upstream.
 
 ## What CFUN means
 

@@ -1,10 +1,10 @@
 # QManager-VN Documentation
 
-> **Fork notice (QManager-VN):** Đây là fork tối giản của [dr-dolomite/QManager-RM520N](https://github.com/dr-dolomite/QManager-RM520N). Một số tính năng đã được CẮT trong fork (xem [`../UPSTREAM_DIFF.md`](../UPSTREAM_DIFF.md)): **Tailscale VPN**, **Email Alerts (msmtp)**, **Web Console (ttyd) + AT Terminal**, **Discord Bot**. Các tài liệu chi tiết bên dưới có thể vẫn nhắc tới những tính năng này — đó là di sản từ upstream. Source code đã được xoá; tài liệu sẽ được sync dần theo lộ trình.
+> **Fork notice (QManager-VN):** Đây là fork tối giản của [dr-dolomite/QManager-RM520N](https://github.com/dr-dolomite/QManager-RM520N). Một số tính năng đã được CẮT trong fork (xem [`../UPSTREAM_DIFF.md`](../UPSTREAM_DIFF.md)): **Tailscale VPN**, **Email Alerts (msmtp)**, **Web Console (ttyd) + AT Terminal**, **Discord Bot**, **Low Power Mode**. Mã nguồn của chúng đã bị xoá — chỗ nào còn nhắc tới các tên này thì đó là mã *gỡ bỏ* trong installer/uninstaller hoặc mục health-check, không phải tính năng. Tài liệu chi tiết bên dưới vẫn có thể còn nhắc tới chúng như di sản upstream.
 
-QManager-VN là fork web-based GUI quản lý modem Quectel cho họ SDXLEMUR (RM520N-GL, RM520N-GLAA, RM502Q-AE, RM500Q-GL, RM520N-EU). Real-time signal monitoring, cellular configuration, network management.
+QManager-VN là fork web-based GUI quản lý modem Quectel cho họ SDXLEMUR (RM520N-GLAA, RM520N-GL, RM520N-EU, RM502Q-AE, RM500Q-GL). Real-time signal monitoring, cellular configuration, network management.
 
-**Version:** v0.1.0-vn (codebase upstream v0.1.12)
+**Version:** v1.0.6-vn
 **License:** MIT + Commons Clause
 **Upstream:** [dr-dolomite/QManager-RM520N](https://github.com/dr-dolomite/QManager-RM520N)
 **Predecessor:** [SimpleAdmin](https://github.com/dr-dolomite/simpleadmin-mockup)
@@ -17,12 +17,13 @@ QManager-VN là fork web-based GUI quản lý modem Quectel cho họ SDXLEMUR (R
 |----------|-------------|
 | [Architecture](ARCHITECTURE.md) | System architecture, data flow, polling tiers, state management |
 | [Frontend Guide](FRONTEND.md) | React components, hooks, pages, routing, and UI patterns |
-| [Backend Guide](BACKEND.md) | Shell scripts, daemons, init.d services, shared libraries |
+| [Backend Guide](BACKEND.md) | Shell scripts, daemons, systemd units, shared libraries, sudoers grants |
 | [API Reference](API-REFERENCE.md) | Complete CGI endpoint reference with request/response schemas |
 | [Design System](DESIGN-SYSTEM.md) | Colors, typography, components, theming, and UI conventions |
-| [Deployment Guide](DEPLOYMENT.md) | Building, installing, and deploying to OpenWRT devices |
-| [RM520N-GL Architecture](rm520n-gl-architecture.md) | AT command handling, system analysis, and porting guide for the RM520N-GL modem |
-| [RM520N Phase 2: Systemd Migration](rm520n-phase2-systemd-migration.md) | Converting procd init.d scripts to systemd service units for the RM520N-GL port |
+| [Deployment Guide](DEPLOYMENT.md) | Building the tarball, installing on the modem, OTA updates |
+| [RM520N-GL Architecture](rm520n-gl-architecture.md) | Platform internals, AT command transport, boot sequence, troubleshooting |
+| [Phase 2: Systemd Migration](rm520n-phase2-systemd-migration.md) | Historical: converting the procd init.d scripts to systemd units |
+| [`reference/`](reference/) | Per-feature operational notes (antenna alignment, custom DNS, data counter, SIM profiles, WAN profiles, AT transport, …) — read one only when working on that subsystem |
 
 ---
 
@@ -31,10 +32,14 @@ QManager-VN là fork web-based GUI quản lý modem Quectel cho họ SDXLEMUR (R
 ### Prerequisites
 
 - [Bun](https://bun.sh/) (package manager and runtime)
-- Compatible Quectel modem:
-  - **RM551E-GL** (on OpenWRT host) — primary target
-  - **RM520N-GL** (standalone, internal Linux) — via `dev-rm520` branch
-  - Other Quectel modems on OpenWRT (RM500Q, etc.)
+- A Quectel SDXLEMUR modem. QManager-VN runs **inside** the modem, on its own
+  Linux system — there is no separate OpenWRT host.
+  - **RM520N-GLAA** — primary target, the hardware this fork is tested on
+  - **RM520N-GL / RM520N-EU / RM502Q-AE / RM500Q-GL** — same SoC family
+
+> Upstream's original target was the RM551E-GL behind an OpenWRT host, and older
+> docs still describe that arrangement. This fork targets the standalone modem
+> only; the work that used to live on a `dev-rm520` branch is now mainline.
 
 ### Development
 
@@ -42,18 +47,28 @@ QManager-VN là fork web-based GUI quản lý modem Quectel cho họ SDXLEMUR (R
 git clone https://github.com/tuanlongsav/QManager-VN.git
 cd QManager-VN
 bun install
-bun run dev        # Start dev server at http://localhost:3000
+bun run dev        # Dev server at http://localhost:3000
 ```
 
-The dev server proxies `/cgi-bin/*` requests to `http://192.168.224.1` (configurable in `next.config.ts`).
+To talk to a real modem from the dev server, uncomment the `rewrites()` block in
+`next.config.ts` and point it at your device (`192.168.225.1` by default). It
+ships commented out on purpose: a `rewrites()` block is incompatible with the
+static export that `bun run build` produces.
 
 ### Production Build
 
 ```bash
-bun run build      # Static export to out/
+bun run package    # run-all.sh gate → next build → build.sh → qmanager.tar.gz
 ```
 
-The `out/` directory contains the complete frontend — deploy it to the OpenWRT device's `/www/` directory.
+`bun run package` is the gated path and the one to use. It runs the pre-build
+checks first (shell syntax, i18n parity, iCloud conflict copies, sudoers
+hygiene), then the static export, then packages frontend + backend + bundled
+ARMv7 binaries into `qmanager-build/qmanager.tar.gz`.
+
+Install by copying that tarball to the modem and running `install_rm520n.sh`
+from inside it — see [Deployment Guide](DEPLOYMENT.md). The frontend lands in
+`/usrdata/qmanager/www`, not `/www`.
 
 ---
 
@@ -62,59 +77,74 @@ The `out/` directory contains the complete frontend — deploy it to the OpenWRT
 | Layer | Technology |
 |-------|-----------|
 | **Frontend Framework** | Next.js 16 (App Router, static export) |
-| **Language** | TypeScript 5, POSIX shell |
+| **Language** | TypeScript 5, POSIX shell, Rust (ping daemon) |
 | **UI Components** | shadcn/ui (Radix UI primitives) |
 | **Styling** | Tailwind CSS v4, OKLCH color system |
 | **Charts** | Recharts 2.15 |
 | **Forms** | React Hook Form + Zod validation |
 | **Animations** | Motion (Framer Motion) |
-| **Backend** | CGI shell scripts — OpenWRT (BusyBox /bin/sh) or RM520N-GL (bash) |
-| **AT Commands** | `qcmd` wrapper — `sms_tool` (RM551E) or socat PTY bridge (RM520N-GL) |
+| **Backend** | CGI shell scripts under lighttpd (Entware), run as `www-data` |
+| **Shell** | `/bin/sh` is BusyBox ash on the device — write POSIX, not bash |
+| **Init** | systemd 244 (`.service` units in `/lib/systemd/system/`) |
+| **AT Commands** | `qcmd` wrapper over the bundled `atcli_smd11` binary on `/dev/smd11`, serialized with `flock` |
 | **Package Manager** | Bun |
+
+> The installer actively **removes** `socat` / `socat-at-bridge`: they hold
+> `/dev/smd11` open and conflict with `atcli_smd11`. Older docs describing a
+> socat PTY bridge are describing a setup this fork uninstalls.
 
 ---
 
 ## Key Features
 
 - **Live Signal Monitoring** — Real-time RSRP, RSRQ, SINR with per-antenna values and historical charts
-- **Band & Tower Locking** — Lock specific LTE/NR bands, frequencies, or cell towers (PCI)
+- **Band & Tower Locking** — Lock specific LTE/NR bands, frequencies, or cell towers (PCI), with signal failover
+- **Antenna Alignment** — Guided per-port aiming with live quality readout
 - **APN Management** — Create, edit, and switch APN profiles with MNO presets
 - **Custom SIM Profiles** — Save and apply multi-step configurations (APN + TTL/HL + Connection Scenario + IMEI), bound to a SIM by ICCID
 - **Connection Watchdog** — 4-tier auto-recovery: Re-register to Network, CFUN toggle, SIM failover, reboot
-- **Email Alerts** — Downtime notifications via Gmail SMTP on recovery
 - **Latency Monitoring** — Real-time ping with 24-hour history and aggregated views
 - **Cell Scanner** — Active and neighbor cell scanning with frequency calculator
-- **Network Settings** — Ethernet link speed, TTL/HL, MTU, DNS, IP passthrough
-- **System Settings** — WAN Guard toggle, unit preferences (temp/distance), timezone, scheduled reboot, low power mode
-- **Tailscale VPN** — Status monitoring and management
+- **Data Usage Counter** — Kernel-sourced counters with per-boot orientation detection
+- **Network Settings** — Ethernet link speed, TTL/HL, MTU, custom DNS, IP passthrough
+- **System Settings** — unit preferences (temp/distance), timezone, hostname, SSH password, scheduled reboot
+- **Scheduled Operations** — Reboot, tower-lock windows and auto-update, armed as systemd timers
+- **SMS** — Inbox and sending, with Vietnamese carrier decoding
 - **Dark/Light Mode** — Full theme support with OKLCH colors
-- **Multi-Platform** — Supports both OpenWRT (RM551E) and standalone RM520N-GL deployments
 
 ---
 
 ## Project Structure Overview
 
 ```
-QManager/
-├── app/                    # Next.js App Router pages
-├── components/             # React components (~150 files)
-│   ├── ui/                 # shadcn/ui primitives (42 components)
+QManager-VN/
+├── app/                    # Next.js App Router pages (51 files)
+├── components/             # React components (176 .tsx)
+│   ├── ui/                 # shadcn/ui primitives (38)
 │   ├── cellular/           # Cellular management UI
 │   ├── dashboard/          # Home dashboard cards
 │   ├── local-network/      # Network settings UI
-│   └── monitoring/         # Monitoring & alerts UI
-├── hooks/                  # Custom React hooks (30 files)
-├── types/                  # TypeScript interfaces (14 files)
-├── lib/                    # Utilities (auth-fetch, earfcn, csv, cn)
+│   ├── monitoring/         # Monitoring & alerts UI
+│   └── system-settings/    # Device and system configuration UI
+├── hooks/                  # Custom React hooks (37)
+├── types/                  # TypeScript interfaces (18)
+├── lib/                    # Utilities + i18n dictionaries (en/vi)
 ├── constants/              # Static data (MNO presets, event labels)
 ├── public/                 # Static assets (logo SVG)
-├── scripts/                # Backend shell scripts
-│   ├── etc/init.d/         # Init.d services (8)
-│   ├── usr/bin/            # Daemons & utilities (18)
-│   ├── usr/lib/qmanager/   # Shared libraries (10)
-│   └── www/cgi-bin/        # CGI endpoints (60 scripts)
-├── simpleadmin-source/     # Reference: original RM520N-GL admin panel
+├── ping-daemon/            # Rust latency daemon, cross-compiled to ARMv7
+├── dependencies/           # Bundled ARMv7 binaries (atcli_smd11, sms_tool, jq, dropbear)
+├── scripts/                # Backend (175 files)
+│   ├── etc/systemd/system/ # systemd units (16)
+│   ├── etc/sudoers.d/      # The privilege boundary for www-data — exact grants, no wildcards
+│   ├── usr/bin/            # Daemons, root helpers & utilities (29)
+│   ├── usr/lib/qmanager/   # Shared shell libraries (19)
+│   ├── www/cgi-bin/        # CGI endpoints (66 scripts)
+│   ├── test/               # Harnesses — `bash scripts/test/run-all.sh`, `bun run test:harness`
+│   └── dev/                # Dev-machine tooling (iCloud conflict copies, artefact exclusion)
 └── docs/                   # This documentation
 ```
+
+`scripts/etc/init.d/` still holds six procd-era scripts. They are **legacy**:
+this platform boots systemd, and the units above are what actually run.
 
 See [Architecture](ARCHITECTURE.md) for detailed diagrams and data flow explanations.
