@@ -76,12 +76,12 @@ SHIM
 fi
 
 R="$FIX/root"
-mkdir -p "$R/usr/lib/qmanager" "$R/usrdata/qmanager/www/cgi-bin" \
+mkdir -p "$R/usr/lib/qmanager" "$R/usrdata/qmanager/www/cgi-bin/quecmanager" \
          "$R/usrdata/qmanager/certs" "$R/etc/qmanager/profiles"
 printf 'cert\n' > "$R/usrdata/qmanager/certs/server.crt"
 chmod 777 "$R/usr/lib/qmanager" "$R/usrdata/qmanager" \
-          "$R/usrdata/qmanager/www/cgi-bin" "$R/usrdata/qmanager/certs" \
-          "$R/etc/qmanager" "$R/etc/qmanager/profiles"
+          "$R/usrdata/qmanager/www/cgi-bin" "$R/usrdata/qmanager/www/cgi-bin/quecmanager" \
+          "$R/usrdata/qmanager/certs" "$R/etc/qmanager" "$R/etc/qmanager/profiles"
 chmod 666 "$R/usrdata/qmanager/certs/server.crt"
 
 run_harden() {
@@ -89,6 +89,7 @@ run_harden() {
     QMANAGER_ROOT="$R/usrdata/qmanager" \
     WWW_ROOT="$R/usrdata/qmanager/www" \
     CONF_DIR="$R/etc/qmanager" \
+    CGI_DIR="$R/usrdata/qmanager/www/cgi-bin/quecmanager" \
     sh -c '
         _log_raw() { :; }
         info() { printf "%s\n" "$*"; }
@@ -100,12 +101,28 @@ run_harden() {
 
 out=$(run_harden 2>&1) || note_fail "harden_install_modes exited non-zero on a repairable tree"
 
-for d in usr/lib/qmanager usrdata/qmanager usrdata/qmanager/www/cgi-bin \
+for d in usr/lib/qmanager usrdata/qmanager/www/cgi-bin \
+         usrdata/qmanager/www/cgi-bin/quecmanager \
          usrdata/qmanager/certs etc/qmanager etc/qmanager/profiles; do
     check
     m=$(stat -c '%a' "$R/$d" 2>/dev/null)
     [ "$m" = "755" ] || note_fail "$d is $m after hardening, expected 755"
 done
+
+# QMANAGER_ROOT must NOT be 755. Two CGI endpoints write files directly in it as
+# www-data — sms.sh maintains sent_sms.json, data_used_reset.sh rewrites
+# data_used.json — using temp-file + mv, and both halves of that need write on
+# the DIRECTORY. 0755 root:root was tried and it broke SMS silently: the outbox
+# could not even be created, and a CGI has nowhere to report that. 0775 keeps
+# the group writer while still removing world write, which is the actual hole.
+check
+m=$(stat -c '%a' "$R/usrdata/qmanager" 2>/dev/null)
+[ "$m" = "775" ] || note_fail "usrdata/qmanager is $m after hardening, expected 775 — at 755 the SMS outbox cannot be written by www-data"
+
+check
+case "$m" in
+    *7|*6|*3|*2) note_fail "usrdata/qmanager is world-writable ($m) — the hole is still open" ;;
+esac
 
 check
 m=$(stat -c '%a' "$R/usrdata/qmanager/certs/server.crt" 2>/dev/null)

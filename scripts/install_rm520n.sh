@@ -654,7 +654,13 @@ harden_install_modes() {
     mount -o remount,rw / 2>/dev/null || true
 
     _hardened=0
-    for _d in "$LIB_DIR" "$QMANAGER_ROOT" "$WWW_ROOT/cgi-bin" \
+    # $CGI_DIR is listed as well as its parent. install_tree() does `rm -rf`
+    # then `mkdir -p` on it every run, so it is recreated under the ambient
+    # umask and normally lands 0755 — but a device whose umask differed, or one
+    # that has not reinstalled since the mode was set, keeps whatever it had.
+    # It holds 66 endpoints lighttpd executes, so it is the last directory to
+    # leave to chance.
+    for _d in "$LIB_DIR" "$WWW_ROOT/cgi-bin" "$CGI_DIR" \
               "$QMANAGER_ROOT/certs" "$CONF_DIR" "$CONF_DIR/profiles"; do
         [ -d "$_d" ] || continue
         _before=$(stat -c '%a' "$_d" 2>/dev/null)
@@ -664,6 +670,31 @@ harden_install_modes() {
             _hardened=$((_hardened + 1))
         fi
     done
+
+    # $QMANAGER_ROOT is the exception, and 0755 here is WRONG — it was tried and
+    # it broke SMS. Two CGI endpoints write files directly in this directory as
+    # www-data: cellular/sms.sh maintains sent_sms.json, and
+    # network/data_used_reset.sh rewrites data_used.json, which the root poller
+    # also writes. Both use the temp-file + mv pattern, and both halves of that
+    # need write permission on the DIRECTORY, not on the file — so at 0755
+    # root:root the outbox could never even be created, and the failure is
+    # silent because the CGI has nowhere to report it.
+    #
+    # 0775 root:www-data keeps that working through the group while still
+    # removing world write, which is the actual hole. Ownership is set too: the
+    # mode is meaningless if the group is wrong.
+    if [ -d "$QMANAGER_ROOT" ]; then
+        # chown runs unconditionally and silently — it is idempotent, and gating
+        # it on the current owner would make the whole block report work on every
+        # run wherever the chown cannot succeed. Only a real mode change counts
+        # as a repair, so the log line stays meaningful.
+        chown root:www-data "$QMANAGER_ROOT" 2>/dev/null || true
+        _before=$(stat -c '%a' "$QMANAGER_ROOT" 2>/dev/null)
+        if [ "$_before" != "775" ] && chmod 0775 "$QMANAGER_ROOT" 2>/dev/null; then
+            _log_raw "Set $QMANAGER_ROOT from ${_before:-unknown} to 0775 root:www-data"
+            _hardened=$((_hardened + 1))
+        fi
+    fi
 
     # The certificate is public by nature, so 0644 is right; it is being
     # world-WRITABLE that let anyone swap it. The private key beside it is
