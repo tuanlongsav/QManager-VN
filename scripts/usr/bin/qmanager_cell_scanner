@@ -31,10 +31,30 @@ ERROR_FILE="/tmp/qmanager_cell_scan_error"
 RAW_FILE="/tmp/qmanager_cell_scan_raw.tmp"
 PARSED_FILE="/tmp/qmanager_cell_scan_parsed.tmp"
 OPERATOR_LIST="/usrdata/qmanager/www/cgi-bin/quecmanager/operator-list.json"
+# Maintenance marker. AT+QSCAN holds the single global AT mutex
+# (/tmp/qmanager_at.lock) for up to 180s, so qmanager_poller drops to ping-only
+# (scan_in_progress) and qmanager_watchcat parks in maintenance while this
+# exists. Without it a three-minute sweep is invisible to the watchdog that
+# reboots the modem when it believes the link died. Both readers only test for
+# existence, never content; the poller expires it after LONG_FLAG_MAX_AGE (300s)
+# if this worker dies without running cleanup().
+LONG_FLAG="/tmp/qmanager_long_running"
+# The neighbour worker raises the same marker. The two start endpoints do not
+# share a lock, so a short neighbour read can still begin inside a sweep; without
+# the check in cleanup() whichever worker finished first would unmask the other
+# for the rest of its run — the exact outage the marker exists to prevent.
+SIBLING_PID_FILE="/tmp/qmanager_neighbour_scan.pid"
 
 # --- Cleanup on exit ---------------------------------------------------------
+# True while the other scan worker is still holding the AT mutex.
+sibling_scan_alive() {
+    _sib_pid=$(cat "$SIBLING_PID_FILE" 2>/dev/null) || return 1
+    [ -n "$_sib_pid" ] && [ -d "/proc/$_sib_pid" ]
+}
+
 cleanup() {
     rm -f "$PID_FILE" "$RAW_FILE" "$PARSED_FILE"
+    sibling_scan_alive || rm -f "$LONG_FLAG"
 }
 trap cleanup EXIT INT TERM
 
@@ -48,6 +68,10 @@ qlog_info "Cell scanner started (PID: $$)"
 # STEP 1: Execute AT+QSCAN=3,1 via qcmd
 # =============================================================================
 # Mode 3 = LTE + NR5G, ext 1 = show all extension parameters
+# Raise the maintenance marker BEFORE taking the AT mutex, so the poller and the
+# watchdog back off for the whole sweep rather than racing it and logging
+# modem_busy on every read. cleanup() clears it on every exit path.
+: > "$LONG_FLAG"
 raw_output=$(qcmd 'AT+QSCAN=3,1')
 scan_rc=$?
 

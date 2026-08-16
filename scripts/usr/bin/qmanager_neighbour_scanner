@@ -34,10 +34,31 @@ PID_FILE="/tmp/qmanager_neighbour_scan.pid"
 RESULT_FILE="/tmp/qmanager_neighbour_scan_result.json"
 ERROR_FILE="/tmp/qmanager_neighbour_scan_error"
 PARSED_FILE="/tmp/qmanager_neighbour_scan_parsed.tmp"
+# Maintenance marker — same file the cell scanner raises. This read is short
+# (three AT commands plus a settling sleep) but it still serializes through the
+# single global AT mutex (/tmp/qmanager_at.lock), and qmanager_watchcat's check
+# interval is 10s by default, so a neighbour read is well inside the window
+# where the watchdog can judge the link dead and start its recovery ladder.
+# qmanager_poller reads the same marker and drops to ping-only while it exists.
+# Both readers only test for existence, never content; the poller expires it
+# after LONG_FLAG_MAX_AGE (300s) if this worker dies without running cleanup().
+LONG_FLAG="/tmp/qmanager_long_running"
+# The cell-scan worker raises the same marker and holds the mutex for up to 180s.
+# The two start endpoints do not share a lock, so this read can begin inside a
+# sweep; without the check in cleanup() this worker would clear the marker after
+# a few seconds and unmask the sweep for the rest of its run.
+SIBLING_PID_FILE="/tmp/qmanager_cell_scan.pid"
 
 # --- Cleanup on exit ---------------------------------------------------------
+# True while the other scan worker is still holding the AT mutex.
+sibling_scan_alive() {
+    _sib_pid=$(cat "$SIBLING_PID_FILE" 2>/dev/null) || return 1
+    [ -n "$_sib_pid" ] && [ -d "/proc/$_sib_pid" ]
+}
+
 cleanup() {
     rm -f "$PID_FILE" "$PARSED_FILE"
+    sibling_scan_alive || rm -f "$LONG_FLAG"
 }
 trap cleanup EXIT INT TERM
 
@@ -54,6 +75,10 @@ qlog_info "Neighbour scanner started (PID: $$)"
 #   +QENG: "neighbourcell intra","LTE",<earfcn>,<pcid>,<rsrq>,<rsrp>,<rssi>,<sinr>,<srxlev>,<cell_resel_priority>,<s_non_intra_search>,<thresh_serving_low>,<s_intra_search>
 #   +QENG: "neighbourcell inter","LTE",<earfcn>,<pcid>,<rsrq>,<rsrp>,<rssi>,<sinr>,<srxlev>,<cell_resel_priority>,<threshX_low>,<threshX_high>
 
+# Raise the maintenance marker BEFORE the first AT command, so the poller and
+# the watchdog back off for the whole read — including the NR5G leg below and
+# the settling sleep between them. cleanup() clears it on every exit path.
+: > "$LONG_FLAG"
 lte_output=$(qcmd 'AT+QENG="neighbourcell"')
 lte_rc=$?
 

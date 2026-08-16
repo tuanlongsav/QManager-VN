@@ -1284,6 +1284,11 @@ DEFLATEEOF
     report_legacy_daemon_environment
     migrate_ping_environment
     prune_stale_ping_environment
+    # Must follow the `chown -R www-data:www-data "$CONF_DIR"` above: the
+    # migration writes its temp file into $CONF_DIR and sets the owner itself,
+    # but the destination directory has to be www-data-owned before the CGI
+    # that inherits the file can ever write it again.
+    migrate_apn_names
 
     info "Backend installed"
 }
@@ -1510,6 +1515,72 @@ prune_stale_ping_environment() {
         echo "  Removed $pruned stale ping env var(s) from $env_file (CARRIER_FILE no longer used)"
     else
         rm -f "$tmp"
+    fi
+}
+
+# --- Migrate the APN Name Sidecar to /etc/qmanager ---------------------------
+
+# apn_names.json (the per-CID friendly-name map for the WAN profile page) used
+# to live in /usrdata/qmanager. That directory is created by a bare `mkdir -p`
+# as root in install_backend(), so it is 0755 root:root — and its only writer,
+# cellular/apn.sh, is CGI running as www-data. Creating a file needs write
+# permission on the PARENT, so the writer's atomic tmp+rename silently no-opped
+# and every profile save logged "Failed to persist profile name". Renaming a
+# WAN profile has never worked on this fork.
+#
+# It now lives in /etc/qmanager, which install_backend() already owns
+# www-data:www-data. That adds no privilege surface: this is an inert JSON blob
+# that nothing sources or executes, only jq-parses, so it needs no sudoers rule
+# and no root helper.
+#
+# Migration is best-effort and idempotent: a no-op when the source is absent or
+# the destination already exists, so re-running an install or an OTA can never
+# clobber newer state. Fielded devices are unlikely to hold a populated file
+# (the writer never worked), but one installed while /usrdata/qmanager was
+# world-writable can, and losing a user's profile names on upgrade is not ours
+# to do.
+migrate_apn_names() {
+    local src="$QMANAGER_ROOT/apn_names.json"
+    local dst="$CONF_DIR/apn_names.json"
+
+    [ -f "$src" ] || return 0
+    if [ -e "$dst" ]; then
+        # Migrated on an earlier run. Drop the stale original so a reader can
+        # never pick up the abandoned copy, and so the uninstaller's rmdir of
+        # $QMANAGER_ROOT is not blocked by it.
+        rm -f "$src" 2>/dev/null || true
+        return 0
+    fi
+
+    echo "  Migrating $src -> $dst ..."
+    # The staging file MUST live in the DESTINATION directory. /usrdata and
+    # /etc are separate UBIFS volumes, so a direct `mv` across them is not
+    # rename(2) — it degrades to copy+unlink and loses crash-atomicity on
+    # flash. lighttpd is not stopped during an OTA, so a concurrent CGI reader
+    # is possible.
+    #
+    # A fixed name rather than mktemp, and spelled out literally at every use:
+    # this runs once, as root, single-threaded during an install, so there is
+    # nothing to collide with and a leftover from a crashed run is simply
+    # overwritten — while a literal operand keeps the www-data chown below
+    # statically resolvable for the ownership scan in
+    # scripts/test/daemon-environment-path.sh, which fails on any chown target
+    # it cannot follow back to a constant. Dot-prefixed so no `$CONF_DIR/*`
+    # glob can pick it up as a config file.
+    rm -f "$CONF_DIR/.apn_names.migrating" 2>/dev/null || true
+    if cat "$src" > "$CONF_DIR/.apn_names.migrating" 2>/dev/null; then
+        # Mode AND owner are set BEFORE the rename: the installer runs as root,
+        # so the copy lands root:root under the running umask and mv carries
+        # both across, leaving the file owned by someone other than the
+        # www-data CGI that is its only writer from here on.
+        chmod 644 "$CONF_DIR/.apn_names.migrating"
+        chown www-data:www-data "$CONF_DIR/.apn_names.migrating" 2>/dev/null || true
+        mv "$CONF_DIR/.apn_names.migrating" "$dst"
+        rm -f "$src" 2>/dev/null || true
+        info "Migrated apn_names.json to $CONF_DIR"
+    else
+        rm -f "$CONF_DIR/.apn_names.migrating"
+        warn "Could not read $src — leaving it in place"
     fi
 }
 

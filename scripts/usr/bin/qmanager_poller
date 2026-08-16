@@ -40,8 +40,12 @@ POLL_INTERVAL=2        # seconds between Tier 1 cycles
 TIER1_5_EVERY=5        # Tier 1.5 (per-antenna signal) runs every N cycles (10s)
 TIER2_EVERY=15         # Tier 2 runs every N cycles
 CYCLE_TIME_BUDGET=10   # seconds; warn if poll_cycle exceeds this
+# Quectel firmware version file. Its presence distinguishes the internal-modem
+# platform from OpenWRT, and its "Branch Name" line names the SoC family.
+# Overridable for the test harness.
+: "${QUECTEL_VERSION_FILE:=/etc/quectel-project-version}"
 # Network interface for traffic stats (platform-specific)
-if [ -f /etc/quectel-project-version ]; then
+if [ -f "$QUECTEL_VERSION_FILE" ]; then
     NETWORK_IFACE="rmnet_ipa0"   # RM520N-GL internal modem
 else
     NETWORK_IFACE="wwan0"        # RM551E on OpenWRT
@@ -76,9 +80,13 @@ DATA_USED_SCHEMA=4
 : "${DATA_USED_PROC_DEV:=/proc/net/dev}"
 
 # --- Orientation detection (Tier 1) -----------------------------------------
-# Async 5 MB Cloudflare probe at first WAN-up; re-probes on counter-reset
-# events (modem reattach). Falls back to RM520N defaults on probe failure
-# (field 2=DL, field 10=UL — matches Quectel spec; correct on most firmware).
+# Resolved SoC-first: a read of QUECTEL_VERSION_FILE answers for free on SoCs
+# where the answer is known, and only SoCs that cannot be decided statically
+# pay for the async 5 MB Cloudflare probe. Probing runs at first WAN-up and
+# re-runs on counter-reset events (modem reattach), so on a metered link the
+# download is a recurring bill, not a one-off — hence the free path first.
+# Falls back to RM520N defaults on probe failure (field 2=DL, field 10=UL —
+# matches Quectel spec; correct on most firmware).
 ORIENTATION_STATE_FILE="/tmp/qmanager_orientation_state"
 ORIENTATION_PROBE_URL="https://speed.cloudflare.com/__down?bytes=5242880"
 ORIENTATION_PROBE_TIMEOUT=90        # seconds; 5 MB at 500 Kbps takes ~80s
@@ -590,11 +598,44 @@ update_conn_uptime() {
 # =============================================================================
 # ORIENTATION DETECTION
 # =============================================================================
-# Empirically determines which /proc/net/dev field carries download bytes by
-# running a known-direction 5 MB Cloudflare probe in a backgrounded subshell.
-# Result is written to ORIENTATION_STATE_FILE; the poll loop reads it on the
-# next tick. Falls back to RM520N defaults (field 2=DL, field 10=UL) on probe
-# failure. Re-probes on counter-reset events (modem reattach).
+# Determines which /proc/net/dev field carries download bytes. Two sources, in
+# cost order: detect_orientation_from_soc() answers from the firmware version
+# file for free, and only when it declines does start_orientation_probe() spend
+# a known-direction 5 MB Cloudflare download in a backgrounded subshell. The
+# probe writes its verdict to ORIENTATION_STATE_FILE; the poll loop reads it on
+# the next tick. Falls back to RM520N defaults (field 2=DL, field 10=UL) on
+# probe failure. Re-resolves on counter-reset events (modem reattach).
+
+# detect_orientation_from_soc — answer the orientation question from the SoC
+# family instead of measuring it, but only where the answer is actually known.
+#
+# Prints "normal", "reversed", or "unknown". "unknown" means *go measure it*:
+# the caller must fall through to the probe rather than guess, because a wrong
+# orientation books every download as an upload for the life of the counter,
+# silently and unrecoverably (see docs/reference/data-usage-counter.md).
+#
+# Only SDX6X clears the confidence bar, and the two SoCs differ in kind, not
+# just in verdict — see docs/reference/data-counter-platform-matrix.md:
+#   SDX6X — measured normal on this fork's own device probes, upstream agrees,
+#           and no reversed SDX6X build has ever been observed. Decidable.
+#   SDX55 — NOT decidable. The probed SDX55 also measured normal, yet some
+#           SDX55 IPA driver builds do swap fast-path attribution: the split
+#           runs per firmware revision, not per SoC. Upstream maps SDX55 to
+#           "reversed" wholesale, which would corrupt every SDX55 that is in
+#           fact normal, so this fork sends SDX55 to the probe to be measured.
+#
+# Matching is exact on purpose. An unrecognised or reworded Branch Name (a
+# future "SDX65", say) lands on "unknown" and costs 5 MB — the safe direction
+# to be wrong in.
+detect_orientation_from_soc() {
+    local _branch
+    _branch=$(grep -m1 '^Branch Name' "$QUECTEL_VERSION_FILE" 2>/dev/null \
+              | awk -F': *' '{print $2}' | tr -d '[:space:]')
+    case "$_branch" in
+        SDX6X) echo "normal" ;;
+        *)     echo "unknown" ;;
+    esac
+}
 
 start_orientation_probe() {
     # Only one probe in flight at a time — bail if pidfile points at a live PID.
@@ -665,14 +706,11 @@ start_orientation_probe() {
     ) &
 }
 
-apply_orientation_result() {
-    # Read sentinel file written by the backgrounded probe; transition state.
-    # No-op if state isn't pending, or the probe hasn't written its verdict yet.
-    [ "$orientation_state" != "pending" ] && return 0
-    [ ! -f "$ORIENTATION_STATE_FILE" ] && return 0
-    local _verdict
-    _verdict=$(cat "$ORIENTATION_STATE_FILE" 2>/dev/null)
-    rm -f "$ORIENTATION_STATE_FILE"
+apply_orientation_verdict() {
+    # Commit one verdict, whichever source produced it. Verdict strings are
+    # "<normal|reversed|fallback>:<evidence>"; the evidence tail reaches the log
+    # so a SoC-derived verdict stays distinguishable from a measured one.
+    local _verdict="$1"
     case "$_verdict" in
         normal:*)
             orientation_dl_field=2
@@ -707,6 +745,17 @@ apply_orientation_result() {
             qlog_info "orientation: probe failed/inconclusive — using defaults (${_verdict})"
             ;;
     esac
+}
+
+apply_orientation_result() {
+    # Read the sentinel file written by the backgrounded probe; transition state.
+    # No-op if state isn't pending, or the probe hasn't written its verdict yet.
+    [ "$orientation_state" != "pending" ] && return 0
+    [ ! -f "$ORIENTATION_STATE_FILE" ] && return 0
+    local _verdict
+    _verdict=$(cat "$ORIENTATION_STATE_FILE" 2>/dev/null)
+    rm -f "$ORIENTATION_STATE_FILE"
+    apply_orientation_verdict "$_verdict"
 }
 
 # =============================================================================

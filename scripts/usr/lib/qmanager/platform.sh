@@ -49,15 +49,29 @@ svc_restart() {
 _WANTS_DIR="/lib/systemd/system/multi-user.target.wants"
 _UNIT_DIR="/lib/systemd/system"
 
+# Both of these used to return the exit status of a command whose stderr was
+# discarded, and nothing checked it. On a read-only rootfs, or a device whose
+# sudoers file predates the grant, enabling a service therefore did nothing and
+# said nothing — the user found out at the next boot, when the thing they had
+# switched on was not running.
+#
+# So verify the post-condition rather than trusting the write. Testing that the
+# symlink now exists (or no longer does) is what the caller actually wants to
+# know, and it costs one stat.
 svc_enable() {
     local unit="$(_svc_unit "$1").service"
     $_SUDO /bin/ln -sf "$_UNIT_DIR/$unit" "$_WANTS_DIR/$unit" 2>/dev/null
+    # -e follows the link and would be false for a symlink whose target is
+    # missing; -h is what asks whether the boot symlink itself is there, which
+    # is the thing systemd reads.
+    [ -h "$_WANTS_DIR/$unit" ]
 }
 
 # Disable a service (remove boot symlink)
 svc_disable() {
     local unit="$(_svc_unit "$1").service"
     $_SUDO /bin/rm -f "$_WANTS_DIR/$unit" 2>/dev/null
+    [ ! -h "$_WANTS_DIR/$unit" ]
 }
 
 # Check if a service is enabled (boot symlink exists)

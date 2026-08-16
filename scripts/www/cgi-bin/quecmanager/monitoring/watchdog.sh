@@ -347,19 +347,38 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
         # Clear auto-disabled flag if user is re-enabling
         new_enabled=""
         new_enabled=$(qm_config_get watchcat enabled 0)
+        # svc_enable/svc_disable now verify that the boot symlink really
+        # changed instead of trusting the write, and the answer is worth
+        # surfacing: the settings ARE saved either way, but a watchdog the user
+        # switched on that is not enabled at boot is a promise this endpoint
+        # would otherwise make and break silently — the same shape as a
+        # schedule that saved but never armed.
+        boot_enabled="true"
         if [ "$new_enabled" = "1" ]; then
             rm -f "$DISABLED_FLAG"
             # Enable and start the watchcat service
-            svc_enable qmanager_watchcat
+            svc_enable qmanager_watchcat || boot_enabled="false"
             ( svc_restart qmanager_watchcat & )
             qlog_info "Watchdog settings saved, watchcat enabled and started"
         else
             # Stop and disable the watchcat service
             svc_stop qmanager_watchcat
-            svc_disable qmanager_watchcat
+            svc_disable qmanager_watchcat || boot_enabled="false"
             qlog_info "Watchdog settings saved, watchcat stopped and disabled"
         fi
-        echo '{"success":true}'
+        if [ "$boot_enabled" = "false" ]; then
+            qlog_warn "Watchdog settings saved but the boot symlink did not change"
+            jq -n --argjson want "$new_enabled" '{
+                success: true,
+                boot_enabled: false,
+                boot_enable_error: (if $want == 1
+                    then "Settings saved, but the watchdog could not be enabled at boot — it will not start after a reboot."
+                    else "Settings saved, but the watchdog could not be disabled at boot — it may start again after a reboot."
+                end)
+            }'
+        else
+            echo '{"success":true}'
+        fi
         exit 0
     fi
 

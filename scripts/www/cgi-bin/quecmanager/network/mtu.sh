@@ -3,8 +3,9 @@
 # =============================================================================
 # mtu.sh — CGI Endpoint: MTU Configuration (GET + POST)
 # =============================================================================
-# GET:  Reads the current MTU from the rmnet_data0 interface and checks
-#       whether a custom MTU configuration file exists.
+# GET:  Reads the current MTU from whichever rmnet_data* interface currently
+#       carries the WAN (resolved at runtime — the index migrates across
+#       attach cycles) and checks whether a custom MTU config file exists.
 # POST: Applies a new MTU value to all rmnet_data interfaces and persists
 #       the commands to /etc/firewall.user.mtu. The qmanager_mtu init script
 #       re-applies these at boot via the qmanager_mtu_apply daemon.
@@ -26,9 +27,51 @@ cgi_handle_options
 
 # --- Configuration -----------------------------------------------------------
 MTU_FIREWALL_FILE="/etc/firewall.user.mtu"
-NETWORK_INTERFACE="rmnet_data0"
 
-# --- Helper: get current MTU from the primary interface ----------------------
+# Which rmnet_data* carries the WAN is not fixed. The modem re-attaches on
+# whatever index the network gives it, and a device has been observed live with
+# rmnet_data1 as the sole interface UP and holding the address — so reading MTU
+# from a hardcoded rmnet_data0 reports the MTU of an interface carrying no
+# traffic, or nothing at all.
+#
+# Three probes, weakest assumption last:
+#   1. the default route — the only source that says which interface traffic
+#      actually leaves by, so it is authoritative when it exists;
+#   2. a globally-scoped address — true of an attached context even when the
+#      default route sits elsewhere (an active VPN, a second PDP);
+#   3. carrier — the link is up but unaddressed, which is the best guess left.
+# The rmnet_data0 fallback keeps the old behaviour for a device that answers
+# none of the three, so this can only ever be an improvement on the guess.
+resolve_wan_interface() {
+    _wan=$(ip route show default 2>/dev/null \
+        | sed -n 's/.*dev \([^ ]*\).*/\1/p' \
+        | grep '^rmnet_data' | head -1)
+    [ -n "$_wan" ] && { printf '%s' "$_wan"; return 0; }
+
+    for _f in /sys/class/net/rmnet_data*; do
+        [ -e "$_f" ] || continue
+        _n=$(basename "$_f")
+        if ip -o addr show "$_n" 2>/dev/null | grep -q 'scope global'; then
+            printf '%s' "$_n"
+            return 0
+        fi
+    done
+
+    for _f in /sys/class/net/rmnet_data*; do
+        [ -e "$_f" ] || continue
+        _n=$(basename "$_f")
+        if [ "$(cat "/sys/class/net/${_n}/carrier" 2>/dev/null)" = "1" ]; then
+            printf '%s' "$_n"
+            return 0
+        fi
+    done
+
+    printf 'rmnet_data0'
+}
+
+NETWORK_INTERFACE=$(resolve_wan_interface)
+
+# --- Helper: get current MTU from the live WAN interface ---------------------
 get_current_mtu() {
     ip link show "$NETWORK_INTERFACE" 2>/dev/null \
         | grep -o "mtu [0-9]*" | cut -d' ' -f2

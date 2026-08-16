@@ -39,7 +39,15 @@ cgi_handle_options
 
 # --- Configuration -----------------------------------------------------------
 MAX_PROFILES=6
-NAME_FILE="/usrdata/qmanager/apn_names.json"
+# The profile-name sidecar lives in /etc/qmanager, NOT /usrdata/qmanager.
+# install_backend() owns /etc/qmanager www-data:www-data, which is what lets
+# this CGI create its atomic temp file there. /usrdata/qmanager is created by a
+# bare `mkdir -p` as root and is therefore 0755 root:root; creating a file
+# needs write permission on the PARENT, so every save silently no-opped and
+# logged "Failed to persist profile name" for as long as the sidecar lived
+# there. /etc is persistent UBIFS here, so this survives reboots and OTA;
+# install_rm520n.sh's migrate_apn_names() moves fielded devices across.
+NAME_FILE="/etc/qmanager/apn_names.json"
 
 # =============================================================================
 # Helpers
@@ -119,7 +127,7 @@ read_names_json() {
 }
 
 # write_name <cid> <name> — merge one {cid:name} entry into the sidecar.
-# Written by www-data (CGI runs as www-data; /usrdata/qmanager is 0777),
+# Written by www-data (CGI runs as www-data; /etc/qmanager is www-data-owned),
 # then chmod 644 explicitly so the mode does not depend on umask.
 write_name() {
     _wc="$1"
@@ -166,17 +174,66 @@ parse_qicsgp() {
 #   -> "<v4addr>\t<v4gw>\t<dns1>\t<dns2>\t<v6addr>"
 # RM520N-GL format (no MTU / interface fields present):
 #   +CGCONTRDP: <cid>,<bearer>,"<apn>","<addr>",<gw>,"<dns1>","<dns2>"
+#
+# The 5-field arity and ORDER are contract: the GET loop below slices them
+# positionally with `cut -f1..5`. Do not widen or reorder without updating it.
+#
+# Three things this parser must not get wrong, all of them non-obvious:
+#
+# 1. Address family is decided by OCTET COUNT, never by punctuation. 3GPP
+#    returns an IPv6 address here as 16 dotted-decimal octets, not colon-hex
+#    (colon-hex only shows up in +QMAP), so an `addr ~ /:/` test never fires.
+#    Because the query is per-CID and a dual-stack context emits its IPv6
+#    record SECOND, a colon test sends that record down the IPv4 branch where
+#    it overwrites address, gateway and BOTH DNS servers the IPv4 record just
+#    set — and leaves v6 empty, so status_ipv6 can never read "up". Colon-hex
+#    stays as a fallback for firmwares that do emit it. First record of each
+#    family wins, so a later one can no longer clobber an earlier one.
+#
+# 2. Field positions are NOT fixed: the gateway is sometimes quoted and
+#    sometimes bare — observed on the same CID minutes apart — and that shifts
+#    every later -F(") field by two:
+#      bare gw:   ...,"apn","addr",,"dns1","dns2"
+#      quoted gw: ...,"apn","addr","gw","dns1","dns2"
+#    Fixed $6/$8 therefore returns the GATEWAY as dns1 and drops dns2 whenever
+#    the gateway is quoted. Which layout arrived is read off the separator that
+#    FOLLOWS the address: an odd -F(") field holds the raw text between two
+#    quoted tokens, so a bare "," at $5 means the next quoted token ($6) is the
+#    gateway, while anything else (",," or ",<gw>,") means the gateway sat
+#    unquoted inside $5 and DNS starts at $6. Counting quoted tokens instead
+#    would mis-read the two cases this endpoint actually has to survive: a
+#    record that omits dns2, and a firmware that appends further quoted fields
+#    after dns2.
+#
+# 3. DNS is not family-specific in this endpoint's contract — the GET loop
+#    emits plain dns1/dns2, not ipv4_dns1 — so take it from whichever record
+#    supplies it, or an IPv6-only attach reports no DNS at all. First non-empty
+#    wins, so a dual-stack context still prefers the IPv4 record. The gateway
+#    stays IPv4-only, since that one IS emitted as ipv4_gateway.
+#
+# Input is normalised with `tr '\r' '\n'` first: some firmwares glue successive
+# records with a bare CR, which would leave both on one awk line and hide the
+# second entirely (parse_at.sh's sibling parser normalises for the same reason).
 parse_cgcontrdp() {
-    printf '%s\n' "$1" | awk -F'"' '
+    printf '%s\n' "$1" | tr '\r' '\n' | awk -F'"' '
         /\+CGCONTRDP:/ {
             addr = $4; sub(/ .*/, "", addr)
-            gw = $5; gsub(/[^0-9.:]/, "", gw)
-            d1 = $6
-            d2 = $8
-            if (addr ~ /:/) { v6 = addr }
-            else { v4 = addr; v4gw = gw; v4d1 = d1; v4d2 = d2 }
+
+            sep = $5; gsub(/[ \t]/, "", sep)
+            if (sep == ",") { gw = $6; d1 = $8; d2 = $10 }
+            else            { gw = $5; d1 = $6; d2 = $8  }
+            gsub(/[^0-9.:]/, "", gw)
+
+            n = split(addr, _oct, "[.]")
+            if ((addr ~ /:/) || n == 16) {
+                if (v6 == "") v6 = addr
+            } else if (n == 4) {
+                if (v4 == "") { v4 = addr; v4gw = gw }
+            }
+            if (d1 != "" && dns1 == "") dns1 = d1
+            if (d2 != "" && dns2 == "") dns2 = d2
         }
-        END { printf "%s\t%s\t%s\t%s\t%s\n", v4, v4gw, v4d1, v4d2, v6 }'
+        END { printf "%s\t%s\t%s\t%s\t%s\n", v4, v4gw, dns1, dns2, v6 }'
 }
 
 # =============================================================================
