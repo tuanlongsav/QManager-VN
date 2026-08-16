@@ -76,13 +76,18 @@ bun run dev
 
 Opens at `http://localhost:3000`. API requests are proxied to `http://192.168.224.1` (the modem's IP).
 
-To change the proxy target, edit `next.config.ts`:
+The `rewrites()` block in `next.config.ts` ships **commented out**, because a
+rewrite is incompatible with the static export `bun run build` produces.
+Uncomment it for local dev, and comment it back before building:
 
 ```typescript
-destination: "http://192.168.224.1/cgi-bin/:path*",
-// or for Tailscale:
-// destination: "http://your-device.ts.net/cgi-bin/:path*",
+destination: "http://192.168.225.1/cgi-bin/:path*",
 ```
+
+Point it at HTTP, not HTTPS: the modem redirects HTTP→HTTPS, and Bun does not
+honour `NODE_TLS_REJECT_UNAUTHORIZED` for the device's self-signed certificate.
+(The file also carries a commented Tailscale alternative — leftover from
+upstream. Tailscale is cut in this fork.)
 
 ### Production Build
 
@@ -229,7 +234,7 @@ cat /etc/qmanager/VERSION
 ├── events.sh               # Event detection
 ├── profile_mgr.sh          # Profile CRUD
 ├── tower_lock_mgr.sh       # Tower lock management
-├── email_alerts.sh         # Email alert logic
+├── schedule_timer.sh       # Renders + arms the scheduled-task systemd timers
 └── sms_alerts.sh           # SMS alert logic
 
 /lib/systemd/system/
@@ -237,12 +242,20 @@ cat /etc/qmanager/VERSION
 ├── qmanager-setup.service
 ├── qmanager-poller.service
 ├── qmanager-ping.service
-├── qmanager-console.service
 ├── qmanager-watchcat.service
 ├── qmanager-ttl.service
 ├── qmanager-mtu.service
 ├── qmanager-imei-check.service
-└── qmanager-tower-failover.service
+├── qmanager-ethernet.service
+├── qmanager-cfun-fix.service
+├── qmanager-tower-failover.service
+│   # Timer-triggered oneshots — no [Install] section, never boot-enabled.
+│   # Their .timer siblings are written and armed at runtime by the
+│   # qmanager_*_arm helpers, into timers.target.wants/.
+├── qmanager-scheduled-reboot.service
+├── qmanager-auto-update.service
+├── qmanager-tower-schedule-apply.service
+└── qmanager-tower-schedule-clear.service
 
 /etc/qmanager/             # Persistent configuration
 ├── VERSION                # Installed version (written atomically at install end)
@@ -253,7 +266,8 @@ cat /etc/qmanager/VERSION
 ├── band_lock.json
 ├── imei_backup.json
 ├── last_iccid
-└── msmtprc                # Email SMTP config (no logfile directive)
+├── qmanager.conf          # Settings store (units, timezone, schedules)
+└── backups/               # auth.json snapshots, one per install — never pruned
 
 /etc/sudoers.d/qmanager    # www-data privilege escalation rules (includes qmanager_update)
 
@@ -264,7 +278,7 @@ cat /etc/qmanager/VERSION
 ├── qmanager_events.json
 ├── qmanager_ping.json
 ├── qmanager_watchcat.json
-├── qmanager_watchcat.lock # Touched during install/low-power to pause watchdog
+├── qmanager_watchcat.lock # Touched during install to pause the watchdog
 ├── qmanager_update.log    # OTA update worker log (root-owned)
 ├── qmanager_install.log   # Installer log (step progress for UI streaming)
 ├── qmanager_sessions/
@@ -466,15 +480,18 @@ ls -la /etc/qmanager/shadow
 ### Service Won't Start
 
 ```bash
-# Check init.d script
-/etc/init.d/qmanager start
+# This platform boots systemd. scripts/etc/init.d/ still holds six procd-era
+# scripts, but they are legacy and nothing starts them.
+systemctl status qmanager-poller
+systemctl start qmanager-poller
+journalctl -u qmanager-poller --no-pager | tail -30
 cat /tmp/qmanager.log
 
 # Verify dependencies
 which jq        # Required
 which qcmd      # Required
-which msmtp     # Optional (email only)
-which ethtool   # Optional (ethernet only)
+which visudo    # Used by the installer to validate sudoers before replacing it
+which ethtool   # Optional (ethernet link-speed control only)
 ```
 
 ---
@@ -547,7 +564,16 @@ The uninstaller:
 
 ---
 
-## Troubleshooting
+## Troubleshooting — Installer & Platform Specifics
+
+> This section and the [Troubleshooting](#troubleshooting) section above both
+> carry entries for *CGI Returns Empty Response*, *Poller Not Producing Data*,
+> *Service Won't Start* and *Authentication Issues*. They are not copies — the
+> two have diverged, and this one generally carries the longer, more
+> RM520N-GL-specific version. Read both before concluding a symptom is not
+> covered. Consolidating them is outstanding work; renaming this heading at
+> least stops the two from colliding on the same `#troubleshooting` anchor,
+> which silently sent every inbound link to the first one.
 
 ### Installer / Update Failures
 
