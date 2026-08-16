@@ -54,6 +54,29 @@ export interface SimSwapInfo {
   dismissed?: boolean;
 }
 
+/** Response body from POST { action: "save_settings" }. */
+export interface WatchdogSaveResponse {
+  success: boolean;
+  /**
+   * Whether the watchcat service is actually enabled at boot — a different
+   * question from whether the settings were saved. The config write
+   * effectively always succeeds; flipping the systemd boot symlink goes
+   * through a root helper and can fail, leaving a watchdog the user switched
+   * on that never starts after a reboot.
+   *
+   * Absent means UNKNOWN, not false: a device predating the field never sends
+   * it, and treating that as "not enabled at boot" would warn on every save on
+   * every such device, which is how a warning stops being read. The backend
+   * emits it only when the symlink disagreed with what was asked, so when it is
+   * present it is always `false`.
+   */
+  boot_enabled?: boolean;
+  /** Present only alongside `boot_enabled`. Composed by the server. */
+  boot_enable_error?: string;
+  error?: string;
+  detail?: string;
+}
+
 export interface UseWatchdogSettingsReturn {
   settings: WatchdogSettings | null;
   status: WatchdogLiveStatus | null;
@@ -63,7 +86,14 @@ export interface UseWatchdogSettingsReturn {
   isLoading: boolean;
   isSaving: boolean;
   error: string | null;
-  saveSettings: (payload: WatchdogSavePayload) => Promise<boolean>;
+  /**
+   * Resolves to the response body on success (so callers can read
+   * `boot_enabled`) and to `false` on failure. `false` rather than `null`
+   * keeps every existing `if (ok)` call site behaving exactly as before.
+   */
+  saveSettings: (
+    payload: WatchdogSavePayload,
+  ) => Promise<WatchdogSaveResponse | false>;
   dismissSimSwap: () => Promise<boolean>;
   revertSim: () => Promise<boolean>;
   refresh: () => void;
@@ -137,7 +167,9 @@ export function useWatchdogSettings(): UseWatchdogSettingsReturn {
   // Save settings
   // ---------------------------------------------------------------------------
   const saveSettings = useCallback(
-    async (payload: WatchdogSavePayload): Promise<boolean> => {
+    async (
+      payload: WatchdogSavePayload,
+    ): Promise<WatchdogSaveResponse | false> => {
       setError(null);
       setIsSaving(true);
 
@@ -152,7 +184,7 @@ export function useWatchdogSettings(): UseWatchdogSettingsReturn {
           throw new Error(`HTTP ${resp.status}: ${resp.statusText}`);
         }
 
-        const json = await resp.json();
+        const json: WatchdogSaveResponse = await resp.json();
         if (!mountedRef.current) return false;
 
         if (!json.success) {
@@ -162,7 +194,12 @@ export function useWatchdogSettings(): UseWatchdogSettingsReturn {
 
         // Silent re-fetch to sync state
         await fetchSettings(true);
-        return true;
+
+        // Hand the body back rather than a bare `true`. boot_enabled has been
+        // emitted here for a while with nobody reading it, which is exactly
+        // the bug: the backend already knows the boot symlink did not change
+        // and the UI still shows an unqualified green toast.
+        return json;
       } catch (err) {
         if (!mountedRef.current) return false;
         setError(

@@ -134,6 +134,12 @@ if [ "$MODE" = "apply" ]; then
         # Clear previous failover activation
         rm -f "$TOWER_FAILOVER_FLAG"
         tower_spawn_failover_watcher >/dev/null
+        # No HTTP response and nobody watching — this runs from a systemd timer.
+        # The log is the only place a boot-enable failure can surface, which
+        # also makes this the easiest of the five call sites to lose silently.
+        # It runs as root, so sudo cannot deny it; a read-only rootfs can.
+        [ "$TOWER_FAILOVER_BOOT_ENABLED" = "false" ] \
+            && qlog_warn "Schedule: failover boot-enable failed — qmanager-tower-failover will not start after a reboot"
 
         # Re-apply custom MTU after interface bounce
         mtu_reapply_after_bounce

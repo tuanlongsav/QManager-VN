@@ -39,6 +39,27 @@ TOWER_FAILOVER_FLAG="/tmp/qmanager_tower_failover"
 TOWER_FAILOVER_PID="/tmp/qmanager_tower_failover.pid"
 TOWER_FAILOVER_SCRIPT="/usr/bin/qmanager_tower_failover"
 
+# The two answers tower_spawn_failover_watcher() leaves behind. They are
+# genuinely independent — a watcher can be running while its boot symlink was
+# never written, which is exactly the case that used to be reported as plain
+# success and then vanished at the next reboot.
+#
+#   TOWER_FAILOVER_BOOT_ENABLED  "" = not attempted on that call, else
+#                                svc_enable's verified post-condition
+#   TOWER_FAILOVER_WATCHER_ALIVE "true"/"false" — daemon running right now
+#
+# Read these AFTER calling the function directly. Do not capture it with
+# `x=$(tower_spawn_failover_watcher)`: command substitution runs it in a
+# subshell and both values die with it. Nothing does that today, and nothing
+# should start.
+#
+# WATCHER_ALIVE seeds to "false" rather than "" on purpose: lock.sh feeds it
+# straight to `jq --argjson`, and an empty string there is not valid JSON — jq
+# exits, the CGI emits nothing, and the frontend's resp.json() throws, so a
+# lock that actually succeeded surfaces as "Failed to lock tower".
+TOWER_FAILOVER_BOOT_ENABLED=""
+TOWER_FAILOVER_WATCHER_ALIVE="false"
+
 # Ensure config directory exists
 mkdir -p /etc/qmanager 2>/dev/null
 
@@ -396,9 +417,45 @@ tower_kill_failover_watcher() {
     svc_stop qmanager_tower_failover
 }
 
-# Spawn failover watcher if enabled (delegates to init.d)
-# Returns: "true" if daemon verified running, "false" if not spawned or failed
+# The canonical wording for a boot-persistence miss, in one place, because six
+# call sites across two CGI scripts have to say the same thing.
+# Usage: tower_failover_boot_error enable|disable
+tower_failover_boot_error() {
+    if [ "$1" = "disable" ]; then
+        printf '%s' "Failover was stopped, but it is still set to start at boot — it may run again after a reboot."
+    elif [ "$TOWER_FAILOVER_WATCHER_ALIVE" = "true" ]; then
+        printf '%s' "Failover is running now, but it could not be set to start at boot — it will not protect this lock after a reboot."
+    else
+        # Both svc_start and svc_enable failed, which is the common shape when
+        # the rootfs is still read-only: nothing is running and nothing is
+        # scheduled. Saying "running now, but…" here would promise protection
+        # that does not exist — a worse lie than the one this change removes.
+        printf '%s' "Failover could not be started or set to start at boot — this lock is not protected now and will not be after a reboot."
+    fi
+}
+
+# Spawn failover watcher if enabled (delegates to the systemd unit).
+#
+# Answers TWO questions, and they are independent:
+#   TOWER_FAILOVER_WATCHER_ALIVE  — is the daemon running right now
+#   TOWER_FAILOVER_BOOT_ENABLED   — will it still be there after a reboot
+#
+# Both are globals. The daemon answer is ALSO printed to stdout, unchanged, for
+# any caller that still captures it — but read the globals, not the capture:
+# `x=$(tower_spawn_failover_watcher)` runs the function in a SUBSHELL, so every
+# variable it sets is discarded when the substitution ends, and the boot answer
+# silently arrives empty. That is not theoretical; it is how the first version
+# of this change shipped half-dead, passing a source-grep contract test because
+# the text was all present and only the runtime value was gone.
+#
+# Call it as `tower_spawn_failover_watcher >/dev/null` and read the globals.
 tower_spawn_failover_watcher() {
+    # Cleared on every call, including the early return below. Nothing calls
+    # this twice in one CGI request today, but a stale value leaking into a
+    # later call would report a result that did not happen on that request.
+    TOWER_FAILOVER_BOOT_ENABLED=""
+    TOWER_FAILOVER_WATCHER_ALIVE="false"
+
     # Check if failover is enabled in config
     local fo_enabled
     fo_enabled=$(tower_config_get ".failover.enabled")
@@ -412,8 +469,16 @@ tower_spawn_failover_watcher() {
     svc_stop qmanager_tower_failover
     svc_start qmanager_tower_failover
 
-    # Enable for boot auto-start
-    svc_enable qmanager_tower_failover
+    # Enable for boot auto-start. Checked, not discarded: svc_enable verifies
+    # the symlink really appeared, and that answer is the only thing that says
+    # whether this survives a reboot. Recorded separately from the PID check
+    # below — a live daemon says nothing about the boot symlink.
+    if svc_enable qmanager_tower_failover; then
+        TOWER_FAILOVER_BOOT_ENABLED="true"
+    else
+        TOWER_FAILOVER_BOOT_ENABLED="false"
+        qlog_warn "Tower failover boot-enable failed — symlink not written for qmanager-tower-failover"
+    fi
 
     # Verify daemon actually started (PID file written immediately on spawn)
     sleep 1
@@ -422,12 +487,14 @@ tower_spawn_failover_watcher() {
         pid=$(cat "$TOWER_FAILOVER_PID" 2>/dev/null | tr -d ' \n\r')
         if pid_alive "$pid"; then
             qlog_info "Tower failover watcher verified running (PID=$pid)"
+            TOWER_FAILOVER_WATCHER_ALIVE="true"
             printf 'true'
             return 0
         fi
     fi
 
     qlog_warn "Tower failover watcher failed to start"
+    TOWER_FAILOVER_WATCHER_ALIVE="false"
     printf 'false'
     return 1
 }

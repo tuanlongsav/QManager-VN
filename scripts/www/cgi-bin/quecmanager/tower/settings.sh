@@ -110,6 +110,11 @@ tower_config_update_settings "$PERSIST" "$FO_ENABLED" "$FO_THRESHOLD"
 
 # --- Ensure failover daemon is running when enabled + lock active ------------
 watcher_spawned="false"
+# Declared out here, before either branch, because the response at the bottom
+# reads it unconditionally — and the common case is that neither branch runs
+# (failover unchanged on this request), where it must stay empty so the fields
+# are omitted rather than reporting a failure that never happened.
+failover_boot_err=""
 if [ "$FO_ENABLED" = "true" ]; then
     lte_active=$(tower_config_get ".lte.enabled")
     nr_active=$(tower_config_get ".nr_sa.enabled")
@@ -121,9 +126,17 @@ if [ "$FO_ENABLED" = "true" ]; then
             pid_alive "$wpid" && daemon_alive="true"
         fi
         if [ "$daemon_alive" != "true" ]; then
-            spawn_result=$(tower_spawn_failover_watcher)
+            # NOT `$(tower_spawn_failover_watcher)`: command substitution runs
+            # it in a subshell, which discards the globals it sets and leaves
+            # the boot answer empty. Call it directly and read both.
+            tower_spawn_failover_watcher >/dev/null
+            spawn_result="$TOWER_FAILOVER_WATCHER_ALIVE"
             [ "$spawn_result" = "true" ] && watcher_spawned="true"
-            qlog_info "Failover spawn attempt: result=$spawn_result"
+            # Separate question from spawn_result: that says the daemon is up
+            # now, this says it will come back after a reboot.
+            [ "$TOWER_FAILOVER_BOOT_ENABLED" = "false" ] \
+                && failover_boot_err=$(tower_failover_boot_error enable)
+            qlog_info "Failover spawn attempt: result=$spawn_result boot=$TOWER_FAILOVER_BOOT_ENABLED"
         fi
     fi
 fi
@@ -132,23 +145,37 @@ fi
 if [ "$FO_ENABLED" = "false" ] && [ "$current_fo_enabled" = "true" ]; then
     tower_kill_failover_watcher
     rm -f "$TOWER_FAILOVER_FLAG"
-    svc_disable qmanager_tower_failover
+    # Checked rather than discarded. Killing the daemon and removing its boot
+    # symlink are two different promises, and only the second one survives a
+    # reboot — a failure here means failover comes back on its own.
+    if ! svc_disable qmanager_tower_failover; then
+        failover_boot_err=$(tower_failover_boot_error disable)
+        qlog_warn "Failover boot-disable failed — symlink still present for qmanager-tower-failover"
+    fi
     qlog_info "Failover disabled — killed daemon, disabled service"
 fi
 
 # --- Response ----------------------------------------------------------------
+# failover_boot_enabled/failover_boot_error are emitted together and ONLY on
+# failure, so absence reads as "nothing to report" rather than as a claim. Both
+# branches carry them: whether the persist AT command worked and whether the
+# boot symlink was written are unrelated, and both can fail on one request.
 if [ "$persist_ok" = "true" ]; then
     jq -n \
         --argjson persist "$PERSIST" \
         --argjson fo_enabled "$FO_ENABLED" \
         --argjson fo_threshold "$FO_THRESHOLD" \
         --argjson ws "$watcher_spawned" \
-        '{success: true, persist: $persist, failover_enabled: $fo_enabled, failover_threshold: $fo_threshold, watcher_spawned: $ws}'
+        --arg boot_err "$failover_boot_err" \
+        '{success: true, persist: $persist, failover_enabled: $fo_enabled, failover_threshold: $fo_threshold, watcher_spawned: $ws}
+         + (if $boot_err == "" then {} else {failover_boot_enabled:false,failover_boot_error:$boot_err} end)'
 else
     jq -n \
         --argjson persist "$PERSIST" \
         --argjson fo_enabled "$FO_ENABLED" \
         --argjson fo_threshold "$FO_THRESHOLD" \
         --argjson ws "$watcher_spawned" \
-        '{success: true, persist_command_failed: true, persist: $persist, failover_enabled: $fo_enabled, failover_threshold: $fo_threshold, watcher_spawned: $ws}'
+        --arg boot_err "$failover_boot_err" \
+        '{success: true, persist_command_failed: true, persist: $persist, failover_enabled: $fo_enabled, failover_threshold: $fo_threshold, watcher_spawned: $ws}
+         + (if $boot_err == "" then {} else {failover_boot_enabled:false,failover_boot_error:$boot_err} end)'
 fi

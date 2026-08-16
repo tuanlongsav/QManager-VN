@@ -228,10 +228,26 @@ function WatchdogSettingsForm({
         max_reboots_per_hour: parseInt(maxRebootsPerHour, 10),
       };
 
-      const success = await saveSettings(payload);
-      if (success) {
+      const result = await saveSettings(payload);
+      if (result) {
         markSaved();
         toast.success("Watchdog settings saved");
+        // Saved is not the same as enabled at boot. The config write
+        // effectively always succeeds; flipping the systemd boot symlink goes
+        // through a root helper and can fail on its own, leaving a watchdog
+        // the user just switched on that never starts after a reboot.
+        //
+        // Absent means UNKNOWN, not false — a device on an older build never
+        // sends the field, and warning on every save on every such device is
+        // how a warning stops being read. Hence the strict `=== false`.
+        if (result.boot_enabled === false) {
+          toast.warning(
+            result.boot_enable_error ||
+              (isEnabled
+                ? "Settings saved, but the watchdog could not be enabled at boot — it will not start after a reboot."
+                : "Settings saved, but the watchdog could not be disabled at boot — it may start again after a reboot."),
+          );
+        }
       } else {
         toast.error(error || "Failed to save watchdog settings");
       }

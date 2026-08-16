@@ -101,6 +101,22 @@ export interface TowerLockResponse {
   failover_armed?: boolean;
   error?: string;
   detail?: string;
+  /**
+   * Whether the signal-failover watcher is actually enabled at boot — which is
+   * a different question from whether the lock was applied. The lock goes to
+   * the modem and succeeds on its own; writing the watcher's boot symlink goes
+   * through a root helper and can fail on a device that has not yet taken the
+   * update carrying it.
+   *
+   * Absent means UNKNOWN, not false: a device predating the field never sends
+   * it, and treating that as "not enabled at boot" would warn on every lock on
+   * every such device, which is how a warning stops being read. The backend
+   * emits it only when the symlink disagreed with what was asked, so when it is
+   * present it is always `false`.
+   */
+  failover_boot_enabled?: boolean;
+  /** Present only alongside `failover_boot_enabled`. Composed by the server. */
+  failover_boot_error?: string;
 }
 
 /** Response from POST /cgi-bin/quecmanager/tower/settings.sh */
@@ -114,6 +130,22 @@ export interface TowerSettingsResponse {
   watcher_spawned?: boolean;
   error?: string;
   detail?: string;
+  /**
+   * Whether the signal-failover watcher is actually enabled at boot — which is
+   * a different question from whether the settings were saved. The config write
+   * effectively always succeeds, and `watcher_spawned` only says the daemon is
+   * up *right now*; writing the boot symlink goes through a root helper and can
+   * fail on a device that has not yet taken the update carrying it.
+   *
+   * Absent means UNKNOWN, not false: a device predating the field never sends
+   * it, and treating that as "not enabled at boot" would warn on every save on
+   * every such device, which is how a warning stops being read. The backend
+   * emits it only when the symlink disagreed with what was asked, so when it is
+   * present it is always `false`.
+   */
+  failover_boot_enabled?: boolean;
+  /** Present only alongside `failover_boot_enabled`. Composed by the server. */
+  failover_boot_error?: string;
 }
 
 /** Response from POST /cgi-bin/quecmanager/tower/schedule.sh */

@@ -18,6 +18,7 @@ import { useCellScanner } from "@/hooks/use-cell-scanner";
 import { toast } from "sonner";
 import { downloadCSV } from "@/lib/download-csv";
 import { ScanningView } from "./scanning-view";
+import { warnIfFailoverBootFailed } from "@/components/cellular/tower-locking/failover-boot-warning";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -104,6 +105,14 @@ const FullScannerComponent = () => {
         toast.success("Cell Locked", {
           description: `Locked to ${lockTarget.networkType} PCI ${lockTarget.pci} on EARFCN ${lockTarget.earfcn}`,
         });
+        // Same endpoint as the Tower Locking card, so the same warning applies:
+        // the lock can succeed while the failover watcher's boot symlink was
+        // never written. This screen POSTs directly rather than going through
+        // useTowerLocking, so it has to ask for itself.
+        warnIfFailoverBootFailed(
+          data,
+          "Cell locked, but signal failover could not be set to start at boot — it will not protect this lock after a reboot.",
+        );
       } else {
         toast.error("Lock Failed", {
           description: data.detail || data.error || "Unknown error",

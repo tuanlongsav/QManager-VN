@@ -50,12 +50,14 @@ www-data ALL=(root) NOPASSWD: /bin/systemctl stop qmanager-tower-failover
 # here would parse fine under visudo and then never match at runtime.
 #
 # The trade is that a future qmanager-* unit the UI can enable needs a line
-# added here. Prefer that to the wildcard, but know what a missing grant costs:
-# svc_enable verifies the symlink afterwards, yet only watchdog.sh reads that
-# result (surfacing boot_enabled=false). The tower call sites discard it, so
-# there a denied grant would fail silently and only show after a reboot. That
-# asymmetry is why scripts/test/run-all.sh asserts every grant in this file by
-# exact string rather than trusting review.
+# added here. Prefer that to the wildcard: a missing grant is now visible.
+# svc_enable/svc_disable verify the symlink afterwards, and every caller reads
+# that result — watchdog.sh returns boot_enabled, the tower endpoints return
+# failover_boot_enabled, and both reach a toast. (This paragraph used to say
+# the tower call sites discarded it; they did, until the wiring landed. See
+# scripts/test/failover-boot-contract.sh, which now holds that contract.)
+# scripts/test/run-all.sh separately asserts every grant in this file by exact
+# string rather than trusting review.
 www-data ALL=(root) NOPASSWD: /bin/ln -sf /lib/systemd/system/qmanager-watchcat.service /lib/systemd/system/multi-user.target.wants/qmanager-watchcat.service
 www-data ALL=(root) NOPASSWD: /bin/ln -sf /lib/systemd/system/qmanager-tower-failover.service /lib/systemd/system/multi-user.target.wants/qmanager-tower-failover.service
 www-data ALL=(root) NOPASSWD: /bin/rm -f /lib/systemd/system/multi-user.target.wants/qmanager-watchcat.service

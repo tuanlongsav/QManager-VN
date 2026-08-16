@@ -50,8 +50,10 @@ import {
 import type {
   TowerLockConfig,
   TowerModemState,
+  TowerLockResponse,
   LteLockCell,
 } from "@/types/tower-locking";
+import { warnIfFailoverBootFailed } from "./failover-boot-warning";
 import type { ModemStatus } from "@/types/modem-status";
 import {
   lteCarriersFromQcainfo,
@@ -68,8 +70,8 @@ interface LTELockingProps {
   isLoading: boolean;
   isLocking: boolean;
   isWatcherRunning: boolean;
-  onLock: (cells: LteLockCell[]) => Promise<boolean>;
-  onUnlock: () => Promise<boolean>;
+  onLock: (cells: LteLockCell[]) => Promise<TowerLockResponse | false>;
+  onUnlock: () => Promise<TowerLockResponse | false>;
 }
 
 const STORAGE_KEY_LTE_SIMPLE_MODE = "qmanager_tower_lte_simple_mode";
@@ -213,9 +215,17 @@ const LTELockingComponent = ({
 
   const confirmLock = async () => {
     setShowLockDialog(false);
-    const success = await onLock(pendingCells);
-    if (success) {
+    const result = await onLock(pendingCells);
+    if (result) {
       toast.success("LTE tower lock applied");
+      // The lock itself worked, so the success toast stands. Arming the
+      // failover watcher for the NEXT boot is a separate promise made through
+      // a root helper, and it can fail on its own — say so instead of leaving
+      // the user with only the green toast.
+      warnIfFailoverBootFailed(
+        result,
+        "Tower locked, but signal failover was not enabled at boot — it will not resume after a reboot.",
+      );
     } else {
       toast.error("Failed to lock tower — check modem connection");
     }
@@ -223,9 +233,13 @@ const LTELockingComponent = ({
 
   const confirmUnlock = async () => {
     setShowUnlockDialog(false);
-    const success = await onUnlock();
-    if (success) {
+    const result = await onUnlock();
+    if (result) {
       toast.success("LTE tower lock cleared");
+      warnIfFailoverBootFailed(
+        result,
+        "Tower lock cleared, but signal failover was not disabled at boot — it may start again after a reboot.",
+      );
     } else {
       toast.error("Failed to remove tower lock");
     }

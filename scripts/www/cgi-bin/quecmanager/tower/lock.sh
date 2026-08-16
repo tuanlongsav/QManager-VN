@@ -138,11 +138,22 @@ if [ "$LOCK_TYPE" = "lte" ]; then
         # Tower Settings — locking does not implicitly enable it.
         tower_config_update_lte "true" "$c1_earfcn" "$c1_pci" "$c2_earfcn" "$c2_pci" "$c3_earfcn" "$c3_pci"
 
-        # Spawn failover watcher (no-op if failover.enabled is false)
-        failover_armed=$(tower_spawn_failover_watcher)
+        # Spawn failover watcher (no-op if failover.enabled is false).
+        # Called directly rather than through $(...): command substitution runs
+        # it in a subshell and the globals below would be discarded with it.
+        tower_spawn_failover_watcher >/dev/null
+        failover_armed="$TOWER_FAILOVER_WATCHER_ALIVE"
+        # failover_armed answers "is the watcher running right now"; this
+        # answers "will it still be there after a reboot". Two questions, and
+        # the second used to have no answer at all.
+        failover_boot_err=""
+        [ "$TOWER_FAILOVER_BOOT_ENABLED" = "false" ] \
+            && failover_boot_err=$(tower_failover_boot_error enable)
 
         jq -n --argjson nc "$num_cells" --argjson fa "$failover_armed" \
-            '{"success":true,"type":"lte","action":"lock","num_cells":$nc,"failover_armed":$fa}'
+            --arg boot_err "$failover_boot_err" \
+            '{"success":true,"type":"lte","action":"lock","num_cells":$nc,"failover_armed":$fa}
+             + (if $boot_err == "" then {} else {failover_boot_enabled:false,failover_boot_error:$boot_err} end)'
 
     elif [ "$ACTION" = "unlock" ]; then
         # Kill failover watcher BEFORE sending unlock AT command.
@@ -179,18 +190,29 @@ if [ "$LOCK_TYPE" = "lte" ]; then
 
         # Check if other lock remains active
         nr_active=$(tower_config_get ".nr_sa.enabled")
+        # The two sub-branches head in opposite directions — one re-enables at
+        # boot, the other removes the boot symlink — so the error, if any, is
+        # worded from whichever ran. Only one can run per request.
+        failover_boot_err=""
         if [ "$nr_active" = "true" ] && [ "$fo_was_enabled" = "true" ]; then
             # NR lock still active with failover — respawn watcher for it
             tower_spawn_failover_watcher >/dev/null
+            [ "$TOWER_FAILOVER_BOOT_ENABLED" = "false" ] \
+                && failover_boot_err=$(tower_failover_boot_error enable)
             qlog_info "NR lock still active — failover watcher respawned"
         else
             # No other lock — disable failover fully
             tower_config_update '.failover.enabled = false'
-            svc_disable qmanager_tower_failover
+            if ! svc_disable qmanager_tower_failover; then
+                failover_boot_err=$(tower_failover_boot_error disable)
+                qlog_warn "Failover boot-disable failed — symlink still present for qmanager-tower-failover"
+            fi
             qlog_info "No active locks — failover stopped and disabled"
         fi
 
-        jq -n '{"success":true,"type":"lte","action":"unlock"}'
+        jq -n --arg boot_err "$failover_boot_err" \
+            '{"success":true,"type":"lte","action":"unlock"}
+             + (if $boot_err == "" then {} else {failover_boot_enabled:false,failover_boot_error:$boot_err} end)'
     else
         cgi_error "invalid_action" "action must be lock or unlock"
         exit 0
@@ -250,11 +272,19 @@ elif [ "$LOCK_TYPE" = "nr_sa" ]; then
         # Tower Settings — locking does not implicitly enable it.
         tower_config_update_nr "true" "$nr_pci" "$nr_arfcn" "$nr_scs" "$nr_band"
 
-        # Spawn failover watcher (no-op if failover.enabled is false)
-        failover_armed=$(tower_spawn_failover_watcher)
+        # Spawn failover watcher (no-op if failover.enabled is false).
+        # Direct call, not $(...) — see the LTE lock branch above.
+        tower_spawn_failover_watcher >/dev/null
+        failover_armed="$TOWER_FAILOVER_WATCHER_ALIVE"
+        # See the LTE lock branch: armed-now and enabled-at-boot are separate.
+        failover_boot_err=""
+        [ "$TOWER_FAILOVER_BOOT_ENABLED" = "false" ] \
+            && failover_boot_err=$(tower_failover_boot_error enable)
 
         jq -n --argjson fa "$failover_armed" \
-            '{"success":true,"type":"nr_sa","action":"lock","failover_armed":$fa}'
+            --arg boot_err "$failover_boot_err" \
+            '{"success":true,"type":"nr_sa","action":"lock","failover_armed":$fa}
+             + (if $boot_err == "" then {} else {failover_boot_enabled:false,failover_boot_error:$boot_err} end)'
 
     elif [ "$ACTION" = "unlock" ]; then
         # Kill failover watcher BEFORE sending unlock AT command.
@@ -291,18 +321,27 @@ elif [ "$LOCK_TYPE" = "nr_sa" ]; then
 
         # Check if other lock remains active
         lte_active=$(tower_config_get ".lte.enabled")
+        # See the LTE unlock branch — same two directions, same single response.
+        failover_boot_err=""
         if [ "$lte_active" = "true" ] && [ "$fo_was_enabled" = "true" ]; then
             # LTE lock still active with failover — respawn watcher for it
             tower_spawn_failover_watcher >/dev/null
+            [ "$TOWER_FAILOVER_BOOT_ENABLED" = "false" ] \
+                && failover_boot_err=$(tower_failover_boot_error enable)
             qlog_info "LTE lock still active — failover watcher respawned"
         else
             # No other lock — disable failover fully
             tower_config_update '.failover.enabled = false'
-            svc_disable qmanager_tower_failover
+            if ! svc_disable qmanager_tower_failover; then
+                failover_boot_err=$(tower_failover_boot_error disable)
+                qlog_warn "Failover boot-disable failed — symlink still present for qmanager-tower-failover"
+            fi
             qlog_info "No active locks — failover stopped and disabled"
         fi
 
-        jq -n '{"success":true,"type":"nr_sa","action":"unlock"}'
+        jq -n --arg boot_err "$failover_boot_err" \
+            '{"success":true,"type":"nr_sa","action":"unlock"}
+             + (if $boot_err == "" then {} else {failover_boot_enabled:false,failover_boot_error:$boot_err} end)'
     else
         cgi_error "invalid_action" "action must be lock or unlock"
         exit 0

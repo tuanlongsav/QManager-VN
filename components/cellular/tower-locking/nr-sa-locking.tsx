@@ -50,8 +50,10 @@ import {
 import type {
   TowerLockConfig,
   TowerModemState,
+  TowerLockResponse,
   NrSaLockCell,
 } from "@/types/tower-locking";
+import { warnIfFailoverBootFailed } from "./failover-boot-warning";
 import type { ModemStatus, NetworkType } from "@/types/modem-status";
 import { SCS_OPTIONS } from "@/types/tower-locking";
 import {
@@ -71,8 +73,8 @@ interface NRSALockingProps {
   isLoading: boolean;
   isLocking: boolean;
   isWatcherRunning: boolean;
-  onLock: (cell: NrSaLockCell) => Promise<boolean>;
-  onUnlock: () => Promise<boolean>;
+  onLock: (cell: NrSaLockCell) => Promise<TowerLockResponse | false>;
+  onUnlock: () => Promise<TowerLockResponse | false>;
 }
 
 const STORAGE_KEY_NR_SIMPLE_MODE = "qmanager_tower_nr_simple_mode";
@@ -236,9 +238,15 @@ const NRSALockingComponent = ({
   const confirmLock = async () => {
     setShowLockDialog(false);
     if (pendingCell) {
-      const success = await onLock(pendingCell);
-      if (success) {
+      const result = await onLock(pendingCell);
+      if (result) {
         toast.success("NR-SA tower lock applied");
+        // Same warning as the LTE path — if only one of the two carried it,
+        // the other would keep reporting an unqualified success.
+        warnIfFailoverBootFailed(
+          result,
+          "Tower locked, but signal failover was not enabled at boot — it will not resume after a reboot.",
+        );
       } else {
         toast.error("Failed to lock tower — check modem connection");
       }
@@ -247,9 +255,13 @@ const NRSALockingComponent = ({
 
   const confirmUnlock = async () => {
     setShowUnlockDialog(false);
-    const success = await onUnlock();
-    if (success) {
+    const result = await onUnlock();
+    if (result) {
       toast.success("NR-SA tower lock cleared");
+      warnIfFailoverBootFailed(
+        result,
+        "Tower lock cleared, but signal failover was not disabled at boot — it may start again after a reboot.",
+      );
     } else {
       toast.error("Failed to remove tower lock");
     }

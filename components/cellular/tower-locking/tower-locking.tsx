@@ -28,12 +28,12 @@ const TowerLockingComponent = () => {
             failoverState={tower.failoverState}
             modemData={modemData}
             isLoading={tower.isLoading}
-            onPersistChange={(persist) => {
+            onPersistChange={async (persist) => {
               if (!tower.config) {
                 toast.error("Settings unavailable — try refreshing the page");
-                return;
+                return false;
               }
-              tower.updateSettings(persist, tower.config.failover);
+              return tower.updateSettings(persist, tower.config.failover);
             }}
             onFailoverChange={async (enabled) => {
               if (!tower.config) {

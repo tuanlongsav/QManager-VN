@@ -59,27 +59,34 @@ export interface UseTowerLockingReturn {
 
   /**
    * Lock LTE to specific cells (1-3 EARFCN+PCI pairs).
-   * @returns success boolean
+   *
+   * Resolves to the response body on success (so callers can read
+   * `failover_boot_enabled`) and to `false` on failure — same shape as
+   * `updateSchedule`, and `false` rather than `null` keeps every existing
+   * `if (ok)` call site behaving exactly as before.
    */
-  lockLte: (cells: LteLockCell[]) => Promise<boolean>;
-  /** Clear LTE tower lock. */
-  unlockLte: () => Promise<boolean>;
+  lockLte: (cells: LteLockCell[]) => Promise<TowerLockResponse | false>;
+  /** Clear LTE tower lock. Resolves to the response body, or `false`. */
+  unlockLte: () => Promise<TowerLockResponse | false>;
   /**
    * Lock NR-SA to a specific cell (PCI + ARFCN + SCS + Band).
-   * @returns success boolean
+   * Resolves to the response body, or `false`.
    */
-  lockNrSa: (cell: NrSaLockCell) => Promise<boolean>;
-  /** Clear NR-SA tower lock. */
-  unlockNrSa: () => Promise<boolean>;
+  lockNrSa: (cell: NrSaLockCell) => Promise<TowerLockResponse | false>;
+  /** Clear NR-SA tower lock. Resolves to the response body, or `false`. */
+  unlockNrSa: () => Promise<TowerLockResponse | false>;
 
   /**
    * Update persist and failover settings.
    * Persist changes are sent to the modem immediately via AT command.
+   *
+   * Resolves to the response body on success (so callers can read
+   * `failover_boot_enabled`) and to `false` on failure.
    */
   updateSettings: (
     persist: boolean,
     failover: { enabled: boolean; threshold: number }
-  ) => Promise<boolean>;
+  ) => Promise<TowerSettingsResponse | false>;
 
   /** Update schedule configuration and manage cron entries. */
   /**
@@ -252,7 +259,7 @@ export function useTowerLocking(): UseTowerLockingReturn {
     async (
       body: Record<string, unknown>,
       setLocking: (v: boolean) => void
-    ): Promise<boolean> => {
+    ): Promise<TowerLockResponse | false> => {
       // Anti-spam: block new LOCK operations while failover watcher is running.
       // Unlock operations are allowed through — the backend will stop the
       // watcher before sending the AT unlock command.
@@ -313,7 +320,11 @@ export function useTowerLocking(): UseTowerLockingReturn {
           startFailoverPolling();
         }
 
-        return true;
+        // Hand the body back rather than a bare `true`. failover_boot_enabled
+        // only exists here, and dropping it is how a lock whose failover
+        // watcher never got its boot symlink ends up under a green toast —
+        // the same shape as updateSchedule, fixed the same way.
+        return data;
       } catch (err) {
         if (!mountedRef.current) return false;
         setError(
@@ -335,7 +346,7 @@ export function useTowerLocking(): UseTowerLockingReturn {
   // LTE Lock/Unlock
   // ---------------------------------------------------------------------------
   const lockLte = useCallback(
-    async (cells: LteLockCell[]): Promise<boolean> => {
+    async (cells: LteLockCell[]): Promise<TowerLockResponse | false> => {
       if (cells.length === 0) {
         setError("At least one EARFCN + PCI pair is required");
         return false;
@@ -348,7 +359,9 @@ export function useTowerLocking(): UseTowerLockingReturn {
     [sendLockRequest]
   );
 
-  const unlockLte = useCallback(async (): Promise<boolean> => {
+  const unlockLte = useCallback(async (): Promise<
+    TowerLockResponse | false
+  > => {
     return sendLockRequest(
       { type: "lte", action: "unlock" },
       setIsLteLocking
@@ -359,7 +372,7 @@ export function useTowerLocking(): UseTowerLockingReturn {
   // NR-SA Lock/Unlock
   // ---------------------------------------------------------------------------
   const lockNrSa = useCallback(
-    async (cell: NrSaLockCell): Promise<boolean> => {
+    async (cell: NrSaLockCell): Promise<TowerLockResponse | false> => {
       return sendLockRequest(
         {
           type: "nr_sa",
@@ -375,7 +388,9 @@ export function useTowerLocking(): UseTowerLockingReturn {
     [sendLockRequest]
   );
 
-  const unlockNrSa = useCallback(async (): Promise<boolean> => {
+  const unlockNrSa = useCallback(async (): Promise<
+    TowerLockResponse | false
+  > => {
     return sendLockRequest(
       { type: "nr_sa", action: "unlock" },
       setIsNrLocking
@@ -389,7 +404,7 @@ export function useTowerLocking(): UseTowerLockingReturn {
     async (
       persist: boolean,
       failover: { enabled: boolean; threshold: number }
-    ): Promise<boolean> => {
+    ): Promise<TowerSettingsResponse | false> => {
       setError(null);
 
       const isTogglingFailover = failover.enabled !== config?.failover?.enabled;
@@ -469,7 +484,11 @@ export function useTowerLocking(): UseTowerLockingReturn {
           await fetchStatus();
         }
 
-        return true;
+        // Hand the body back rather than a bare `true`. failover_boot_enabled
+        // only exists here, and `watcher_spawned` does not answer the same
+        // question — it says the daemon is up now, not that it survives a
+        // reboot.
+        return data;
       } catch (err) {
         if (!mountedRef.current) return false;
         setError(

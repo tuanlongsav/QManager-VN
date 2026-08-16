@@ -39,20 +39,36 @@ import { Skeleton } from "@/components/ui/skeleton";
 import type {
   TowerLockConfig,
   TowerFailoverState,
+  TowerSettingsResponse,
 } from "@/types/tower-locking";
 import type { ModemStatus } from "@/types/modem-status";
 import { rsrpToQualityPercent, qualityLevel } from "@/types/tower-locking";
+import { warnIfFailoverBootFailed } from "./failover-boot-warning";
 
+// All three controls below POST to the same settings endpoint, and any of them
+// can spawn the failover watcher — a threshold-only save on a device with an
+// active lock and failover already enabled reaches svc_enable just as the
+// toggle does. So all three resolve to the response body, not a boolean, and
+// all three check it.
 interface TowerLockingSettingsProps {
   config: TowerLockConfig | null;
   failoverState: TowerFailoverState | null;
   modemData: ModemStatus | null;
   isLoading: boolean;
-  onPersistChange: (persist: boolean) => void;
-  onFailoverChange: (enabled: boolean) => Promise<boolean>;
+  onPersistChange: (persist: boolean) => Promise<TowerSettingsResponse | false>;
+  onFailoverChange: (
+    enabled: boolean,
+  ) => Promise<TowerSettingsResponse | false>;
   isFailoverSaving: boolean;
-  onThresholdChange: (threshold: number) => Promise<boolean>;
+  onThresholdChange: (
+    threshold: number,
+  ) => Promise<TowerSettingsResponse | false>;
 }
+
+const FAILOVER_BOOT_ENABLE_FALLBACK =
+  "Settings saved, but signal failover was not enabled at boot — it will not resume after a reboot.";
+const FAILOVER_BOOT_DISABLE_FALLBACK =
+  "Settings saved, but signal failover was not disabled at boot — it may start again after a reboot.";
 
 const TowerLockingSettingsComponent = ({
   config,
@@ -93,11 +109,14 @@ const TowerLockingSettingsComponent = ({
     const val = parseInt(thresholdInput, 10);
     if (isNaN(val) || val < 0 || val > 100) return;
     setIsSavingThreshold(true);
-    const ok = await onThresholdChange(val);
+    const result = await onThresholdChange(val);
     setIsSavingThreshold(false);
-    if (ok) {
+    if (result) {
       markThresholdSaved();
       toast.success("Failover threshold updated");
+      // A threshold-only save still spawns the watcher when failover is on and
+      // a lock is active, so this path can fail to write the boot symlink too.
+      warnIfFailoverBootFailed(result, FAILOVER_BOOT_ENABLE_FALLBACK);
     }
   }, [thresholdInput, onThresholdChange, markThresholdSaved]);
 
@@ -452,7 +471,19 @@ const TowerLockingSettingsComponent = ({
                 id="tower-persist"
                 checked={config?.persist ?? false}
                 disabled={!config}
-                onCheckedChange={onPersistChange}
+                onCheckedChange={async (checked) => {
+                  const result = await onPersistChange(checked);
+                  // No success toast here by design — persist has never had
+                  // one. The warning is still wired up because this control
+                  // POSTs the same settings payload as the other two, so it
+                  // can come back reporting the same boot-symlink failure.
+                  if (result) {
+                    warnIfFailoverBootFailed(
+                      result,
+                      FAILOVER_BOOT_ENABLE_FALLBACK,
+                    );
+                  }
+                }}
               />
               <Label htmlFor="tower-persist">
                 {config?.persist ? "Enabled" : "Disabled"}
@@ -487,13 +518,20 @@ const TowerLockingSettingsComponent = ({
                 checked={config?.failover?.enabled ?? false}
                 disabled={!config || !hasActiveLock || isFailoverSaving}
                 onCheckedChange={async (checked) => {
-                  const ok = await onFailoverChange(checked);
-                  if (ok) {
+                  const result = await onFailoverChange(checked);
+                  if (result) {
                     if (checked) {
                       toast.success("Signal Failover enabled");
                     } else {
                       toast.warning("Signal Failover disabled");
                     }
+                    // Enabled now is not the same as enabled after a reboot.
+                    warnIfFailoverBootFailed(
+                      result,
+                      checked
+                        ? FAILOVER_BOOT_ENABLE_FALLBACK
+                        : FAILOVER_BOOT_DISABLE_FALLBACK,
+                    );
                   } else {
                     toast.error(checked ? "Failed to enable Signal Failover" : "Failed to disable Signal Failover");
                   }

@@ -30,6 +30,7 @@ import NeighbourScanResultView, {
   type NeighbourCellResult,
 } from "./neighbour-scan-result";
 import { useNeighbourScanner } from "@/hooks/use-neighbour-scanner";
+import { warnIfFailoverBootFailed } from "@/components/cellular/tower-locking/failover-boot-warning";
 
 // --- CSV row builder for neighbour scan results ------------------------------
 function buildCsvRows(results: NeighbourCellResult[]): string[] {
@@ -89,6 +90,12 @@ const NeighbourCellScanner = () => {
         toast.success("Cell Locked", {
           description: `Locked to LTE PCI ${lockTarget.pci} on EARFCN ${lockTarget.frequency}`,
         });
+        // See scanner.tsx — this screen POSTs to tower/lock.sh directly, so the
+        // boot-persistence warning has to be asked for here too.
+        warnIfFailoverBootFailed(
+          data,
+          "Cell locked, but signal failover could not be set to start at boot — it will not protect this lock after a reboot.",
+        );
       } else {
         toast.error("Lock Failed", {
           description: data.detail || data.error || "Unknown error",
