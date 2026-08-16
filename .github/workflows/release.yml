@@ -61,6 +61,15 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      # The gate `bun run package` already runs locally, which this workflow
+      # was skipping entirely: it called `next build` and `build.sh` directly,
+      # so a release cut by pushing a tag shipped without bash -n, i18n parity,
+      # the conflict-copy scan, or the sudoers grammar check. A tag push is the
+      # one path where nobody ran `bun run package` by hand first, so it is
+      # exactly the path that needed the gate most.
+      - name: Pre-build gate (syntax, i18n, conflict copies, sudoers grammar)
+        run: bash scripts/test/run-all.sh
+
       - name: Build Next.js static export
         run: bun --bun next build
 
