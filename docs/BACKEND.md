@@ -98,9 +98,9 @@ val=$(jq -r '(.field) | if . == null then "false" else tostring end' file.json)
 
 **CGI privilege model.** lighttpd runs CGI as `www-data`. All privileged operations (service control, iptables, reboot) require `sudo -n` with full absolute paths. The `platform.sh` library provides sudo-wrapped helpers (`svc_*`, `run_iptables`, `run_reboot`). The sudoers file whitelists exactly these paths.
 
-**Sudoers grants are exact, and the file is validated before it lands.** Service-control grants name their unit and verb literally (`/bin/systemctl restart qmanager-watchcat`), not `systemctl restart *` — a `*` in an argument spec matches any run of characters, spaces included, which is a grant over every unit on the device. Equally important, sudo refuses *every* request when any file it reads fails to parse, so a single malformed drop-in disables every rule in `sudoers.d` at once. Three gates run `visudo -cf` on the source before it can reach a device. See [§7.1](#71-wildcards-in-argument-specs) and [§7.2](#72-one-bad-drop-in-disables-every-rule).
+**Sudoers grants are exact — the file contains no `*` at all — and it is validated before it lands.** Every grant names its arguments literally: `/bin/systemctl restart qmanager-watchcat`, and the full source *and* destination path on each boot-persistence `ln`. The reason is stronger than "wildcards are sloppy": sudo matches the command's arguments as **one space-joined string**, so a `*` matches across word boundaries and not merely inside the argument it was written in. `/bin/rm -f …/qmanager*.service` therefore authorised `rm` over an arbitrary list of files as root, which is filesystem-level compromise rather than the service-control scope it appeared to describe. Equally important, sudo refuses *every* request when any file it reads fails to parse, so a single malformed drop-in disables every rule in `sudoers.d` at once. Three gates run `visudo -cf` on the source before it can reach a device, and `scripts/test/run-all.sh` §6 additionally rejects any `*` and asserts all eight service-control and boot-persistence grants by exact string. See [§7.1](#71-wildcards-in-argument-specs) and [§7.2](#72-one-bad-drop-in-disables-every-rule).
 
-**`systemctl enable` does not work on RM520N-GL.** Unit files live on a read-only rootfs partition where `systemctl enable` cannot write symlinks. Boot persistence uses direct symlinks in `/lib/systemd/system/multi-user.target.wants/`. Use `svc_enable`/`svc_disable` from `platform.sh` which write the symlinks directly via `sudo /bin/ln -sf` / `sudo /bin/rm -f`.
+**`systemctl enable` does not work on RM520N-GL.** Unit files live on a read-only rootfs partition where `systemctl enable` cannot write symlinks. Boot persistence uses direct symlinks in `/lib/systemd/system/multi-user.target.wants/`. Use `svc_enable`/`svc_disable` from `platform.sh` which write the symlinks directly via `sudo /bin/ln -sf` / `sudo /bin/rm -f`. From `www-data` those two helpers work on **`qmanager-watchcat` and `qmanager-tower-failover` only** — the grants name both units in full — so a new UI-toggleable unit needs its own pair of grants and its own entry in the `run-all.sh` §6 assertion list.
 
 ---
 
@@ -316,8 +316,8 @@ Service control abstraction and sudo wrappers for CGI context. Detects whether c
 | `svc_start <name>` | `systemctl start <unit>` |
 | `svc_stop <name>` | `systemctl stop <unit>` |
 | `svc_restart <name>` | `systemctl restart <unit>` |
-| `svc_enable <name>` | Create symlink in `multi-user.target.wants/` |
-| `svc_disable <name>` | Remove symlink from `multi-user.target.wants/` |
+| `svc_enable <name>` | Create symlink in `multi-user.target.wants/`, then **return whether it exists** (`[ -h … ]`) |
+| `svc_disable <name>` | Remove symlink from `multi-user.target.wants/`, then **return whether it is gone** |
 | `svc_is_enabled <name>` | Test whether boot symlink exists |
 | `svc_is_running <name>` | Test whether unit is currently active -- **no sudo**, see below |
 | `run_iptables [args...]` | `iptables` with sudo prefix |
@@ -329,7 +329,18 @@ Service control abstraction and sudo wrappers for CGI context. Detects whether c
 
 **`svc_is_running` deliberately omits `$_SUDO`.** `systemctl is-active` is a read-only status query that any unprivileged user may make, so the sudo prefix bought nothing — and the sudoers grant that used to cover it (`/bin/systemctl is-active *`) has been removed, because the function had no caller anywhere in the tree. Putting `$_SUDO` back would rebuild a trap this abstraction has fallen into before: sudo refuses the unmatched command, the function's `2>&1` redirect swallows the reason, and a *running* service is silently reported as stopped. The rest of the codebase already queries `is-active` bare — see `qmanager_health_check`'s `_svc_check` and `schedule_timer.sh`'s `_qm_timer_state`. If you add the first real caller, do not add a sudoers grant for it.
 
-> ⚠️ WARNING: `svc_start`, `svc_stop`, and `svc_restart` are now backed by **exact-argument** sudoers grants covering four unit/verb pairs only (§7). Calling one of them from `www-data` context on any *other* unit fails silently — `platform.sh` discards sudo's stderr. If a new CGI needs to control a new unit, add the specific grant it needs; never widen one back into a wildcard.
+**`svc_enable`/`svc_disable` check the post-condition, not the write.** Both used to return the exit status of a command whose stderr was discarded, and nothing looked at it. On a read-only rootfs, or on a device whose sudoers file predates the grant, enabling a service therefore did nothing and said nothing — the user found out at the next boot. They now `stat` the symlink afterwards instead, which is the thing systemd actually reads. `svc_enable` uses `-h`, not `-e`: `-e` follows the link and would report `false` for a boot symlink whose target unit file is missing, which is a different (and less useful) question.
+
+> ⚠️ WARNING: from `www-data` context, these helpers only work on the units named in the sudoers file (§7) — **exact-argument** grants, no wildcards:
+>
+> | Helper | Units reachable as `www-data` |
+> |--------|------------------------------|
+> | `svc_start` | `qmanager-tower-failover` |
+> | `svc_stop` | `qmanager-watchcat`, `qmanager-tower-failover` |
+> | `svc_restart` | `qmanager-watchcat` |
+> | `svc_enable` / `svc_disable` | `qmanager-watchcat`, `qmanager-tower-failover` |
+>
+> Any other unit fails silently — `platform.sh` discards sudo's stderr. Called from a root daemon, sudo is skipped entirely (`_SUDO=""`) and none of this applies. If a new CGI needs to control a new unit, add the specific grants it needs and the matching entries in `run-all.sh` §6; never widen one back into a wildcard ([§7.1](#71-wildcards-in-argument-specs)).
 
 ### 4.9 `profile_mgr.sh`
 
@@ -851,9 +862,39 @@ www-data ALL=(root) NOPASSWD: /bin/systemctl stop qmanager-watchcat
 www-data ALL=(root) NOPASSWD: /bin/systemctl start qmanager-tower-failover
 www-data ALL=(root) NOPASSWD: /bin/systemctl stop qmanager-tower-failover
 
-# Boot persistence (symlink-based -- systemctl enable doesn't work on RM520N-GL)
-www-data ALL=(root) NOPASSWD: /bin/ln -sf /lib/systemd/system/qmanager*.service /lib/systemd/system/multi-user.target.wants/qmanager*.service
-www-data ALL=(root) NOPASSWD: /bin/rm -f /lib/systemd/system/multi-user.target.wants/qmanager*.service
+# Boot persistence (symlink-based -- systemctl enable doesn't work on RM520N-GL,
+# so platform.sh's svc_enable/svc_disable write the wants symlink by hand).
+#
+# These were two wildcard grants ending in `qmanager*.service`, and they were
+# the worst hole in this file -- worse than the systemctl wildcards above, which
+# only reached running state. sudo matches command arguments as ONE
+# space-joined string, so `*` matches across word boundaries, not just within
+# an argument (sudoers(5), "Wildcards in command arguments"). That makes this
+# permitted by the old rule:
+#
+#     sudo /bin/rm -f /lib/.../wants/qmanagerX /etc/shadow /evil.service
+#
+# `*` absorbs "X /etc/shadow /evil", the string still ends in `.service`, the
+# pattern matches -- and rm deletes every operand. Arbitrary file removal as
+# root, needing no path traversal, no pre-existing directory, and no injection
+# bug anywhere else: any code running as www-data can invoke it directly, which
+# is exactly the compromise a NOPASSWD grant is supposed to contain.
+#
+# Only two units are ever enabled or disabled from a www-data context, both as
+# literal names (watchdog.sh:360,366 and tower_lock_mgr.sh:416 via the tower
+# CGIs), so naming all four commands in full costs nothing. Spacing is
+# load-bearing: sudo compares the joined argument string, so a double space
+# here would parse fine under visudo and then never match at runtime.
+#
+# The trade is that a future qmanager-* unit the UI can enable needs a line
+# added here. Prefer that to the wildcard, but know what a missing grant costs:
+# svc_enable verifies the symlink afterwards, yet only watchdog.sh reads that
+# result (surfacing boot_enabled=false). The tower call sites discard it, so
+# there a denied grant would fail silently and only show after a reboot (§7.3).
+www-data ALL=(root) NOPASSWD: /bin/ln -sf /lib/systemd/system/qmanager-watchcat.service /lib/systemd/system/multi-user.target.wants/qmanager-watchcat.service
+www-data ALL=(root) NOPASSWD: /bin/ln -sf /lib/systemd/system/qmanager-tower-failover.service /lib/systemd/system/multi-user.target.wants/qmanager-tower-failover.service
+www-data ALL=(root) NOPASSWD: /bin/rm -f /lib/systemd/system/multi-user.target.wants/qmanager-watchcat.service
+www-data ALL=(root) NOPASSWD: /bin/rm -f /lib/systemd/system/multi-user.target.wants/qmanager-tower-failover.service
 
 # Firewall rules (used by TTL, VPN firewall)
 www-data ALL=(root) NOPASSWD: /usr/sbin/iptables, /usr/sbin/iptables-restore, /usr/sbin/ip6tables, /usr/sbin/ip6tables-restore
@@ -913,7 +954,10 @@ www-data ALL=(root) NOPASSWD: /usr/bin/killall -HUP dnsmasq
 | `systemctl stop qmanager-watchcat` | `platform.sh` `svc_stop`; `monitoring/watchdog.sh` |
 | `systemctl start qmanager-tower-failover` | `platform.sh` `svc_start`; `tower_lock_mgr.sh`, sourced by `tower/lock.sh`, `tower/settings.sh`, `tower/schedule.sh`, `frequency/lock.sh` |
 | `systemctl stop qmanager-tower-failover` | `platform.sh` `svc_stop`; `tower_lock_mgr.sh` (same CGI callers) |
-| `ln -sf qmanager*.service` / `rm -f qmanager*.service` | `platform.sh` `svc_enable`/`svc_disable`; `tower/settings.sh`, `monitoring/watchdog.sh` |
+| `ln -sf …/qmanager-watchcat.service` | `platform.sh` `svc_enable`; `monitoring/watchdog.sh:360` |
+| `rm -f …/qmanager-watchcat.service` | `platform.sh` `svc_disable`; `monitoring/watchdog.sh:366` |
+| `ln -sf …/qmanager-tower-failover.service` | `platform.sh` `svc_enable`; `tower_lock_mgr.sh:416` (reached from `tower/lock.sh`, `tower/settings.sh`, `tower/schedule.sh`, `frequency/lock.sh`) |
+| `rm -f …/qmanager-tower-failover.service` | `platform.sh` `svc_disable`; `tower/settings.sh:135`, `tower/lock.sh:189,301` |
 | `iptables*`, `ip6tables*`, `*-restore` | `platform.sh` `run_iptables`/`run_ip6tables`; `network/ttl.sh`, `qmanager_firewall` |
 | `/sbin/reboot` | `cgi_base.sh` `cgi_reboot_response`; `system/reboot.sh`; `qmanager_update` |
 | `qmanager_scheduled_reboot_arm` | `system/settings.sh` (scheduled reboot timer) |
@@ -931,11 +975,52 @@ www-data ALL=(root) NOPASSWD: /usr/bin/killall -HUP dnsmasq
 
 ### 7.1 Wildcards in argument specs
 
-A `*` in a sudoers argument spec is **not** a shell glob. It matches any run of characters, spaces and slashes included, so `/bin/systemctl start *` grants "run systemctl start with literally anything after it" — every unit on the device, as root. A bare command name with no argument spec at all (`/usr/bin/crontab`) is broader still: it matches every invocation with every argument set.
+A `*` in a sudoers argument spec is **not** a shell glob, and it is not scoped to the argument it was written in.
 
-Both shapes shipped in this file at one point and both have since been replaced by exact-argument grants. The rule going forward: **enumerate, don't wildcard.** Every unit and every helper QManager invokes from a `www-data` context is a literal string in the source, never assembled at runtime, so there is nothing a wildcard buys that an explicit list does not.
+> ⚠️ WARNING: sudo joins the command's arguments into **one space-separated string** and matches the pattern against that whole string (`sudoers(5)`, *"Wildcards in command arguments"*). A `*` therefore matches across word boundaries — spaces, slashes, and additional operands included. A pattern that *looks* like it constrains one filename constrains nothing of the sort.
 
-The cost of getting this wrong is asymmetric in a way that is easy to underestimate. A grant that is too *narrow* fails silently — `platform.sh` discards sudo's stderr and `monitoring/watchdog.sh` backgrounds its restart without reading the exit status — so the missing-grant case looks like "the service just didn't restart". A grant that is too *wide* is invisible until someone reaches a CGI they shouldn't have. `scripts/test/run-all.sh` §6 exists to catch both: it rejects wildcard `systemctl` grants outright and asserts each of the four exact grants by name, because an upstream merge is the realistic way the wildcard comes back and nothing else in the tree would notice.
+Three shapes have shipped in this file over its life, in increasing order of reach:
+
+| Shape | Example that shipped | What it actually granted |
+|-------|---------------------|--------------------------|
+| Wildcard inside one argument | `/bin/systemctl start *` | Start, stop or restart **any unit on the device** as root |
+| Wildcard in a path argument | `/bin/rm -f /lib/systemd/system/multi-user.target.wants/qmanager*.service` | **Delete any set of files on the device** as root (see below) |
+| Bare command name, no argument spec | `/usr/bin/crontab` | Every invocation with every argument set — rewrite root's crontab wholesale |
+
+All three have been replaced by exact-argument grants. The rule going forward: **enumerate, don't wildcard.** Every unit and every helper QManager invokes from a `www-data` context is a literal string in the source, never assembled at runtime, so there is nothing a wildcard buys that an explicit list does not.
+
+#### The `rm -f` grant was the worst of the three
+
+The two boot-persistence wildcards were more severe than the `systemctl` ones, and it is worth being precise about why: the `systemctl` wildcards reached **running state** (stop the poller, drop `qmanager-firewall`, start something the administrator had switched off), all of it recoverable with a reboot or a restart. The `rm -f` wildcard reached **the filesystem, as root**.
+
+Because the match runs against the joined argument string, this was permitted by the old rule:
+
+```sh
+sudo /bin/rm -f /lib/systemd/system/multi-user.target.wants/qmanagerX /tmp/victim /x.service
+```
+
+The `*` absorbs `X /tmp/victim /x`. The joined string still ends in `.service`, so the pattern matches, sudo authorises the command — and `rm` deletes **every operand**, not just the one the pattern appeared to describe. That is arbitrary file removal as root. It needs no path traversal, no pre-existing directory, and no injection bug anywhere else in the tree: any code running as `www-data` can invoke `sudo` with those arguments directly, which is precisely the compromise a NOPASSWD grant exists to contain.
+
+This was demonstrated on the live RM520N-GLAA before the patch: a root-owned mode-0600 file in `/tmp` that `www-data` could not remove directly (`rm: cannot remove …: Operation not permitted`) was deleted through the granted `rm`. After the patch the identical command returns `sudo: a password is required` and the file survives; disabling an unrelated unit's boot symlink (`qmanager-firewall`) is refused the same way; and the legitimate enable/disable of `qmanager-watchcat` still works.
+
+#### Spacing is load-bearing
+
+Because sudo compares the *joined* argument string, the exact grants must reproduce the command's spacing byte-for-byte. A double space in a grant parses fine under `visudo` and then silently never matches at runtime — the rule is present, valid, and dead.
+
+The four grants were verified against what `platform.sh` actually executes rather than by reading it: source `platform.sh`, substitute `$_SUDO` with `echo`, call `svc_enable qmanager_watchcat` (and the other three), and compare the printed command line against the grant. Note that `svc_enable`/`svc_disable` take the *procd-style* name with underscores and pass it through `_svc_unit()` (`s/_/-/g`) plus a `.service` suffix, so `svc_enable qmanager_watchcat` becomes `qmanager-watchcat.service` — reading the call site alone does not tell you what string sudo will see.
+
+`scripts/test/run-all.sh` §6 pins this: it matches each grant with `grep -F` on the exact single-spaced string, which asserts the spacing as a side effect. `visudo` cannot do this — it checks grammar, not whether a syntactically perfect rule corresponds to any command that will ever be run.
+
+#### What the gate checks
+
+The cost of getting this wrong is asymmetric in a way that is easy to underestimate. A grant that is too *narrow* fails silently — `platform.sh` discards sudo's stderr, `monitoring/watchdog.sh` backgrounds its restart, and the tower call sites drop `svc_enable`'s return value entirely (§7.3) — so the missing-grant case looks like "the service just didn't restart". A grant that is too *wide* is invisible until someone reaches a CGI they shouldn't have.
+
+`scripts/test/run-all.sh` §6 catches both, and both halves were widened along with this change:
+
+- **No `*` anywhere in any grant** (previously: no wildcard `systemctl` grant). The file now contains no wildcard at all, so the assertion is simply that it stays that way. Matching known-bad shapes would only catch the ones somebody already thought of; a blanket rejection catches the next one too.
+- **All eight service-control and boot-persistence grants present**, by exact string (previously four).
+
+An upstream merge is the realistic way a wildcard comes back, and nothing else in the tree would notice.
 
 ### 7.2 One bad drop-in disables every rule
 
@@ -952,6 +1037,21 @@ This is not hypothetical — an unescaped `:` in the Custom DNS `chown` rule shi
 | `install_rm520n.sh` `install_backend()` | On-device, at install time | `die` — the **existing** sudoers file is left untouched |
 
 The installer stages its candidate to `/tmp/qmanager-sudoers-candidate.$$` (outside `SUDOERS_DIR`, so a leftover can never be read as a rule) and validates *that*, so a rejected file never replaces one that currently works. If `visudo` is not present on the device the installer **warns and continues** rather than dying: a device can carry sudo without visudo, and refusing to install would leave the CGI with no privileges at all — a certain failure in place of a risk. The two upstream gates are the backstop for that path, though a hand-built tarball can still bypass both.
+
+### 7.3 Known gap: a denied boot-persistence grant is silent at the tower call sites
+
+`svc_enable` and `svc_disable` verify their own post-condition rather than trusting sudo — after the `ln`/`rm` they test whether the boot symlink now exists (`[ -h "$_WANTS_DIR/$unit" ]`), which is the thing systemd actually reads at boot. So the information is available to every caller. Only one caller reads it.
+
+| Call site | Reads the return value? | User-visible on failure |
+|-----------|------------------------|------------------------|
+| `monitoring/watchdog.sh:360,366` (`qmanager-watchcat`) | Yes — `\|\| boot_enabled="false"` | `{"success": true, "boot_enabled": false, "boot_enable_error": "…"}` plus a `qlog_warn` |
+| `tower_lock_mgr.sh:416` (`svc_enable qmanager_tower_failover`) | No | None |
+| `tower/settings.sh:135` (`svc_disable`) | No | None |
+| `tower/lock.sh:189` and `:301` (`svc_disable`) | No | None |
+
+For `qmanager-tower-failover`, therefore, a denied or missing grant fails completely silently: `platform.sh` discards sudo's stderr, the return value is dropped, the CGI reports `success: true`, and the discrepancy only surfaces at the next reboot — when the failover watcher the user switched on does not come back (or the one they switched off does).
+
+This is **not fixed**. It is the reason `run-all.sh` §6 asserts every grant by exact string rather than trusting review: for this unit, the test is the only thing that would notice. A future change to the tower handlers should propagate `svc_enable`/`svc_disable`'s status the way `watchdog.sh` already does — `boot_enabled` in the JSON response is the established shape for it.
 
 ---
 
@@ -1490,11 +1590,12 @@ For more detail on the CGI request/response schemas, see `API-REFERENCE.md`.
 
 When a CGI script needs to call a privileged binary:
 1. Add `www-data ALL=(root) NOPASSWD: /full/absolute/path/to/binary <fixed_args>` to `scripts/etc/sudoers.d/qmanager`.
-2. **Spell the arguments out.** Every privileged call in this codebase targets a literal string known at authoring time, so enumerate one grant per call rather than reaching for `*` — see [§7.1](#71-wildcards-in-argument-specs) for why a wildcard argument spec is far wider than it looks. If a genuinely variable argument turns up, write a root helper that validates it (as `qmanager_set_timezone` and the three `*_arm` helpers do) and grant the helper instead.
-3. Do not use `sudo -i` or `sudo -s`; use `sudo -n /full/path` with explicit args.
-4. Run `bash scripts/test/run-all.sh` before committing. Section 6 runs `visudo -cf` on the file and rejects wildcard `systemctl` grants; a grammar error that escapes it disables sudo device-wide ([§7.2](#72-one-bad-drop-in-disables-every-rule)).
-5. If the grant covers a new *unit*, add it to the assertion list in `run-all.sh` §6 too. That list is what stops an upstream merge from quietly reintroducing the wildcard, and it can only assert grants it knows about.
-6. Document the new rule in [§7](#7-sudoers-rules) — both the file listing and the "Used by" table.
+2. **Spell the arguments out — all of them, including destination paths.** Every privileged call in this codebase targets a literal string known at authoring time, so enumerate one grant per call rather than reaching for `*`. See [§7.1](#71-wildcards-in-argument-specs) for why a wildcard argument spec is far wider than it looks: sudo matches the joined argument string, so a `*` spills past the argument it was written in and can absorb whole extra operands. If a genuinely variable argument turns up, write a root helper that validates it (as `qmanager_set_timezone` and the three `*_arm` helpers do) and grant the helper instead.
+3. **Verify the grant against what the code emits, not against what you think it emits.** Source the library, replace `$_SUDO` with `echo`, call the function, and copy the printed command line into the grant. `platform.sh` rewrites its argument (`qmanager_watchcat` → `qmanager-watchcat.service`), so the call site does not show you the string sudo will compare. Single spaces only — a double space passes `visudo` and then never matches.
+4. Do not use `sudo -i` or `sudo -s`; use `sudo -n /full/path` with explicit args.
+5. Run `bash scripts/test/run-all.sh` before committing. Section 6 runs `visudo -cf` on the file and rejects **any `*`** anywhere in a grant; a grammar error that escapes it disables sudo device-wide ([§7.2](#72-one-bad-drop-in-disables-every-rule)).
+6. If the grant covers a new *unit*, add it to the assertion list in `run-all.sh` §6 too (currently eight entries, matched with `grep -F`). That list is what stops an upstream merge from quietly reintroducing a wildcard or dropping a grant, and it can only assert grants it knows about.
+7. Document the new rule in [§7](#7-sudoers-rules) — both the file listing and the "Used by" table.
 
 ### JSON Response Conventions
 
@@ -1540,9 +1641,11 @@ bash scripts/test/run-all.sh
 | 3 | iCloud/Finder conflict-copy detector | Only findings inside `.git/` |
 | 4 | i18n dictionary parity (`en.json` vs `vi.json`) | Yes |
 | 5 | iCloud exclusion drift | No |
-| 6 | sudoers hygiene — `visudo -cf`, no wildcard `systemctl` grants, all four exact grants present | Yes |
+| 6 | sudoers hygiene — `visudo -cf`, **no `*` in any grant**, all **eight** exact grants present | Yes |
 
 Check 6 is comment-blind on purpose: it strips `#` lines before matching, because every rule in the sudoers file is explained in a comment that names the very construct it forbids — a comment-reading grep would trip over the documentation of its own rule. `visudo` absence downgrades that sub-check to a warning on the local host; CI always has it.
+
+The wildcard half of check 6 is a **blanket** rejection of `*`, not a match on known-bad forms. The file legitimately contains no wildcard, so "none at all" is both the simplest assertion and the only one that catches a shape nobody has thought of yet — the `rm -f …/qmanager*.service` grant looked narrow to several readers before anyone worked out what it actually matched ([§7.1](#71-wildcards-in-argument-specs)). The grant half uses `grep -F` against exact single-spaced strings, which pins the *spacing* as well as the content; `visudo` cannot do that, because a rule with a stray double space is perfectly valid sudoers and simply never matches.
 
 **Syntax checking is not enough.** Checks 1 and 6 are both static. Neither would have caught the `set -e` behaviour described in §14 under *"`|| true` outside a command substitution does not disable errexit"* — that one is only visible by running the construct. When a change hinges on shell *semantics* rather than shell *grammar*, execute it under the interpreter that will actually run it (`dash` is a close stand-in for the on-device BusyBox `ash`).
 
@@ -1560,7 +1663,11 @@ Check 6 is comment-blind on purpose: it strips `#` lines before matching, becaus
 
 **Inlining `( sleep N && reboot )` in a CGI script.** Two failure modes, both silent: (1) bare `reboot` runs as www-data and fails with "Failed to talk to init daemon" because systemd's private bus rejects unprivileged callers; (2) even if you wrap it in `run_reboot`, the fixed sleep races the `/reboot/` page — lighttpd is killed mid-serve and the user sees a connection-reset instead of the countdown. Always use `cgi_reboot_response` (see [§4.3.1](#431-reboot-ack-handshake)); it uses the sudo-aware `run_reboot` and waits for the page's ack file before pulling the plug.
 
-**Trying to `systemctl enable` on RM520N-GL.** `systemctl enable` is a no-op on this platform because unit files are on the read-only rootfs where the command cannot write symlinks. Always use `svc_enable` / `svc_disable` from `platform.sh`, which writes the symlinks directly via `sudo /bin/ln -sf` and `sudo /bin/rm -f`.
+**Trying to `systemctl enable` on RM520N-GL.** `systemctl enable` is a no-op on this platform because unit files are on the read-only rootfs where the command cannot write symlinks. Always use `svc_enable` / `svc_disable` from `platform.sh`, which writes the symlinks directly via `sudo /bin/ln -sf` and `sudo /bin/rm -f`. Both are limited to `qmanager-watchcat` and `qmanager-tower-failover` from CGI context — a third unit needs its own grants ([§7](#7-sudoers-rules)).
+
+**Assuming a sudoers `*` stays inside "its" argument.** It does not. sudo joins the arguments into one space-separated string and matches the pattern against the whole thing, so `*` swallows spaces and additional operands. `/bin/rm -f /path/qmanager*.service` reads like "one file under `/path`" and actually permits `rm -f /path/qmanagerX /any/other/file /x.service` — every operand deleted, as root. Enumerate the exact command, including the destination path. See [§7.1](#71-wildcards-in-argument-specs).
+
+**A double space in a sudoers grant.** `visudo` accepts it; sudo never matches it. Because the comparison is against the joined argument string, whitespace inside a grant is significant in a way it is nowhere else in a config file. The symptom is not an error — it is a privileged action that quietly stops working, and on the tower call sites even the CGI response still says `success: true` ([§7.3](#73-known-gap-a-denied-boot-persistence-grant-is-silent-at-the-tower-call-sites)). `scripts/test/run-all.sh` §6 matches grants with `grep -F` specifically to pin this.
 
 **Writing to `/tmp/qmanager_*.json` from CGI without pre-creation.** If a CGI script creates a `/tmp` file that a root daemon will later overwrite, root will be blocked by `fs.protected_regular=1`. Pre-create the file in `qmanager_setup` with `www-data` ownership and mode 666 (or `root:root` mode 666 if root writes it primarily). See `qmanager_setup` for the full list of pre-created files.
 

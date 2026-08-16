@@ -455,9 +455,9 @@ www-data ALL = (root) NOPASSWD: /usr/sbin/iptables, /usr/sbin/ip6tables, \
     /usrdata/simplefirewall/ttl-override, /bin/echo, /bin/cat
 ```
 
-QManager installs its own sudoers file at `/etc/sudoers.d/qmanager` (not `/opt/etc/sudoers.d/`) covering four exact `systemctl` unit/verb pairs, reboot, ln, rm, iptables-restore, the root helpers `qmanager_set_ssh_password`, `qmanager_set_timezone`, `qmanager_set_hostname`, `qmanager_health_check` and `qmanager_ethernet_apply`, the three scheduled-task `*_arm` helpers, the Custom DNS trio (`mv`/`chown`/`killall -HUP dnsmasq`), and — critically for OTA updates — `qmanager_update`. All entries use full absolute paths due to Entware's `secure_path` restriction (see [Web Server: lighttpd](#web-server-lighttpd)).
+QManager installs its own sudoers file at `/etc/sudoers.d/qmanager` (not `/opt/etc/sudoers.d/`) covering four exact `systemctl` unit/verb pairs, four exact boot-persistence commands (`ln -sf` and `rm -f`, one of each per managed unit, source and destination paths written out in full), reboot, iptables/ip6tables and their `-restore` variants, the root helpers `qmanager_set_ssh_password`, `qmanager_set_timezone`, `qmanager_set_hostname`, `qmanager_health_check` and `qmanager_ethernet_apply`, the three scheduled-task `*_arm` helpers, the Custom DNS trio (`mv`/`chown`/`killall -HUP dnsmasq`), and — critically for OTA updates — `qmanager_update`. All entries use full absolute paths due to Entware's `secure_path` restriction (see [Web Server: lighttpd](#web-server-lighttpd)).
 
-Every grant names its arguments explicitly. There are no wildcard argument specs and no bare command names left in the file: both shapes shipped once (`/bin/systemctl start *` and `/usr/bin/crontab`) and both were escalation paths out of the web user's intended scope. The installer runs `visudo -cf` on a staged, CRLF-stripped copy before letting it replace the file already on the device, because one unparseable drop-in disables *every* rule in `sudoers.d` — see [BACKEND.md §7.2](BACKEND.md#72-one-bad-drop-in-disables-every-rule).
+Every grant names its arguments explicitly. **The file contains no `*` at all** and no bare command names: all three shapes shipped once and all three were escalation paths out of the web user's intended scope. The reason a wildcard is worse than it looks is that sudo matches a command's arguments as one space-joined string, so `*` matches across word boundaries rather than staying inside the argument it was written in — `/bin/systemctl start *` reached every unit on the device, and `/bin/rm -f …/qmanager*.service` reached every *file*, because the `*` could absorb additional operands while the joined string still ended in `.service`. `/usr/bin/crontab`, having no argument spec at all, matched every invocation. `scripts/test/run-all.sh` §6 now rejects any `*` in any grant and asserts the eight service-control and boot-persistence grants by exact string. The installer separately runs `visudo -cf` on a staged, CRLF-stripped copy before letting it replace the file already on the device, because one unparseable drop-in disables *every* rule in `sudoers.d` — see [BACKEND.md §7.1](BACKEND.md#71-wildcards-in-argument-specs) and [§7.2](BACKEND.md#72-one-bad-drop-in-disables-every-rule).
 
 The `qmanager_update` rule deserves special mention:
 ```
@@ -769,11 +769,13 @@ ln -sf "$UNIT_DIR/qmanager-ping.service" "$WANTS_DIR/qmanager-ping.service"
 
 **Boot chain:** `multi-user.target` --> individual services (via direct symlinks in `multi-user.target.wants/`).
 
-**Runtime enable/disable:** `platform.sh` provides `svc_enable`/`svc_disable` functions that create/remove these symlinks (with sudo for www-data context). `systemctl enable/disable` is NOT used.
+**Runtime enable/disable:** `platform.sh` provides `svc_enable`/`svc_disable` functions that create/remove these symlinks (with sudo for www-data context). `systemctl enable/disable` is NOT used. From CGI context those two helpers reach `qmanager-watchcat` and `qmanager-tower-failover` only — the sudoers grants name both units, and both the source and the destination path, in full ([BACKEND.md §7](BACKEND.md#7-sudoers-rules)).
 
 > **WARNING:** Do not rely on `systemctl enable` for boot persistence on the RM520N-GL. Always use `svc_enable`/`svc_disable` from `platform.sh` (or direct symlink creation in install scripts). `systemctl start/stop/restart` works fine for runtime control; only enable/disable is broken.
 
 > **NOTE:** Service files are installed to `/lib/systemd/system/` (persistent rootfs), NOT `/etc/systemd/system/` (which is tmpfs and does not survive reboots on this platform). The wants directory is `/lib/systemd/system/multi-user.target.wants/`.
+
+> ⚠️ WARNING: **`/etc/systemd/system/multi-user.target.wants/` also exists on this device** — probed on an RM520N-GLAA, it holds 18 entries belonging to the stock firmware. It is not the directory QManager uses, and a symlink placed there will not survive a reboot. `/lib` is a real directory here, not a symlink to `/etc` or the other way round, so the two are genuinely separate trees. `platform.sh`'s `_WANTS_DIR`, the installer, and the four boot-persistence sudoers grants all target `/lib`; anything that targets `/etc` is either stock firmware or a mistake. (Timers are a third case: `schedule_timer.sh` symlinks into `/lib/systemd/system/timers.target.wants/`, because a `.timer` in `multi-user.target.wants/` is not so much wrong as unreachable.)
 
 ### `/dev/smd11` Permissions — udev Rule
 
@@ -1295,7 +1297,10 @@ The `qcmd` wrapper should accept an optional timeout parameter or use command-sp
 │   └── qmanager/           ← ON rootfs (ubifs), persists despite /etc/ being tmpfs
 ├── lib/
 │   └── systemd/system/     ← ON rootfs — service files and symlinks PERSIST
-│       └── multi-user.target.wants/  ← Boot symlinks (svc_enable/svc_disable)
+│       ├── multi-user.target.wants/  ← Boot symlinks (svc_enable/svc_disable)
+│       │                               NOT /etc/systemd/system/…wants/, which
+│       │                               also exists here but is stock firmware
+│       └── timers.target.wants/      ← Scheduled-task timers (schedule_timer.sh)
 ├── opt/ → /usrdata/opt     ← Entware (bind mount)
 │   ├── bin/                ← Entware binaries (incl. sudo)
 │   ├── sbin/               ← Entware system binaries
@@ -1402,9 +1407,13 @@ www-data ALL=(root) NOPASSWD: /bin/systemctl stop qmanager-watchcat
 www-data ALL=(root) NOPASSWD: /bin/systemctl start qmanager-tower-failover
 www-data ALL=(root) NOPASSWD: /bin/systemctl stop qmanager-tower-failover
 
-# Boot persistence (symlink-based — systemctl enable doesn't work)
-www-data ALL=(root) NOPASSWD: /bin/ln -sf /lib/systemd/system/qmanager*.service ...
-www-data ALL=(root) NOPASSWD: /bin/rm -f /lib/systemd/system/multi-user.target.wants/qmanager*.service
+# Boot persistence (symlink-based — systemctl enable doesn't work).
+# Both units named in full. A '*' here matched across argument boundaries,
+# which made the old rm grant a licence to delete any file as root.
+www-data ALL=(root) NOPASSWD: /bin/ln -sf /lib/systemd/system/qmanager-watchcat.service /lib/systemd/system/multi-user.target.wants/qmanager-watchcat.service
+www-data ALL=(root) NOPASSWD: /bin/ln -sf /lib/systemd/system/qmanager-tower-failover.service /lib/systemd/system/multi-user.target.wants/qmanager-tower-failover.service
+www-data ALL=(root) NOPASSWD: /bin/rm -f /lib/systemd/system/multi-user.target.wants/qmanager-watchcat.service
+www-data ALL=(root) NOPASSWD: /bin/rm -f /lib/systemd/system/multi-user.target.wants/qmanager-tower-failover.service
 
 # Firewall, reboot, SSH password
 www-data ALL=(root) NOPASSWD: /usr/sbin/iptables, /usr/sbin/iptables-restore, /usr/sbin/ip6tables, /usr/sbin/ip6tables-restore
@@ -1435,10 +1444,11 @@ www-data ALL=(root) NOPASSWD: /usr/bin/killall -HUP dnsmasq
 
 QManager's `platform.sh` provides wrapper functions (`svc_start`, `svc_stop`, `run_iptables`, `run_reboot`, etc.) that add `$_SUDO` with the correct full paths automatically. CGI scripts should use these wrappers, never bare commands.
 
-Two exceptions to "wrap it in `$_SUDO`" are worth knowing:
+Three exceptions to "wrap it in `$_SUDO`" are worth knowing:
 
 - **`svc_is_running` runs bare.** `systemctl is-active` is a read-only query that needs no root, and there is no sudoers grant for it. Adding `$_SUDO` back would make sudo refuse the unmatched command, the function's `2>&1` redirect would swallow the reason, and a running service would be reported as stopped.
 - **`svc_start` / `svc_stop` / `svc_restart` only work on four unit/verb pairs.** The grants are exact arguments, not wildcards, because a `*` in a sudoers argument spec matches any run of characters — spaces and slashes included — which made the old `/bin/systemctl start *` a grant over every unit on the device. From a root daemon these helpers bypass sudo entirely and are unaffected; from CGI (`www-data`) they are limited to `qmanager-watchcat` (restart, stop) and `qmanager-tower-failover` (start, stop). See [BACKEND.md §7.1](BACKEND.md#71-wildcards-in-argument-specs).
+- **`svc_enable` / `svc_disable` only work on two units, and verify the result.** Same reason, worse original: sudo matches arguments as one space-joined string, so the old `/bin/rm -f …/qmanager*.service` grant let the `*` absorb extra operands and delete arbitrary files as root. It is now four exact commands naming `qmanager-watchcat` and `qmanager-tower-failover` in full. Both helpers `stat` the boot symlink afterwards and return that, so a denied grant is *detectable* — but only `monitoring/watchdog.sh` reads the return value; the tower call sites drop it (see [BACKEND.md §7.3](BACKEND.md#73-known-gap-a-denied-boot-persistence-grant-is-silent-at-the-tower-call-sites)).
 
 ### CGI AT Command Execution
 

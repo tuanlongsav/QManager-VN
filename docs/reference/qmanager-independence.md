@@ -54,14 +54,18 @@
 ## Service persistence (systemd symlinks)
 
 - **`systemctl enable` does not work** on this platform — it fails silently or errors depending on systemd version.
-- All boot persistence is implemented via **direct symlinks** into `/lib/systemd/system/multi-user.target.wants/`.
+- All boot persistence is implemented via **direct symlinks** into `/lib/systemd/system/multi-user.target.wants/`. Note that `/etc/systemd/system/multi-user.target.wants/` also exists on the device (18 stock-firmware entries on the RM520N-GLAA probed) and is a genuinely different directory — `/lib` is a real directory, not a symlink to it. A boot symlink placed under `/etc` does not survive a reboot. Timers are separate again: `schedule_timer.sh` uses `/lib/systemd/system/timers.target.wants/`.
 - This is managed through `svc_enable` and `svc_disable` helpers in `platform.sh` — use those functions everywhere, never call `systemctl enable/disable` directly.
+- Both helpers **verify the post-condition** rather than trusting the write: after the `ln`/`rm` they test the boot symlink with `[ -h … ]` and return that. Previously they returned the status of a sudo call whose stderr was discarded, so a read-only rootfs or a device with an older sudoers file failed silently and the user found out at the next boot.
+- From `www-data`, both helpers work on **`qmanager-watchcat` and `qmanager-tower-failover` only**. Adding a UI-toggleable unit means adding a matching `ln -sf` and `rm -f` grant (source *and* destination path in full) plus the two entries in the `run-all.sh` §6 assertion list.
 
 ---
 
 ## Sudoers grants & validation
 
-- **Grants are exact-argument, never wildcard.** A `*` in a sudoers argument spec matches any run of characters — spaces and slashes included — so the old `/bin/systemctl start *` (and its `stop`/`restart`/`is-active` siblings) let `www-data` drive *any* unit on the device as root. Service control is now four literal grants:
+- **Grants are exact-argument, never wildcard — the file now contains no `*` at all.** The reason is stronger than tidiness: sudo joins the command's arguments into **one space-separated string** and matches the pattern against that whole string (`sudoers(5)`, *"Wildcards in command arguments"*), so a `*` matches across word boundaries instead of staying inside the argument it was written in.
+
+- **Service control** is four literal grants. The old `/bin/systemctl start *` (and its `stop`/`restart`/`is-active` siblings) let `www-data` drive *any* unit on the device as root:
 
   | Unit | Verbs granted | Consumed by |
   |------|---------------|-------------|
@@ -70,9 +74,22 @@
 
   The verbs are asymmetric on purpose — watchcat is never started on its own, tower-failover is never restarted — because nothing calls those combinations. Every unit QManager drives from a `www-data` context is a literal string in the source, so an explicit list loses nothing.
 
+- **Boot persistence** is four more literal grants, and these were the worse hole of the two. The `systemctl` wildcards reached running state only; `/bin/rm -f /lib/systemd/system/multi-user.target.wants/qmanager*.service` reached **the filesystem**. Because the match is against the joined argument string, `sudo /bin/rm -f …/qmanagerX /tmp/victim /x.service` was permitted — the `*` absorbs `X /tmp/victim /x`, the string still ends in `.service`, and `rm` deletes every operand. Arbitrary file removal as root, needing no path traversal, no pre-existing directory and no injection bug elsewhere, because any code running as `www-data` can call `sudo` with those arguments directly.
+
+  Verified on the live RM520N-GLAA before and after the patch: a root-owned mode-0600 file in `/tmp` that `www-data` could not remove directly was deleted through the granted `rm`; afterwards the identical command returns `sudo: a password is required`, the file survives, disabling `qmanager-firewall`'s boot symlink is refused, and the legitimate enable/disable of `qmanager-watchcat` still works.
+
+  | Command | Unit |
+  |---------|------|
+  | `/bin/ln -sf` (source + destination in full) | `qmanager-watchcat`, `qmanager-tower-failover` |
+  | `/bin/rm -f` (destination in full) | `qmanager-watchcat`, `qmanager-tower-failover` |
+
+- **Spacing is part of the grant.** sudo compares the joined argument string, so a double space in a rule parses fine under `visudo` and then silently never matches. The four boot-persistence grants were checked against what `platform.sh` actually emits — source it, substitute `$_SUDO` with `echo`, call `svc_enable`/`svc_disable` — rather than by reading the code, because `_svc_unit()` rewrites the argument (`qmanager_watchcat` → `qmanager-watchcat.service`) and the call site does not show you the final string.
+
 - **`svc_is_running` has no grant and needs none.** `systemctl is-active` is a read-only query. The old wildcard covered it, but the function had no caller anywhere in the tree, so the grant was dropped rather than narrowed and `platform.sh` now calls it without `$_SUDO`. Leaving the sudo prefix behind would have been worse than useless: sudo refuses the unmatched command, the function's `2>&1` swallows the reason, and a running service reads as stopped.
 
-- **A missing grant fails silently.** `platform.sh` discards sudo's stderr and `monitoring/watchdog.sh` backgrounds its restart without checking the exit status, so a service that quietly never restarts is the symptom. `scripts/test/run-all.sh` §6 asserts all four grants by name for this reason — an upstream merge reintroducing the wildcard (or dropping a grant) is otherwise invisible.
+- **A missing grant fails silently — and for tower-failover, completely silently.** `platform.sh` discards sudo's stderr and `monitoring/watchdog.sh` backgrounds its restart without checking the exit status, so a service that quietly never restarts is the symptom. For boot persistence the helpers *do* return a verified result, but only `watchdog.sh:360,366` reads it (surfacing `boot_enabled: false` in the JSON response). `tower_lock_mgr.sh:416`, `tower/settings.sh:135` and `tower/lock.sh:189,301` discard it, so there a denied grant produces `success: true` and only shows up at the next reboot. **This is an open gap, not a fixed one.**
+
+- **`scripts/test/run-all.sh` §6 is what stands in for the silence.** It rejects any `*` anywhere in the file — a blanket rule, not a match on known-bad shapes — and asserts all **eight** service-control and boot-persistence grants with `grep -F` on exact single-spaced strings, which pins the spacing too. `visudo` cannot catch either failure: a wildcard grant and a double-spaced grant are both perfectly valid sudoers. An upstream merge reintroducing a wildcard, or dropping a grant, is otherwise invisible.
 
 - **One malformed drop-in disables every rule.** sudo refuses *every* request when any file it reads fails to parse, and `sudoers.d` is read in full. `www-data` being the only sudo user here means that is a total outage of the web UI's privileged surface — service control, iptables, reboot, DNS, and `qmanager_update` — leaving the device unable to fetch its own fix. An unescaped `:` in the Custom DNS `chown` rule caused exactly this once; see [custom-dns.md](custom-dns.md).
 

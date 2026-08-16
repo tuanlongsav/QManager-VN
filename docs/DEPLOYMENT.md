@@ -128,7 +128,7 @@ out/
 bash scripts/test/run-all.sh   →   bun --bun next build   →   bash build.sh
 ```
 
-The gate comes **first** by design. `run-all.sh` is six checks (`bash -n` syntax, CRLF, iCloud conflict copies, i18n parity, exclusion drift, sudoers hygiene); the fatal ones abort before anything is built, so a broken script or an unparseable sudoers file cannot reach a tarball. See [BACKEND.md §13 — Testing Locally](BACKEND.md#testing-locally) for the full check table.
+The gate comes **first** by design. `run-all.sh` is six checks (`bash -n` syntax, CRLF, iCloud conflict copies, i18n parity, exclusion drift, sudoers hygiene); the fatal ones abort before anything is built, so a broken script — or an unparseable sudoers file, or one that has regained a wildcard grant — cannot reach a tarball. See [BACKEND.md §13 — Testing Locally](BACKEND.md#testing-locally) for the full check table.
 
 `.github/workflows/release.yml` builds the same artifacts on a `v*` tag push (or `workflow_dispatch`). It calls `next build` and `build.sh` directly rather than going through `bun run package`, so it runs the gate as an explicit step:
 
@@ -622,9 +622,13 @@ www-data ALL=(root) NOPASSWD: /bin/systemctl stop qmanager-watchcat
 www-data ALL=(root) NOPASSWD: /bin/systemctl start qmanager-tower-failover
 www-data ALL=(root) NOPASSWD: /bin/systemctl stop qmanager-tower-failover
 
-# Boot persistence (symlink-based — systemctl enable doesn't work)
-www-data ALL=(root) NOPASSWD: /bin/ln -sf /lib/systemd/system/qmanager*.service ...
-www-data ALL=(root) NOPASSWD: /bin/rm -f /lib/systemd/system/multi-user.target.wants/qmanager*.service
+# Boot persistence (symlink-based — systemctl enable doesn't work).
+# Both units named in full, source and destination: a '*' here would have
+# matched across argument boundaries and made this `rm -f <anything>`.
+www-data ALL=(root) NOPASSWD: /bin/ln -sf /lib/systemd/system/qmanager-watchcat.service /lib/systemd/system/multi-user.target.wants/qmanager-watchcat.service
+www-data ALL=(root) NOPASSWD: /bin/ln -sf /lib/systemd/system/qmanager-tower-failover.service /lib/systemd/system/multi-user.target.wants/qmanager-tower-failover.service
+www-data ALL=(root) NOPASSWD: /bin/rm -f /lib/systemd/system/multi-user.target.wants/qmanager-watchcat.service
+www-data ALL=(root) NOPASSWD: /bin/rm -f /lib/systemd/system/multi-user.target.wants/qmanager-tower-failover.service
 
 # Firewall, reboot, SSH password
 www-data ALL=(root) NOPASSWD: /usr/sbin/iptables, /usr/sbin/iptables-restore, /usr/sbin/ip6tables, /usr/sbin/ip6tables-restore
@@ -653,7 +657,7 @@ www-data ALL=(root) NOPASSWD: /usr/bin/killall -HUP dnsmasq
 
 > **Note:** All sudoers commands use full absolute paths — Entware's sudo has a restricted `secure_path` that excludes `/sbin/` and `/usr/bin/`. Bare command names will fail silently from CGI context.
 
-> ⚠️ WARNING: Argument specs are exact, not wildcards. A `*` in a sudoers argument spec matches any run of characters — spaces and slashes included — so `/bin/systemctl start *` is a grant over *every unit on the device*. Service control is therefore enumerated one unit and verb at a time. If you add a rule, enumerate it too; `scripts/test/run-all.sh` §6 fails the build on any wildcard `systemctl` grant. See [BACKEND.md §7.1](BACKEND.md#71-wildcards-in-argument-specs).
+> ⚠️ WARNING: Argument specs are exact. **The file contains no `*` at all**, and that is enforced. sudo matches a command's arguments as one space-joined string, so a `*` does not stay inside the argument it was written in — it matches across word boundaries. `/bin/systemctl start *` was a grant over *every unit on the device*; worse, `/bin/rm -f …/qmanager*.service` was a grant to delete *any list of files* as root, because the `*` could absorb extra operands and the joined string still ended in `.service`. Service control and boot persistence are therefore enumerated one command at a time — eight grants, both units named in full. If you add a rule, enumerate it too, and mind the spacing (single spaces; a double space passes `visudo` and then never matches). `scripts/test/run-all.sh` §6 fails the build on any `*` in any grant and asserts all eight by exact string. See [BACKEND.md §7.1](BACKEND.md#71-wildcards-in-argument-specs).
 
 ### Install-time validation
 
