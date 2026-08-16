@@ -1,8 +1,29 @@
 # QManager — sudoers rules for CGI scripts (lighttpd runs as www-data)
 # Install location: /opt/etc/sudoers.d/qmanager (Entware) or /etc/sudoers.d/qmanager
 
-# Service control (used by platform.sh svc_* functions)
-www-data ALL=(root) NOPASSWD: /bin/systemctl start *, /bin/systemctl stop *, /bin/systemctl restart *, /bin/systemctl is-active *
+# Service control (used by platform.sh svc_start / svc_stop / svc_restart).
+#
+# These were four wildcard grants: `/bin/systemctl start *` and its siblings.
+# A '*' in a sudoers argument spec matches any run of characters — spaces and
+# slashes included — so the web user could start, stop or restart ANY unit on
+# the device as root: drop qmanager-firewall, stop the poller, or bring up a
+# service the administrator had deliberately switched off. Same shape as the
+# /usr/bin/crontab grant removed below, and it bought just as little.
+#
+# Every unit QManager drives from a www-data context is a literal string in the
+# source, never assembled at runtime, so exact-argument grants express the real
+# requirement exactly. The verbs are deliberately asymmetric — watchcat is never
+# started on its own, tower-failover is never restarted — because nothing calls
+# those. When something does, add the line it needs rather than widening one of
+# these back into a wildcard.
+#
+# is-active is gone rather than narrowed: svc_is_running() had no caller
+# anywhere in the tree, and it never needed root to begin with. It is a
+# read-only status query, so platform.sh now runs it without sudo.
+www-data ALL=(root) NOPASSWD: /bin/systemctl restart qmanager-watchcat
+www-data ALL=(root) NOPASSWD: /bin/systemctl stop qmanager-watchcat
+www-data ALL=(root) NOPASSWD: /bin/systemctl start qmanager-tower-failover
+www-data ALL=(root) NOPASSWD: /bin/systemctl stop qmanager-tower-failover
 
 # Boot persistence (symlink-based — systemctl enable doesn't work on RM520N-GL)
 www-data ALL=(root) NOPASSWD: /bin/ln -sf /lib/systemd/system/qmanager*.service /lib/systemd/system/multi-user.target.wants/qmanager*.service

@@ -80,9 +80,17 @@ svc_is_enabled() {
     [ -L "$_WANTS_DIR/$unit" ]
 }
 
-# Check if a service is currently running
+# Check if a service is currently running.
+#
+# No sudo, deliberately. `systemctl is-active` is a read-only status query that
+# an unprivileged user may make, and the sudoers grant that used to cover it is
+# gone — it was a wildcard nobody called. Leaving $_SUDO here would rebuild the
+# exact trap this abstraction keeps falling into: sudo would refuse, the
+# redirect below would swallow the reason, and a running service would be
+# reported as stopped. The rest of the tree already calls it bare — see
+# qmanager_health_check's _svc_check and schedule_timer.sh's _qm_timer_state.
 svc_is_running() {
-    $_SUDO $_SYSTEMCTL is-active "$(_svc_unit "$1")" >/dev/null 2>&1
+    $_SYSTEMCTL is-active "$(_svc_unit "$1")" >/dev/null 2>&1
 }
 
 # Privileged command helpers — add sudo prefix for www-data context

@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
-# Pre-build gate for QManager. Four checks:
+# Pre-build gate for QManager. Six checks:
 #   1. bash -n syntax check across daemons, libraries, CGI handlers, harnesses
 #   2. CRLF detector (warn-only — installer normalizes on-device)
 #   3. iCloud/Finder conflict-copy detector (graded; only .git findings are fatal)
 #   4. i18n dictionary parity (en.json vs vi.json) — fatal
+#   5. iCloud exclusion drift (warn-only)
+#   6. sudoers hygiene — visudo grammar, no wildcard grants — fatal
 #
 # Fatal: a syntax failure (every bad file is reported, then the run aborts), a
-# conflict copy inside .git, or an i18n parity failure. Conflict copies outside
-# .git and every CRLF finding are warn-only.
+# conflict copy inside .git, an i18n parity failure, or any sudoers finding.
+# Conflict copies outside .git, exclusion drift and every CRLF finding are
+# warn-only.
 #
 # Cost: ~3.7 s wall on a dev machine (measured 3.68-3.70 s over three warm
 # runs), of which:
@@ -239,6 +242,91 @@ if [ "$drift" -gt 0 ]; then
     printf '         bash scripts/dev/icloud-exclude.sh --status\n'
 else
     printf '  OK   no drift (or exclusion not applied)\n'
+fi
+
+# --- 6. sudoers hygiene (fatal) -------------------------------------------
+# Two failure modes, and this project has already paid for both.
+#
+# GRAMMAR. sudo refuses EVERY request when any file it reads fails to parse,
+# and sudoers.d is read in full, so a single malformed drop-in disables every
+# rule in the directory. On the modem www-data is the only sudo user, which
+# makes that one stray character an outage of every privileged action the web
+# UI has — service control, iptables, reboot, DNS, and qmanager_update with
+# them, so the device cannot even pull down the fix. An unescaped ':' in the
+# custom-DNS chown rule shipped exactly this once, and the Phase 1 audit had
+# approved it: an audit reviews policy, and only visudo checks grammar
+# (docs/reference/custom-dns.md). Checking here means a bad rule cannot reach a
+# tarball at all; the installer repeats the check on-device for the same file.
+#
+# WILDCARDS. A '*' in a sudoers argument spec matches any run of characters,
+# spaces and slashes included, so `/bin/systemctl start *` let the web user run
+# any unit on the box as root. The exact-argument grants that replaced it are
+# asserted one by one, because a missing grant fails SILENTLY at runtime:
+# platform.sh discards sudo's stderr, and watchdog.sh backgrounds its restart
+# without reading the exit status. A merge from upstream is the realistic way
+# the wildcard comes back, and nothing else in the tree would notice.
+printf '\n== sudoers hygiene ==\n'
+SUDOERS_SRC="scripts/etc/sudoers.d/qmanager"
+[ -f "$SUDOERS_SRC" ] || fail "$SUDOERS_SRC is missing"
+
+# Comment-blind. Every rule below is explained in a comment that names the very
+# construct it forbids, so a comment-reading grep would trip over the
+# documentation of its own rule.
+sudoers_code=$(grep -vE '^[[:space:]]*#' "$SUDOERS_SRC" || true)
+
+if printf '%s\n' "$sudoers_code" \
+    | grep -qE '/bin/systemctl[[:space:]]+(start|stop|restart|is-active)[[:space:]]+\*'; then
+    printf '%s\n' "$sudoers_code" \
+        | grep -nE '/bin/systemctl[[:space:]]+[a-z-]+[[:space:]]+\*' \
+        | sed 's/^/       /' || true
+    fail "sudoers grants a wildcard systemctl verb (see above)"
+fi
+printf '  OK   no wildcard systemctl grant\n'
+
+sudoers_missing=0
+while IFS= read -r g; do
+    [ -n "$g" ] || continue
+    if ! printf '%s\n' "$sudoers_code" | grep -qF "/bin/systemctl $g"; then
+        printf '  FAIL missing grant: /bin/systemctl %s\n' "$g"
+        sudoers_missing=$((sudoers_missing + 1))
+    fi
+done <<'GRANTS'
+restart qmanager-watchcat
+stop qmanager-watchcat
+start qmanager-tower-failover
+stop qmanager-tower-failover
+GRANTS
+[ "$sudoers_missing" -eq 0 ] \
+    || fail "$sudoers_missing service-control grant(s) missing from $SUDOERS_SRC"
+printf '  OK   all four service-control grants present\n'
+
+visudo_bin=""
+for v in /usr/sbin/visudo /opt/sbin/visudo /sbin/visudo; do
+    [ -x "$v" ] && { visudo_bin="$v"; break; }
+done
+if [ -n "$visudo_bin" ]; then
+    # -cf checks the named file instead of the live /etc/sudoers, and ignores
+    # its owner and mode, so a plain temp copy is enough. Strip CRLF first:
+    # that is what install_file writes on-device, so it is what must parse.
+    sudoers_tmp=$(mktemp)
+    # `tr` sits between mktemp and the rm calls below; under `set -e` a failure
+    # there would exit without cleaning up.
+    trap 'rm -f "$sudoers_tmp"' EXIT
+    tr -d '\r' < "$SUDOERS_SRC" > "$sudoers_tmp"
+    if "$visudo_bin" -cf "$sudoers_tmp" >/dev/null 2>&1; then
+        rm -f "$sudoers_tmp"
+        printf '  OK   visudo -cf parses cleanly\n'
+    else
+        # visudo names the file it was handed, so map the temp path back to the
+        # real one — a bare "tmp.A0nEmh:81: syntax error" makes the line number
+        # useless to whoever has to go fix it.
+        "$visudo_bin" -cf "$sudoers_tmp" 2>&1 \
+            | sed "s|$sudoers_tmp|$SUDOERS_SRC|g; s/^/       /" || true
+        rm -f "$sudoers_tmp"
+        fail "$SUDOERS_SRC does not parse — see visudo output above"
+    fi
+else
+    printf '  WARN visudo not found — grammar unchecked on this host\n'
 fi
 
 printf '\n[run-all] PASS: %d scripts (%ds)\n\n' \

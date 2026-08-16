@@ -1134,9 +1134,78 @@ install_backend() {
             echo "#includedir $SUDOERS_DIR" >> "$SUDOERS_CONF"
             info "Added #includedir $SUDOERS_DIR to $SUDOERS_CONF"
         fi
+        # Validate the candidate BEFORE it is allowed to replace a file that
+        # currently works.
+        #
+        # sudo refuses EVERY request when any file it reads fails to parse, and
+        # sudoers.d is read in full, so one malformed drop-in disables every
+        # rule in the directory. www-data is the only sudo user on this device,
+        # which means a single stray character takes out every privileged action
+        # the web UI has at once — service control, iptables, reboot, DNS, and
+        # qmanager_update along with them, so the device cannot even pull the
+        # fix down. Recovery is a manual root SSH session.
+        #
+        # This is not hypothetical. An unescaped ':' in the custom-DNS chown
+        # rule shipped once and did exactly that; the Phase 1 audit had approved
+        # it, because an audit reviews policy and only visudo checks grammar
+        # (docs/reference/custom-dns.md).
+        #
+        # Validate a staged copy with CRLF already stripped, since that is the
+        # byte-for-byte content install_file will go on to write. Stage it
+        # outside SUDOERS_DIR: sudo skips filenames containing '.', so a leftover
+        # would be inert, but a half-written rule file in the drop-in directory
+        # is not something to leave lying around on the strength of that.
+        _sudoers_stage="/tmp/qmanager-sudoers-candidate.$$"
+        tr -d '\r' < "$SRC_SCRIPTS/etc/sudoers.d/qmanager" > "$_sudoers_stage" \
+            || die "Failed to stage sudoers rules for validation"
+        chmod 440 "$_sudoers_stage" 2>/dev/null
+
+        _visudo=""
+        for _v in /opt/sbin/visudo /opt/bin/visudo /usr/sbin/visudo /sbin/visudo; do
+            [ -x "$_v" ] && { _visudo="$_v"; break; }
+        done
+        # `|| true` INSIDE the substitution, not outside it. This file runs
+        # under `set -e` (line 42), and qmanager_update invokes it as
+        # `sh install_rm520n.sh`, so the shebang is not what interprets it.
+        # Written as `[ -n "$x" ] || x=$(command -v visudo)`, the assignment is
+        # the LAST command of an || list, which is exactly where errexit's
+        # AND-OR exemption stops applying — so on a device with no visudo the
+        # installer would abort here instead of taking the warn path below,
+        # turning the safety fallback into a hard install failure. Verified: it
+        # aborts under both dash and bash.
+        if [ -z "$_visudo" ]; then
+            _visudo=$(command -v visudo 2>/dev/null || true)
+        fi
+
+        if [ -n "$_visudo" ]; then
+            if "$_visudo" -cf "$_sudoers_stage" >/dev/null 2>&1; then
+                info "Sudoers rules validated ($_visudo)"
+            else
+                "$_visudo" -cf "$_sudoers_stage" 2>&1 | sed 's/^/    /' || true
+                rm -f "$_sudoers_stage"
+                die "Sudoers rules failed visudo validation — refusing to install them. The existing sudoers file was left untouched."
+            fi
+        else
+            # Warn rather than die. A device can carry sudo without visudo, and
+            # refusing to install would leave the CGI with no privileges at all
+            # — a certain failure in place of a risk.
+            #
+            # The backstop is upstream: scripts/test/run-all.sh runs this same
+            # visudo check on the build host, and .github/workflows/release.yml
+            # runs it before packaging, so a published tarball should not reach
+            # here carrying a grammar error. Backstop, not guarantee — a
+            # hand-built tarball can still bypass both.
+            warn "visudo not found — installing sudoers rules unvalidated"
+        fi
+        rm -f "$_sudoers_stage"
+
         install_file "$SRC_SCRIPTS/etc/sudoers.d/qmanager" "$SUDOERS_DIR/qmanager" 440 \
             || die "Failed to install sudoers rules"
         chown root:root "$SUDOERS_DIR/qmanager"
+        # Same reason the systemd unit block syncs: this file is what stands
+        # between the web UI and every privileged action it performs, and the
+        # OTA path reboots without a sync of its own.
+        sync
         info "Sudoers rules installed to $SUDOERS_DIR (440)"
     elif [ -z "$SUDOERS_DIR" ]; then
         warn "sudo not found — install Entware sudo: $OPKG install sudo"
