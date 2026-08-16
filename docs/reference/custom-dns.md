@@ -284,6 +284,14 @@ The `:` in the argument `radio:radio` has to be backslash-escaped because sudoer
 
 This bit us during first install validation. The Phase 1 `installer-safety-auditor` audit approved the unescaped form because the audit does not run `visudo -cf` against the proposed line. Lesson for future installer-touching changes: the audit catches policy errors, but only `visudo -cf` catches grammar errors. The fix is committed.
 
+**That lesson is now enforced in three places**, so the same class of error cannot reach a device again:
+
+- `scripts/test/run-all.sh` §6 runs `visudo -cf` on the source file — fatal, and it is the first step of `bun run package`.
+- `.github/workflows/release.yml` runs the same gate before building, so a tag-pushed release cannot ship an unparseable file either.
+- `install_rm520n.sh` validates a staged CRLF-stripped copy on-device and refuses to replace the working file if it fails.
+
+See [BACKEND.md §7.2](../BACKEND.md#72-one-bad-drop-in-disables-every-rule) for the full gate table.
+
 ### File mode is 0644 after save (was 0664 baseline)
 
 The post-save file is mode `0644`, not the original `0664`. Reason: the CGI's umask (`0022`) drops the group-writable bit when it writes the staging file, and `sudo mv` then `sudo chown` does not restore it. This is benign because QCMAP is the owner (`radio:radio`), so its `sed -i` rewrites of `dhcp-option-force` lines still succeed via owner-write rather than group-write. Worth noting in case a future change shifts ownership away from `radio` — at that point the group-writable bit would matter.

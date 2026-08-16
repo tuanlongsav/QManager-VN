@@ -59,6 +59,29 @@
 
 ---
 
+## Sudoers grants & validation
+
+- **Grants are exact-argument, never wildcard.** A `*` in a sudoers argument spec matches any run of characters — spaces and slashes included — so the old `/bin/systemctl start *` (and its `stop`/`restart`/`is-active` siblings) let `www-data` drive *any* unit on the device as root. Service control is now four literal grants:
+
+  | Unit | Verbs granted | Consumed by |
+  |------|---------------|-------------|
+  | `qmanager-watchcat` | `restart`, `stop` | `monitoring/watchdog.sh` |
+  | `qmanager-tower-failover` | `start`, `stop` | `tower_lock_mgr.sh`, sourced by the `tower/` and `frequency/` CGI handlers |
+
+  The verbs are asymmetric on purpose — watchcat is never started on its own, tower-failover is never restarted — because nothing calls those combinations. Every unit QManager drives from a `www-data` context is a literal string in the source, so an explicit list loses nothing.
+
+- **`svc_is_running` has no grant and needs none.** `systemctl is-active` is a read-only query. The old wildcard covered it, but the function had no caller anywhere in the tree, so the grant was dropped rather than narrowed and `platform.sh` now calls it without `$_SUDO`. Leaving the sudo prefix behind would have been worse than useless: sudo refuses the unmatched command, the function's `2>&1` swallows the reason, and a running service reads as stopped.
+
+- **A missing grant fails silently.** `platform.sh` discards sudo's stderr and `monitoring/watchdog.sh` backgrounds its restart without checking the exit status, so a service that quietly never restarts is the symptom. `scripts/test/run-all.sh` §6 asserts all four grants by name for this reason — an upstream merge reintroducing the wildcard (or dropping a grant) is otherwise invisible.
+
+- **One malformed drop-in disables every rule.** sudo refuses *every* request when any file it reads fails to parse, and `sudoers.d` is read in full. `www-data` being the only sudo user here means that is a total outage of the web UI's privileged surface — service control, iptables, reboot, DNS, and `qmanager_update` — leaving the device unable to fetch its own fix. An unescaped `:` in the Custom DNS `chown` rule caused exactly this once; see [custom-dns.md](custom-dns.md).
+
+- **Three `visudo -cf` gates now stand in front of that:** `scripts/test/run-all.sh` §6 on the dev machine (also the first step of `bun run package`), the "Pre-build gate" step in `.github/workflows/release.yml`, and `install_backend()` on-device. All three check a CRLF-stripped copy, because that is what actually gets written.
+
+- **The installer validates a staged candidate, not the live file.** It writes `/tmp/qmanager-sudoers-candidate.$$` (deliberately outside `SUDOERS_DIR`, so a leftover can never be read as a rule), validates that, and `die`s without touching the installed file if it fails. If `visudo` is absent it warns and installs anyway — a device can have sudo without visudo, and refusing would leave the CGI with no privileges at all, trading a risk for a certainty. It `sync`s after install, since the OTA path reboots without one.
+
+---
+
 ## SSH password management
 
 - Helper: `qmanager_set_ssh_password`
@@ -183,7 +206,8 @@ PID tracking spans the full install lifetime to keep the CGI's `pid_alive` concu
 
 ## OTA update pipeline
 
-- **sudoers rule**: `www-data ALL=(root) NOPASSWD: /usr/bin/qmanager_update` — allows the `update.sh` CGI to invoke the update worker as root via `sudo -n`.
+- **sudoers rule**: `www-data ALL=(root) NOPASSWD: /usr/bin/qmanager_update` — allows the `update.sh` CGI to invoke the update worker as root via `sudo -n`. This rule is also why a sudoers parse error is self-trapping: lose sudo and you lose the one mechanism that could deliver the fix.
+- **Release builds run the pre-build gate**: `.github/workflows/release.yml` runs `bash scripts/test/run-all.sh` before `next build` and `build.sh`. The workflow calls those two directly instead of `bun run package`, so the gate is an explicit step — a tag push is the one release path where nobody ran `bun run package` by hand first.
 - **Log file ownership trick**: The CGI spawn-line redirects to `/dev/null 2>&1` (not `>>log`) so the worker (`qmanager_update`) creates `/tmp/qmanager_update.log` as root. This sidesteps `fs.protected_regular=1`, which would block root from truncating a log file previously created by `www-data`.
 - **Atomic status writes**: The worker uses `write_status` (`.tmp` + `mv`) for all status updates.
 - **Progress validation**: Progress is tracked by tailing `=== Step N/M: <label> ===` lines from the installer log.
@@ -215,6 +239,9 @@ PID tracking spans the full install lifetime to keep the CGI's `pid_alive` concu
 - **ELF sanity check**: `install_rm520n.sh` verifies the downloaded opkg binary's ELF magic bytes, because `wget` (unlike `curl -f`) writes HTTP error pages to disk on a 4xx/5xx.
 - **Maintenance hazard — three copies of the detection logic.** The canonical `downloader.sh` lib, plus inline copies in `qmanager-installer.sh` (bash) and `install_rm520n.sh` (sh). The inline copies exist because the install scripts run *before* the lib is on disk. **Bug fixes must be applied to all three.** The inline copies carry a comment pointing at the canonical lib.
 - **`opkg update` failure is handled gracefully**: all Entware package installs are skipped with clear warnings, but the rest of the install (scripts, frontend, systemd units) continues normally.
+- **The installer's shebang is not what runs it.** `install_rm520n.sh` carries `#!/bin/bash`, but `qmanager_update` launches it as `sh install_rm520n.sh` (`qmanager_update:128`), so on-device it is interpreted by BusyBox `ash`. Treat it as POSIX sh under `set -e` when editing.
+  - This bites hardest on optional-tool fallbacks. Under `set -e`, POSIX exempts commands in an AND-OR list from triggering an exit *except the last one*, so `[ -n "$x" ] || x=$(command -v tool)` aborts the script when `tool` is absent — the exact opposite of the intended "shrug and continue". Put the `|| true` **inside** the command substitution. The `visudo` lookup in `install_backend()` shipped the wrong shape briefly and turned its warn-and-continue path into a hard install failure on every device without visudo.
+  - Neither `bash -n` nor the portability validator catches this — it is a semantics bug, not a grammar one. Verify by running the construct under `dash` and `bash` and comparing `$?`. Full write-up in [BACKEND.md §14](../BACKEND.md#14-common-pitfalls).
 
 ---
 

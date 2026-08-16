@@ -98,6 +98,8 @@ val=$(jq -r '(.field) | if . == null then "false" else tostring end' file.json)
 
 **CGI privilege model.** lighttpd runs CGI as `www-data`. All privileged operations (service control, iptables, reboot) require `sudo -n` with full absolute paths. The `platform.sh` library provides sudo-wrapped helpers (`svc_*`, `run_iptables`, `run_reboot`). The sudoers file whitelists exactly these paths.
 
+**Sudoers grants are exact, and the file is validated before it lands.** Service-control grants name their unit and verb literally (`/bin/systemctl restart qmanager-watchcat`), not `systemctl restart *` — a `*` in an argument spec matches any run of characters, spaces included, which is a grant over every unit on the device. Equally important, sudo refuses *every* request when any file it reads fails to parse, so a single malformed drop-in disables every rule in `sudoers.d` at once. Three gates run `visudo -cf` on the source before it can reach a device. See [§7.1](#71-wildcards-in-argument-specs) and [§7.2](#72-one-bad-drop-in-disables-every-rule).
+
 **`systemctl enable` does not work on RM520N-GL.** Unit files live on a read-only rootfs partition where `systemctl enable` cannot write symlinks. Boot persistence uses direct symlinks in `/lib/systemd/system/multi-user.target.wants/`. Use `svc_enable`/`svc_disable` from `platform.sh` which write the symlinks directly via `sudo /bin/ln -sf` / `sudo /bin/rm -f`.
 
 ---
@@ -317,13 +319,17 @@ Service control abstraction and sudo wrappers for CGI context. Detects whether c
 | `svc_enable <name>` | Create symlink in `multi-user.target.wants/` |
 | `svc_disable <name>` | Remove symlink from `multi-user.target.wants/` |
 | `svc_is_enabled <name>` | Test whether boot symlink exists |
-| `svc_is_running <name>` | Test whether unit is currently active |
+| `svc_is_running <name>` | Test whether unit is currently active -- **no sudo**, see below |
 | `run_iptables [args...]` | `iptables` with sudo prefix |
 | `run_ip6tables [args...]` | `ip6tables` with sudo prefix |
 | `run_reboot [args...]` | `reboot` with sudo prefix |
 | `pid_alive <pid>` | Test `/proc/<pid>` existence (works cross-user, unlike `kill -0`) |
 
 **Unit name translation:** `svc_*` functions translate underscores to dashes (`qmanager_watchcat` -> `qmanager-watchcat.service`) via `_svc_unit()`.
+
+**`svc_is_running` deliberately omits `$_SUDO`.** `systemctl is-active` is a read-only status query that any unprivileged user may make, so the sudo prefix bought nothing — and the sudoers grant that used to cover it (`/bin/systemctl is-active *`) has been removed, because the function had no caller anywhere in the tree. Putting `$_SUDO` back would rebuild a trap this abstraction has fallen into before: sudo refuses the unmatched command, the function's `2>&1` redirect swallows the reason, and a *running* service is silently reported as stopped. The rest of the codebase already queries `is-active` bare — see `qmanager_health_check`'s `_svc_check` and `schedule_timer.sh`'s `_qm_timer_state`. If you add the first real caller, do not add a sudoers grant for it.
+
+> ⚠️ WARNING: `svc_start`, `svc_stop`, and `svc_restart` are now backed by **exact-argument** sudoers grants covering four unit/verb pairs only (§7). Calling one of them from `www-data` context on any *other* unit fails silently — `platform.sh` discards sudo's stderr. If a new CGI needs to control a new unit, add the specific grant it needs; never widen one back into a wildcard.
 
 ### 4.9 `profile_mgr.sh`
 
@@ -825,8 +831,25 @@ File deployed to `/etc/sudoers.d/qmanager` (and `/opt/etc/sudoers.d/qmanager` fo
 # QManager -- sudoers rules for CGI scripts (lighttpd runs as www-data)
 # Install location: /opt/etc/sudoers.d/qmanager (Entware) or /etc/sudoers.d/qmanager
 
-# Service control (used by platform.sh svc_* functions)
-www-data ALL=(root) NOPASSWD: /bin/systemctl start *, /bin/systemctl stop *, /bin/systemctl restart *, /bin/systemctl is-active *
+# Service control (used by platform.sh svc_start / svc_stop / svc_restart).
+#
+# Exact arguments, not wildcards. A '*' in a sudoers argument spec matches any
+# run of characters -- spaces and slashes included -- so the four grants these
+# replaced (`/bin/systemctl start *` and siblings) let the web user start, stop
+# or restart ANY unit on the device as root.
+#
+# Every unit QManager drives from a www-data context is a literal string in the
+# source, never assembled at runtime, so exact grants express the real
+# requirement exactly. The verbs are deliberately asymmetric -- watchcat is
+# never started on its own, tower-failover is never restarted -- because
+# nothing calls those. Add the line a new caller needs; never widen these back.
+#
+# is-active is gone rather than narrowed: svc_is_running() had no caller
+# anywhere in the tree, and it never needed root to begin with (§4.8).
+www-data ALL=(root) NOPASSWD: /bin/systemctl restart qmanager-watchcat
+www-data ALL=(root) NOPASSWD: /bin/systemctl stop qmanager-watchcat
+www-data ALL=(root) NOPASSWD: /bin/systemctl start qmanager-tower-failover
+www-data ALL=(root) NOPASSWD: /bin/systemctl stop qmanager-tower-failover
 
 # Boot persistence (symlink-based -- systemctl enable doesn't work on RM520N-GL)
 www-data ALL=(root) NOPASSWD: /bin/ln -sf /lib/systemd/system/qmanager*.service /lib/systemd/system/multi-user.target.wants/qmanager*.service
@@ -838,8 +861,19 @@ www-data ALL=(root) NOPASSWD: /usr/sbin/iptables, /usr/sbin/iptables-restore, /u
 # System reboot (used by system/reboot.sh, update installer)
 www-data ALL=(root) NOPASSWD: /sbin/reboot
 
-# Crontab management (used by scheduled reboot, low power, auto-update)
-www-data ALL=(root) NOPASSWD: /usr/bin/crontab
+# Scheduled-task timer arming. These three replaced a `/usr/bin/crontab` grant
+# that was both dead and the largest escalation surface in this file: a bare
+# command name in sudoers matches ANY arguments, so it let the web user rewrite
+# root's crontab wholesale. It bought nothing -- this device runs no crond, so
+# every schedule written through it silently never fired.
+#
+# Each helper hardcodes the unit names it manages and re-validates its own
+# arguments by shape (HH:MM with a real 00-23 hour, day mask 0-6) before either
+# value reaches a generated unit file, because a newline in a schedule string
+# would otherwise become a second systemd directive -- ExecStart= included.
+www-data ALL=(root) NOPASSWD: /usr/bin/qmanager_scheduled_reboot_arm
+www-data ALL=(root) NOPASSWD: /usr/bin/qmanager_tower_schedule_arm
+www-data ALL=(root) NOPASSWD: /usr/bin/qmanager_auto_update_arm
 
 # SSH password management (reads password from stdin, updates /etc/shadow)
 www-data ALL=(root) NOPASSWD: /usr/bin/qmanager_set_ssh_password
@@ -875,11 +909,16 @@ www-data ALL=(root) NOPASSWD: /usr/bin/killall -HUP dnsmasq
 
 | Rule | Used by |
 |------|---------|
-| `systemctl start/stop/restart/is-active *` | `platform.sh` `svc_start`, `svc_stop`, `svc_restart`, `svc_is_running`; all CGI scripts that control services |
+| `systemctl restart qmanager-watchcat` | `platform.sh` `svc_restart`; `monitoring/watchdog.sh` |
+| `systemctl stop qmanager-watchcat` | `platform.sh` `svc_stop`; `monitoring/watchdog.sh` |
+| `systemctl start qmanager-tower-failover` | `platform.sh` `svc_start`; `tower_lock_mgr.sh`, sourced by `tower/lock.sh`, `tower/settings.sh`, `tower/schedule.sh`, `frequency/lock.sh` |
+| `systemctl stop qmanager-tower-failover` | `platform.sh` `svc_stop`; `tower_lock_mgr.sh` (same CGI callers) |
 | `ln -sf qmanager*.service` / `rm -f qmanager*.service` | `platform.sh` `svc_enable`/`svc_disable`; `tower/settings.sh`, `monitoring/watchdog.sh` |
 | `iptables*`, `ip6tables*`, `*-restore` | `platform.sh` `run_iptables`/`run_ip6tables`; `network/ttl.sh`, `qmanager_firewall` |
 | `/sbin/reboot` | `cgi_base.sh` `cgi_reboot_response`; `system/reboot.sh`; `qmanager_update` |
-| `/usr/bin/crontab` | Crontab management for scheduled reboot and auto-update entries |
+| `qmanager_scheduled_reboot_arm` | `system/settings.sh` (scheduled reboot timer) |
+| `qmanager_tower_schedule_arm` | `tower/schedule.sh` (tower lock schedule timer) |
+| `qmanager_auto_update_arm` | `system/update.sh` (auto-update check timer) |
 | `qmanager_set_ssh_password` | `cgi_auth.sh` `qm_set_ssh_password`; `auth/ssh_password.sh` |
 | `qmanager_set_timezone` | `system_config.sh` `sys_set_timezone`; `system/settings.sh` (timezone picker) |
 | `qmanager_set_hostname` | `system_config.sh` `sys_set_hostname`; reached from `system/settings.sh` (`save_settings`) |
@@ -889,6 +928,30 @@ www-data ALL=(root) NOPASSWD: /usr/bin/killall -HUP dnsmasq
 | `mv .../dnsmasq.conf.new`, `chown radio:radio`, `killall -HUP dnsmasq` | `network/custom_dns.sh` (atomic config swap + dnsmasq reload) |
 
 **Security note:** All rules use full absolute paths. sudo's `secure_path` is overridden by Entware's sudo configuration, but absolute paths in rules are immune to PATH injection regardless.
+
+### 7.1 Wildcards in argument specs
+
+A `*` in a sudoers argument spec is **not** a shell glob. It matches any run of characters, spaces and slashes included, so `/bin/systemctl start *` grants "run systemctl start with literally anything after it" — every unit on the device, as root. A bare command name with no argument spec at all (`/usr/bin/crontab`) is broader still: it matches every invocation with every argument set.
+
+Both shapes shipped in this file at one point and both have since been replaced by exact-argument grants. The rule going forward: **enumerate, don't wildcard.** Every unit and every helper QManager invokes from a `www-data` context is a literal string in the source, never assembled at runtime, so there is nothing a wildcard buys that an explicit list does not.
+
+The cost of getting this wrong is asymmetric in a way that is easy to underestimate. A grant that is too *narrow* fails silently — `platform.sh` discards sudo's stderr and `monitoring/watchdog.sh` backgrounds its restart without reading the exit status — so the missing-grant case looks like "the service just didn't restart". A grant that is too *wide* is invisible until someone reaches a CGI they shouldn't have. `scripts/test/run-all.sh` §6 exists to catch both: it rejects wildcard `systemctl` grants outright and asserts each of the four exact grants by name, because an upstream merge is the realistic way the wildcard comes back and nothing else in the tree would notice.
+
+### 7.2 One bad drop-in disables every rule
+
+> ⚠️ WARNING: sudo refuses **every** request when any file it reads fails to parse, and `sudoers.d` is read in full. A single malformed drop-in therefore disables every rule in the directory — not just its own.
+
+On this device `www-data` is the only sudo user, so that failure mode takes out every privileged action the web UI has at once: service control, iptables, reboot, DNS, and `qmanager_update` along with them. The device then cannot even pull down the fix; recovery is a manual root SSH session.
+
+This is not hypothetical — an unescaped `:` in the Custom DNS `chown` rule shipped once and did exactly this (see [`reference/custom-dns.md`](reference/custom-dns.md)). The Phase 1 audit had approved that change, because an audit reviews *policy* and only `visudo` checks *grammar*. Three gates now sit in front of it, all running `visudo -cf` on a CRLF-stripped copy of the same source file:
+
+| Gate | Where | Behaviour on failure |
+|------|-------|---------------------|
+| `scripts/test/run-all.sh` §6 | Dev machine, and `bun run package` | Fatal — the tarball is never built |
+| `.github/workflows/release.yml` "Pre-build gate" | CI, before `next build` | Fatal — the release is never cut |
+| `install_rm520n.sh` `install_backend()` | On-device, at install time | `die` — the **existing** sudoers file is left untouched |
+
+The installer stages its candidate to `/tmp/qmanager-sudoers-candidate.$$` (outside `SUDOERS_DIR`, so a leftover can never be read as a rule) and validates *that*, so a rejected file never replaces one that currently works. If `visudo` is not present on the device the installer **warns and continues** rather than dying: a device can carry sudo without visudo, and refusing to install would leave the CGI with no privileges at all — a certain failure in place of a risk. The two upstream gates are the backstop for that path, though a hand-built tarball can still bypass both.
 
 ---
 
@@ -1426,10 +1489,12 @@ For more detail on the CGI request/response schemas, see `API-REFERENCE.md`.
 ### Adding a New Sudoers Rule
 
 When a CGI script needs to call a privileged binary:
-1. Add `www-data ALL=(root) NOPASSWD: /full/absolute/path/to/binary [fixed_args]` to `scripts/etc/sudoers.d/qmanager`.
-2. If the command takes variable arguments that cannot be narrowed, use the wildcard form (e.g., `/bin/systemctl start *`).
-3. Prefer narrowing with fixed arguments where possible to limit the attack surface.
-4. Do not use `sudo -i` or `sudo -s`; use `sudo -n /full/path` with explicit args.
+1. Add `www-data ALL=(root) NOPASSWD: /full/absolute/path/to/binary <fixed_args>` to `scripts/etc/sudoers.d/qmanager`.
+2. **Spell the arguments out.** Every privileged call in this codebase targets a literal string known at authoring time, so enumerate one grant per call rather than reaching for `*` — see [§7.1](#71-wildcards-in-argument-specs) for why a wildcard argument spec is far wider than it looks. If a genuinely variable argument turns up, write a root helper that validates it (as `qmanager_set_timezone` and the three `*_arm` helpers do) and grant the helper instead.
+3. Do not use `sudo -i` or `sudo -s`; use `sudo -n /full/path` with explicit args.
+4. Run `bash scripts/test/run-all.sh` before committing. Section 6 runs `visudo -cf` on the file and rejects wildcard `systemctl` grants; a grammar error that escapes it disables sudo device-wide ([§7.2](#72-one-bad-drop-in-disables-every-rule)).
+5. If the grant covers a new *unit*, add it to the assertion list in `run-all.sh` §6 too. That list is what stops an upstream merge from quietly reintroducing the wildcard, and it can only assert grants it knows about.
+6. Document the new rule in [§7](#7-sudoers-rules) — both the file listing and the "Used by" table.
 
 ### JSON Response Conventions
 
@@ -1460,7 +1525,26 @@ bash -n scripts/usr/bin/qmanager_poller
 file scripts/usr/bin/qmanager_setup
 # should say: "... shell script, ASCII text executable"
 # NOT: "... CRLF line terminators"
+
+# Full pre-build gate -- six checks, ~4 s. Also runs as the first step of
+# `bun run package` and of the release workflow.
+bash scripts/test/run-all.sh
 ```
+
+**The pre-build gate (`scripts/test/run-all.sh`).** Six checks; the header comment in the script is the authoritative list:
+
+| # | Check | Fatal? |
+|---|-------|--------|
+| 1 | `bash -n` syntax across daemons, libraries, CGI handlers, harnesses | Yes |
+| 2 | CRLF detector | No — installer normalizes on-device |
+| 3 | iCloud/Finder conflict-copy detector | Only findings inside `.git/` |
+| 4 | i18n dictionary parity (`en.json` vs `vi.json`) | Yes |
+| 5 | iCloud exclusion drift | No |
+| 6 | sudoers hygiene — `visudo -cf`, no wildcard `systemctl` grants, all four exact grants present | Yes |
+
+Check 6 is comment-blind on purpose: it strips `#` lines before matching, because every rule in the sudoers file is explained in a comment that names the very construct it forbids — a comment-reading grep would trip over the documentation of its own rule. `visudo` absence downgrades that sub-check to a warning on the local host; CI always has it.
+
+**Syntax checking is not enough.** Checks 1 and 6 are both static. Neither would have caught the `set -e` behaviour described in §14 under *"`|| true` outside a command substitution does not disable errexit"* — that one is only visible by running the construct. When a change hinges on shell *semantics* rather than shell *grammar*, execute it under the interpreter that will actually run it (`dash` is a close stand-in for the on-device BusyBox `ash`).
 
 ---
 
@@ -1485,6 +1569,29 @@ file scripts/usr/bin/qmanager_setup
 **UPX-compressing `atcli_smd11`.** UPX self-modifying code causes segmentation faults on exit for this ARMv7 Rust build. Ship the uncompressed binary (~647KB). The installer must not UPX-compress it.
 
 **Using `kill -0` for cross-user PID checks.** `kill -0 <pid>` fails with EPERM when www-data checks a root daemon's PID. Use `pid_alive()` from `platform.sh` which checks `/proc/$pid` existence instead.
+
+**`|| true` *outside* a command substitution does not disable errexit.** Under `set -e`, POSIX exempts commands in an AND-OR list from triggering an exit — but only the ones that are *not last*. The final command of the list is still checked. So this is a trap, not a safe fallback:
+
+```sh
+# WRONG under `set -e`: the assignment is the LAST command of the || list,
+# so a failing `command -v` aborts the whole script.
+[ -n "$bin" ] || bin=$(command -v visudo 2>/dev/null)
+
+# RIGHT: the `|| true` lives inside the substitution, so the substitution
+# itself always exits 0 and the assignment cannot fail.
+if [ -z "$bin" ]; then
+    bin=$(command -v visudo 2>/dev/null || true)
+fi
+```
+
+The variable form reads as "try this, shrug if it fails", which is exactly what it does *not* do. `install_rm520n.sh` shipped the wrong shape briefly and it turned an intentional warn-and-continue fallback into a hard install abort on every device without `visudo`.
+
+Two things make this class especially easy to miss in this repo:
+
+- **The shebang is not what runs the installer.** `scripts/install_rm520n.sh` carries `#!/bin/bash`, but `qmanager_update` invokes it as `sh install_rm520n.sh` (`qmanager_update:128`), so on-device it is interpreted by BusyBox `ash`. Reason about that file — and any script the OTA worker launches — as POSIX sh under `set -e`, not as bash. Locally, `dash` is the closest stand-in.
+- **Static checks cannot see it.** `bash -n` parses the construct happily and the busybox-portability validator has no opinion on errexit semantics. The only way to catch it is to run the construct under the target interpreter and check the exit status.
+
+> ℹ️ NOTE: The same reasoning applies to `set -e` inside functions whose result is tested, and to the last command of a `&&` chain. When in doubt, execute the snippet under both `dash` and `bash` and compare `$?` — that is how this one was confirmed.
 
 ### Platform Tooling Quirks (probe-confirmed 2026-05-09)
 

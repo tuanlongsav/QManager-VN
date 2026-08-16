@@ -120,6 +120,30 @@ out/
 └── ...
 ```
 
+### Release Packaging & CI
+
+`bun run package` is the packaging entry point. It is three steps, in this order:
+
+```
+bash scripts/test/run-all.sh   →   bun --bun next build   →   bash build.sh
+```
+
+The gate comes **first** by design. `run-all.sh` is six checks (`bash -n` syntax, CRLF, iCloud conflict copies, i18n parity, exclusion drift, sudoers hygiene); the fatal ones abort before anything is built, so a broken script or an unparseable sudoers file cannot reach a tarball. See [BACKEND.md §13 — Testing Locally](BACKEND.md#testing-locally) for the full check table.
+
+`.github/workflows/release.yml` builds the same artifacts on a `v*` tag push (or `workflow_dispatch`). It calls `next build` and `build.sh` directly rather than going through `bun run package`, so it runs the gate as an explicit step:
+
+| Step | Command |
+|------|---------|
+| Stamp version from tag | `sed` into `package.json` |
+| Install dependencies | `bun install --frozen-lockfile` |
+| **Pre-build gate** | `bash scripts/test/run-all.sh` |
+| Build static export | `bun --bun next build` |
+| Package tarball | `bash build.sh` |
+| Verify artifacts | `qmanager.tar.gz` + `sha256sum.txt` exist |
+| Create GitHub Release | `softprops/action-gh-release@v2` |
+
+> ⚠️ WARNING: Keep the gate step in the workflow. Without it, cutting a release by pushing a tag skips every check that `bun run package` runs locally — and a tag push is precisely the path where nobody ran `bun run package` by hand first. If you add a step to `run-all.sh`, both entry points pick it up automatically; if you add a *new* build path, wire the gate into it explicitly.
+
 ---
 
 ## Deploying to the RM520N-GL
@@ -592,18 +616,25 @@ QManager's sudoers file (`/etc/sudoers.d/qmanager`) grants `www-data` the follow
 # OTA update worker
 www-data ALL=(root) NOPASSWD: /usr/bin/qmanager_update
 
-# Service control
-www-data ALL=(root) NOPASSWD: /bin/systemctl start *, /bin/systemctl stop *, /bin/systemctl restart *, /bin/systemctl is-active *
+# Service control — exact unit + verb, never `systemctl start *`
+www-data ALL=(root) NOPASSWD: /bin/systemctl restart qmanager-watchcat
+www-data ALL=(root) NOPASSWD: /bin/systemctl stop qmanager-watchcat
+www-data ALL=(root) NOPASSWD: /bin/systemctl start qmanager-tower-failover
+www-data ALL=(root) NOPASSWD: /bin/systemctl stop qmanager-tower-failover
 
 # Boot persistence (symlink-based — systemctl enable doesn't work)
 www-data ALL=(root) NOPASSWD: /bin/ln -sf /lib/systemd/system/qmanager*.service ...
 www-data ALL=(root) NOPASSWD: /bin/rm -f /lib/systemd/system/multi-user.target.wants/qmanager*.service
 
-# Firewall, reboot, crontab, SSH password
+# Firewall, reboot, SSH password
 www-data ALL=(root) NOPASSWD: /usr/sbin/iptables, /usr/sbin/iptables-restore, /usr/sbin/ip6tables, /usr/sbin/ip6tables-restore
 www-data ALL=(root) NOPASSWD: /sbin/reboot
-www-data ALL=(root) NOPASSWD: /usr/bin/crontab
 www-data ALL=(root) NOPASSWD: /usr/bin/qmanager_set_ssh_password
+
+# Scheduled-task timer arming (replaced a wildcard-equivalent /usr/bin/crontab grant)
+www-data ALL=(root) NOPASSWD: /usr/bin/qmanager_scheduled_reboot_arm
+www-data ALL=(root) NOPASSWD: /usr/bin/qmanager_tower_schedule_arm
+www-data ALL=(root) NOPASSWD: /usr/bin/qmanager_auto_update_arm
 
 # Timezone (repoints /etc/localtime — /etc is root:root 0755)
 www-data ALL=(root) NOPASSWD: /usr/bin/qmanager_set_timezone
@@ -621,6 +652,26 @@ www-data ALL=(root) NOPASSWD: /usr/bin/killall -HUP dnsmasq
 > **Note:** The above is abridged. `scripts/etc/sudoers.d/qmanager` is the source of truth — see [BACKEND.md §7](BACKEND.md#7-sudoers-rules) for the full file with per-rule annotations.
 
 > **Note:** All sudoers commands use full absolute paths — Entware's sudo has a restricted `secure_path` that excludes `/sbin/` and `/usr/bin/`. Bare command names will fail silently from CGI context.
+
+> ⚠️ WARNING: Argument specs are exact, not wildcards. A `*` in a sudoers argument spec matches any run of characters — spaces and slashes included — so `/bin/systemctl start *` is a grant over *every unit on the device*. Service control is therefore enumerated one unit and verb at a time. If you add a rule, enumerate it too; `scripts/test/run-all.sh` §6 fails the build on any wildcard `systemctl` grant. See [BACKEND.md §7.1](BACKEND.md#71-wildcards-in-argument-specs).
+
+### Install-time validation
+
+The installer validates the sudoers file **before** it is allowed to replace the one already on the device. `install_backend()` copies the source to `/tmp/qmanager-sudoers-candidate.$$` with CRLF stripped — byte-for-byte what `install_file` would go on to write — and runs `visudo -cf` on that staged copy:
+
+| Outcome | Installer behaviour |
+|---------|--------------------|
+| `visudo` present, file parses | Installs, then `sync` |
+| `visudo` present, file fails to parse | Prints visudo's output, `die`s — **the existing sudoers file is left untouched** |
+| `visudo` not found | Warns, installs unvalidated, then `sync` |
+
+The reason this gate exists at all: sudo refuses **every** request when any file it reads fails to parse, and `sudoers.d` is read in full. Because `www-data` is the only sudo user on this device, one stray character disables every privileged action the web UI has — service control, iptables, reboot, DNS, and `qmanager_update` with them, so the device cannot even pull down the fix. Recovery is a manual root SSH session, which is precisely what OTA exists to avoid.
+
+The missing-`visudo` case warns rather than dies deliberately. A device can carry sudo without visudo, and refusing to install there would leave the CGI with no privileges at all — a certain failure in place of a risk. The backstop is upstream: the same `visudo -cf` check runs in `scripts/test/run-all.sh` and in the release workflow, so a published tarball should never arrive carrying a grammar error. A hand-built tarball can still bypass both.
+
+The `sync` after install matters for the same reason it does for systemd units: the OTA path reboots without a sync of its own, and a sudoers file that exists in page cache but not on flash is a sudoers file that is missing after the reboot.
+
+See [BACKEND.md §7.2](BACKEND.md#72-one-bad-drop-in-disables-every-rule) for the incident this gate was built from.
 
 ---
 

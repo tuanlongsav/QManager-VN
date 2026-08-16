@@ -455,7 +455,9 @@ www-data ALL = (root) NOPASSWD: /usr/sbin/iptables, /usr/sbin/ip6tables, \
     /usrdata/simplefirewall/ttl-override, /bin/echo, /bin/cat
 ```
 
-QManager installs its own sudoers file at `/etc/sudoers.d/qmanager` (not `/opt/etc/sudoers.d/`) covering systemctl, reboot, crontab, ln, rm, iptables-restore, the root helpers `qmanager_set_ssh_password`, `qmanager_set_timezone`, `qmanager_health_check` and `qmanager_ethernet_apply`, the Custom DNS trio (`mv`/`chown`/`killall -HUP dnsmasq`), and — critically for OTA updates — `qmanager_update`. All entries use full absolute paths due to Entware's `secure_path` restriction (see [Web Server: lighttpd](#web-server-lighttpd)).
+QManager installs its own sudoers file at `/etc/sudoers.d/qmanager` (not `/opt/etc/sudoers.d/`) covering four exact `systemctl` unit/verb pairs, reboot, ln, rm, iptables-restore, the root helpers `qmanager_set_ssh_password`, `qmanager_set_timezone`, `qmanager_set_hostname`, `qmanager_health_check` and `qmanager_ethernet_apply`, the three scheduled-task `*_arm` helpers, the Custom DNS trio (`mv`/`chown`/`killall -HUP dnsmasq`), and — critically for OTA updates — `qmanager_update`. All entries use full absolute paths due to Entware's `secure_path` restriction (see [Web Server: lighttpd](#web-server-lighttpd)).
+
+Every grant names its arguments explicitly. There are no wildcard argument specs and no bare command names left in the file: both shapes shipped once (`/bin/systemctl start *` and `/usr/bin/crontab`) and both were escalation paths out of the web user's intended scope. The installer runs `visudo -cf` on a staged, CRLF-stripped copy before letting it replace the file already on the device, because one unparseable drop-in disables *every* rule in `sudoers.d` — see [BACKEND.md §7.2](BACKEND.md#72-one-bad-drop-in-disables-every-rule).
 
 The `qmanager_update` rule deserves special mention:
 ```
@@ -1393,18 +1395,26 @@ The RM520N-GL uses lighttpd (from Entware) instead of OpenWRT's uhttpd. Key conf
 # OTA update worker (CGI invokes via sudo -n; worker creates log as root)
 www-data ALL=(root) NOPASSWD: /usr/bin/qmanager_update
 
-# Service control (platform.sh svc_* functions)
-www-data ALL=(root) NOPASSWD: /bin/systemctl start *, /bin/systemctl stop *, /bin/systemctl restart *, /bin/systemctl is-active *
+# Service control (platform.sh svc_start / svc_stop / svc_restart).
+# Exact unit + verb — a '*' argument spec would match any unit on the device.
+www-data ALL=(root) NOPASSWD: /bin/systemctl restart qmanager-watchcat
+www-data ALL=(root) NOPASSWD: /bin/systemctl stop qmanager-watchcat
+www-data ALL=(root) NOPASSWD: /bin/systemctl start qmanager-tower-failover
+www-data ALL=(root) NOPASSWD: /bin/systemctl stop qmanager-tower-failover
 
 # Boot persistence (symlink-based — systemctl enable doesn't work)
 www-data ALL=(root) NOPASSWD: /bin/ln -sf /lib/systemd/system/qmanager*.service ...
 www-data ALL=(root) NOPASSWD: /bin/rm -f /lib/systemd/system/multi-user.target.wants/qmanager*.service
 
-# Firewall, reboot, crontab, SSH password
+# Firewall, reboot, SSH password
 www-data ALL=(root) NOPASSWD: /usr/sbin/iptables, /usr/sbin/iptables-restore, /usr/sbin/ip6tables, /usr/sbin/ip6tables-restore
 www-data ALL=(root) NOPASSWD: /sbin/reboot
-www-data ALL=(root) NOPASSWD: /usr/bin/crontab
 www-data ALL=(root) NOPASSWD: /usr/bin/qmanager_set_ssh_password
+
+# Scheduled-task timer arming (replaced a /usr/bin/crontab grant)
+www-data ALL=(root) NOPASSWD: /usr/bin/qmanager_scheduled_reboot_arm
+www-data ALL=(root) NOPASSWD: /usr/bin/qmanager_tower_schedule_arm
+www-data ALL=(root) NOPASSWD: /usr/bin/qmanager_auto_update_arm
 
 # Timezone (repoints /etc/localtime — /etc is root:root 0755)
 www-data ALL=(root) NOPASSWD: /usr/bin/qmanager_set_timezone
@@ -1424,6 +1434,11 @@ www-data ALL=(root) NOPASSWD: /usr/bin/killall -HUP dnsmasq
 > **WARNING: Entware sudo `secure_path` restriction.** Entware's sudo has a restricted `secure_path` that does NOT include `/sbin/` or `/usr/sbin/`. All `$_SUDO` commands in `platform.sh` **must use full absolute paths** — bare command names (`systemctl`, `reboot`, `iptables`) will fail silently from CGI context. Key paths: `systemctl` is at `/bin/systemctl` (not `/usr/bin/systemctl`), `reboot` is at `/sbin/reboot`, `iptables` is at `/usr/sbin/iptables`. The `$_SYSTEMCTL` variable in `platform.sh` centralizes the systemctl path.
 
 QManager's `platform.sh` provides wrapper functions (`svc_start`, `svc_stop`, `run_iptables`, `run_reboot`, etc.) that add `$_SUDO` with the correct full paths automatically. CGI scripts should use these wrappers, never bare commands.
+
+Two exceptions to "wrap it in `$_SUDO`" are worth knowing:
+
+- **`svc_is_running` runs bare.** `systemctl is-active` is a read-only query that needs no root, and there is no sudoers grant for it. Adding `$_SUDO` back would make sudo refuse the unmatched command, the function's `2>&1` redirect would swallow the reason, and a running service would be reported as stopped.
+- **`svc_start` / `svc_stop` / `svc_restart` only work on four unit/verb pairs.** The grants are exact arguments, not wildcards, because a `*` in a sudoers argument spec matches any run of characters — spaces and slashes included — which made the old `/bin/systemctl start *` a grant over every unit on the device. From a root daemon these helpers bypass sudo entirely and are unaffected; from CGI (`www-data`) they are limited to `qmanager-watchcat` (restart, stop) and `qmanager-tower-failover` (start, stop). See [BACKEND.md §7.1](BACKEND.md#71-wildcards-in-argument-specs).
 
 ### CGI AT Command Execution
 
