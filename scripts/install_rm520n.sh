@@ -607,6 +607,90 @@ scrub_legacy_cron() {
     fi
 }
 
+# --- Repair world-writable install directories -------------------------------
+#
+# Same shape as scrub_legacy_cron above, and for the same reason: this is a
+# repair for devices already in the field, not a guard against creating the
+# problem. Measured umask is 0022 in every context that runs this installer
+# (root shell, systemd unit, www-data via su), so `mkdir -p` here produces 0755
+# and a fresh install has never been affected. What it cannot do is change a
+# directory that already exists — which is exactly why 0777 has survived on
+# fielded devices, inherited from an older build or from the SimpleAdmin
+# toolkit this port grew out of.
+#
+# Measured on an RM520N-GLAA before this function existed:
+#
+#     777 root:root  /usr/lib/qmanager              20 shared shell libraries
+#     777 root:root  /usrdata/qmanager
+#     777 root:root  /usrdata/qmanager/www/cgi-bin  66 CGI endpoints
+#     777 root:root  /usrdata/qmanager/certs
+#     777 www-data   /etc/qmanager                  auth.json lives here
+#     777 www-data   /etc/qmanager/profiles
+#     666 root:root  /usrdata/qmanager/certs/server.crt
+#
+# The FILE modes were already correct — install_dir_flat and install_tree set
+# them. That is what made this easy to miss: everything looked right until you
+# stat the directory holding it.
+#
+# Why it matters, demonstrated as the unprivileged `nobody` account: it could
+# not READ a root-owned 0600 file, but it could DELETE that file and write its
+# own in its place, because delete permission comes from the directory, not the
+# file. Applied to /usr/lib/qmanager — which 20 root daemons and 66 CGI scripts
+# source — that is arbitrary code execution as root for any of the device's 43
+# local accounts. Applied to /etc/qmanager it replaces auth.json and hands over
+# the web UI; applied to certs it swaps the TLS certificate.
+#
+# 0755 rather than something tighter: everything under $CONF_DIR is
+# www-data-owned and written by CGI, everything else is root-owned and written
+# by root daemons, so the owner keeps full write in every case and no legitimate
+# writer loses access. Verified on hardware — after applying these exact modes
+# the web UI still served, CGI still authenticated, and all services stayed up.
+#
+# Non-fatal throughout. A directory that is absent on some image, or a chmod
+# refused on a read-only mount, must not abort an install: leaving the mode
+# alone is what happens today, so failing here would be strictly worse than the
+# status quo it is trying to improve.
+harden_install_modes() {
+    mount -o remount,rw / 2>/dev/null || true
+
+    _hardened=0
+    for _d in "$LIB_DIR" "$QMANAGER_ROOT" "$WWW_ROOT/cgi-bin" \
+              "$QMANAGER_ROOT/certs" "$CONF_DIR" "$CONF_DIR/profiles"; do
+        [ -d "$_d" ] || continue
+        _before=$(stat -c '%a' "$_d" 2>/dev/null)
+        [ "$_before" = "755" ] && continue
+        if chmod 0755 "$_d" 2>/dev/null; then
+            _log_raw "Tightened $_d from ${_before:-unknown} to 0755"
+            _hardened=$((_hardened + 1))
+        fi
+    done
+
+    # The certificate is public by nature, so 0644 is right; it is being
+    # world-WRITABLE that let anyone swap it. The private key beside it is
+    # already 0600 and is deliberately left alone.
+    _crt="$QMANAGER_ROOT/certs/server.crt"
+    if [ -f "$_crt" ] && [ "$(stat -c '%a' "$_crt" 2>/dev/null)" != "644" ]; then
+        chmod 0644 "$_crt" 2>/dev/null && {
+            _log_raw "Tightened $_crt to 0644"
+            _hardened=$((_hardened + 1))
+        }
+    fi
+
+    # /opt/tmp is a genuinely shared scratch directory — opkg needs it writable
+    # by whoever runs it — so it stays 0777, but with the sticky bit, which is
+    # what /tmp itself uses. Without it one user can delete another's files
+    # there, including files opkg is midway through using.
+    if [ -d /opt/tmp ] && [ "$(stat -c '%a' /opt/tmp 2>/dev/null)" != "1777" ]; then
+        chmod 1777 /opt/tmp 2>/dev/null && {
+            _log_raw "Added the sticky bit to /opt/tmp"
+            _hardened=$((_hardened + 1))
+        }
+    fi
+
+    [ "$_hardened" -gt 0 ] && info "Repaired $_hardened world-writable path(s) from an earlier install"
+    return 0
+}
+
 # --- Install Dependencies ----------------------------------------------------
 
 install_dependencies() {
@@ -778,7 +862,9 @@ SVCEOF
         for folder in bin etc lib/opkg tmp var/lock; do
             mkdir -p "/opt/$folder"
         done
-        chmod 777 /opt/tmp
+        # Sticky, like /tmp. A shared scratch directory without it lets one user
+        # delete another's files — including files opkg is midway through using.
+        chmod 1777 /opt/tmp
 
         # Download opkg binary and config. ENTWARE_URL is plain HTTP, so any
         # downloader works here — including a TLS-less BusyBox wget.
@@ -2354,6 +2440,11 @@ main() {
     # anything gated on DO_PACKAGES or DO_BACKEND would never reach the devices
     # that actually carry the stale root crontab this removes.
     scrub_legacy_cron
+
+    # Same placement and the same reasoning as scrub_legacy_cron: ungated, so it
+    # reaches the OTA path (always --skip-packages) and the --frontend-only path,
+    # which are precisely how a fielded device with the loose modes gets updated.
+    harden_install_modes
 
     [ "$DO_PACKAGES" = "1" ] && install_dependencies
 
