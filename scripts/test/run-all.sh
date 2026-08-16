@@ -258,13 +258,20 @@ fi
 # (docs/reference/custom-dns.md). Checking here means a bad rule cannot reach a
 # tarball at all; the installer repeats the check on-device for the same file.
 #
-# WILDCARDS. A '*' in a sudoers argument spec matches any run of characters,
-# spaces and slashes included, so `/bin/systemctl start *` let the web user run
-# any unit on the box as root. The exact-argument grants that replaced it are
-# asserted one by one, because a missing grant fails SILENTLY at runtime:
-# platform.sh discards sudo's stderr, and watchdog.sh backgrounds its restart
-# without reading the exit status. A merge from upstream is the realistic way
-# the wildcard comes back, and nothing else in the tree would notice.
+# WILDCARDS. sudo matches command arguments as ONE space-joined string, so a
+# '*' does not stay inside the argument it was written in — it matches across
+# word boundaries (sudoers(5), "Wildcards in command arguments"). That is how
+# `rm -f /lib/.../wants/qmanager*.service` also matched
+# `... /lib/.../wants/qmanagerX /etc/shadow /evil.service` and deleted all three
+# as root, and how `/bin/systemctl start *` reached every unit on the device.
+#
+# The file now contains no wildcard at all, so the assertion is simply that it
+# stays that way. Matching known-bad forms would only catch the shapes somebody
+# already thought of; this catches the next one too. Each exact grant is also
+# asserted individually, because a missing one fails SILENTLY at runtime —
+# platform.sh discards sudo's stderr, watchdog.sh backgrounds its restart, and
+# the tower call sites drop svc_enable's return value entirely. An upstream
+# merge is the realistic way a wildcard returns, and nothing else would notice.
 printf '\n== sudoers hygiene ==\n'
 SUDOERS_SRC="scripts/etc/sudoers.d/qmanager"
 [ -f "$SUDOERS_SRC" ] || fail "$SUDOERS_SRC is missing"
@@ -274,31 +281,37 @@ SUDOERS_SRC="scripts/etc/sudoers.d/qmanager"
 # documentation of its own rule.
 sudoers_code=$(grep -vE '^[[:space:]]*#' "$SUDOERS_SRC" || true)
 
-if printf '%s\n' "$sudoers_code" \
-    | grep -qE '/bin/systemctl[[:space:]]+(start|stop|restart|is-active)[[:space:]]+\*'; then
-    printf '%s\n' "$sudoers_code" \
-        | grep -nE '/bin/systemctl[[:space:]]+[a-z-]+[[:space:]]+\*' \
-        | sed 's/^/       /' || true
-    fail "sudoers grants a wildcard systemctl verb (see above)"
+if printf '%s\n' "$sudoers_code" | grep -q '\*'; then
+    printf '%s\n' "$sudoers_code" | grep -n '\*' | sed 's/^/       /' || true
+    fail "sudoers contains a wildcard grant (see above) — name the arguments in full"
 fi
-printf '  OK   no wildcard systemctl grant\n'
+printf '  OK   no wildcard in any grant\n'
 
+# Matched with grep -F on the exact single-spaced string, which also pins the
+# spacing: sudo compares the joined argument string, so a stray double space
+# would pass visudo and then silently never match at runtime.
 sudoers_missing=0
+sudoers_wanted=0
 while IFS= read -r g; do
     [ -n "$g" ] || continue
-    if ! printf '%s\n' "$sudoers_code" | grep -qF "/bin/systemctl $g"; then
-        printf '  FAIL missing grant: /bin/systemctl %s\n' "$g"
+    sudoers_wanted=$((sudoers_wanted + 1))
+    if ! printf '%s\n' "$sudoers_code" | grep -qF "$g"; then
+        printf '  FAIL missing grant: %s\n' "$g"
         sudoers_missing=$((sudoers_missing + 1))
     fi
 done <<'GRANTS'
-restart qmanager-watchcat
-stop qmanager-watchcat
-start qmanager-tower-failover
-stop qmanager-tower-failover
+/bin/systemctl restart qmanager-watchcat
+/bin/systemctl stop qmanager-watchcat
+/bin/systemctl start qmanager-tower-failover
+/bin/systemctl stop qmanager-tower-failover
+/bin/ln -sf /lib/systemd/system/qmanager-watchcat.service /lib/systemd/system/multi-user.target.wants/qmanager-watchcat.service
+/bin/ln -sf /lib/systemd/system/qmanager-tower-failover.service /lib/systemd/system/multi-user.target.wants/qmanager-tower-failover.service
+/bin/rm -f /lib/systemd/system/multi-user.target.wants/qmanager-watchcat.service
+/bin/rm -f /lib/systemd/system/multi-user.target.wants/qmanager-tower-failover.service
 GRANTS
 [ "$sudoers_missing" -eq 0 ] \
-    || fail "$sudoers_missing service-control grant(s) missing from $SUDOERS_SRC"
-printf '  OK   all four service-control grants present\n'
+    || fail "$sudoers_missing required grant(s) missing from $SUDOERS_SRC"
+printf '  OK   all %d required grants present\n' "$sudoers_wanted"
 
 visudo_bin=""
 for v in /usr/sbin/visudo /opt/sbin/visudo /sbin/visudo; do

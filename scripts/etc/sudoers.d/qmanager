@@ -25,9 +25,41 @@ www-data ALL=(root) NOPASSWD: /bin/systemctl stop qmanager-watchcat
 www-data ALL=(root) NOPASSWD: /bin/systemctl start qmanager-tower-failover
 www-data ALL=(root) NOPASSWD: /bin/systemctl stop qmanager-tower-failover
 
-# Boot persistence (symlink-based — systemctl enable doesn't work on RM520N-GL)
-www-data ALL=(root) NOPASSWD: /bin/ln -sf /lib/systemd/system/qmanager*.service /lib/systemd/system/multi-user.target.wants/qmanager*.service
-www-data ALL=(root) NOPASSWD: /bin/rm -f /lib/systemd/system/multi-user.target.wants/qmanager*.service
+# Boot persistence (symlink-based — systemctl enable doesn't work on RM520N-GL,
+# so platform.sh's svc_enable/svc_disable write the wants symlink by hand).
+#
+# These were two wildcard grants ending in `qmanager*.service`, and they were
+# the worst hole in this file — worse than the systemctl wildcards above, which
+# only reached running state. sudo matches command arguments as ONE
+# space-joined string, so `*` matches across word boundaries, not just within
+# an argument (sudoers(5), "Wildcards in command arguments"). That makes this
+# permitted by the old rule:
+#
+#     sudo /bin/rm -f /lib/.../wants/qmanagerX /etc/shadow /evil.service
+#
+# `*` absorbs "X /etc/shadow /evil", the string still ends in `.service`, the
+# pattern matches — and rm deletes every operand. Arbitrary file removal as
+# root, needing no path traversal, no pre-existing directory, and no injection
+# bug anywhere else: any code running as www-data can invoke it directly, which
+# is exactly the compromise a NOPASSWD grant is supposed to contain.
+#
+# Only two units are ever enabled or disabled from a www-data context, both as
+# literal names (watchdog.sh:360,366 and tower_lock_mgr.sh:416 via the tower
+# CGIs), so naming all four commands in full costs nothing. Spacing is
+# load-bearing: sudo compares the joined argument string, so a double space
+# here would parse fine under visudo and then never match at runtime.
+#
+# The trade is that a future qmanager-* unit the UI can enable needs a line
+# added here. Prefer that to the wildcard, but know what a missing grant costs:
+# svc_enable verifies the symlink afterwards, yet only watchdog.sh reads that
+# result (surfacing boot_enabled=false). The tower call sites discard it, so
+# there a denied grant would fail silently and only show after a reboot. That
+# asymmetry is why scripts/test/run-all.sh asserts every grant in this file by
+# exact string rather than trusting review.
+www-data ALL=(root) NOPASSWD: /bin/ln -sf /lib/systemd/system/qmanager-watchcat.service /lib/systemd/system/multi-user.target.wants/qmanager-watchcat.service
+www-data ALL=(root) NOPASSWD: /bin/ln -sf /lib/systemd/system/qmanager-tower-failover.service /lib/systemd/system/multi-user.target.wants/qmanager-tower-failover.service
+www-data ALL=(root) NOPASSWD: /bin/rm -f /lib/systemd/system/multi-user.target.wants/qmanager-watchcat.service
+www-data ALL=(root) NOPASSWD: /bin/rm -f /lib/systemd/system/multi-user.target.wants/qmanager-tower-failover.service
 
 # Firewall rules (used by TTL, VPN firewall)
 www-data ALL=(root) NOPASSWD: /usr/sbin/iptables, /usr/sbin/iptables-restore, /usr/sbin/ip6tables, /usr/sbin/ip6tables-restore
